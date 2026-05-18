@@ -1,0 +1,12 @@
+[package]
+name = "miku-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+eframe = { workspace = true }
+miku-api = { path = "../miku-api" }
+miku-core = { path = "../miku-core" }

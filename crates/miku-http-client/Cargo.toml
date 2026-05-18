@@ -1,0 +1,17 @@
+[package]
+name = "miku-http-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+futures = { workspace = true }
+miku-api = { path = "../miku-api" }
+miku-core = { path = "../miku-core" }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }

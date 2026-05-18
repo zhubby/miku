@@ -1,0 +1,7 @@
+/target/
+/dist/
+/.trunk/
+**/*.db
+**/*.db-shm
+**/*.db-wal
+.DS_Store
