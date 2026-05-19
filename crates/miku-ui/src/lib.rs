@@ -12,6 +12,7 @@ mod resource_panel;
 mod resources;
 mod state;
 mod tabs;
+mod time;
 
 pub use app::MikuApp;
 pub use fonts::{install_fonts, install_icon_fonts};

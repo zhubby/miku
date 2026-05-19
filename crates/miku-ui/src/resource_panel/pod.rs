@@ -11,6 +11,7 @@ use super::{
     ResourceLoadKind, ResourceLoadRequest, ResourcePanelRequests, ResourceUiEvent,
     namespaces_from_list,
 };
+use crate::time::human_age_from_rfc3339;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PodResourcePanel {
@@ -944,7 +945,9 @@ impl PodRow {
                 .to_owned(),
             status: pod_status(raw, summary.status.as_deref()),
             age: value_str(raw, &["metadata", "creationTimestamp"])
-                .map(age_from_timestamp)
+                .map(|timestamp| {
+                    human_age_from_rfc3339(timestamp).unwrap_or_else(|| timestamp.to_owned())
+                })
                 .unwrap_or_else(|| "N/A".to_owned()),
             edit_yaml,
             full_yaml,
@@ -1212,15 +1215,6 @@ fn container_waiting_or_terminated_reason(raw: &serde_json::Value) -> Option<Str
         })
 }
 
-fn age_from_timestamp(timestamp: &str) -> String {
-    timestamp
-        .split('T')
-        .next()
-        .filter(|date| !date.is_empty())
-        .unwrap_or(timestamp)
-        .to_owned()
-}
-
 fn value_str<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a str> {
     let mut current = value;
     for key in path {
@@ -1265,7 +1259,7 @@ mod tests {
         assert_eq!(row.node, "kind-worker");
         assert_eq!(row.qos, "Burstable");
         assert_eq!(row.status, "CrashLoopBackOff");
-        assert_eq!(row.age, "2026-05-18");
+        assert!(row.age.ends_with("前"));
     }
 
     #[test]
