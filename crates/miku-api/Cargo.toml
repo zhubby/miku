@@ -9,6 +9,6 @@ rust-version.workspace = true
 [dependencies]
 async-trait = { workspace = true }
 futures = { workspace = true }
-miku-core = { path = "../miku-core" }
+miku-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

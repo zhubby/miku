@@ -6,13 +6,17 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[[bin]]
+name = "miku"
+path = "src/main.rs"
+
 [dependencies]
 clap = { workspace = true }
-miku-core = { path = "../miku-core" }
-miku-kube = { path = "../miku-kube" }
-miku-server = { path = "../miku-server" }
-miku-store = { path = "../miku-store" }
-miku-ui = { path = "../miku-ui" }
+miku-core = { workspace = true }
+miku-kube = { workspace = true }
+miku-server = { workspace = true }
+miku-store = { workspace = true }
+miku-ui = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

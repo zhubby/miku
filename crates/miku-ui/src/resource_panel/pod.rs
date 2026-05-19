@@ -331,6 +331,7 @@ impl PodResourcePanel {
         let mut delete_clicked = false;
         egui::Window::new(format!("Delete {}", dialog.name))
             .id(egui::Id::new(("pod-delete-dialog", &dialog.key)))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .collapsible(false)
             .resizable(false)
             .show(ctx, |ui| {

@@ -11,12 +11,12 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 k8s-openapi = { workspace = true }
 kube = { workspace = true }
-miku-api = { path = "../miku-api" }
-miku-core = { path = "../miku-core" }
+miku-api = { workspace = true }
+miku-core = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-miku-store = { path = "../miku-store" }
+miku-store = { workspace = true }
 tempfile = { workspace = true }

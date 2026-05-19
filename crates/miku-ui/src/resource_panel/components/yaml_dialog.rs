@@ -3,6 +3,7 @@ use egui_extras::syntax_highlighting::{CodeTheme, highlight};
 
 const RESOURCE_YAML_DIALOG_WIDTH: f32 = 760.0;
 const RESOURCE_YAML_CONTENT_HEIGHT: f32 = 480.0;
+const RESOURCE_YAML_EDIT_HEIGHT: f32 = 360.0;
 
 pub(in crate::resource_panel) struct ResourceYamlViewDialog<'a> {
     pub(in crate::resource_panel) id: egui::Id,
@@ -70,7 +71,7 @@ impl ResourceYamlEditDialog<'_> {
                     ui.separator();
                 }
 
-                yaml_editor(ui, self.yaml);
+                yaml_editor(ui, self.id.with("editor"), self.yaml);
                 ui.separator();
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() {
@@ -89,7 +90,7 @@ impl ResourceYamlEditDialog<'_> {
     }
 }
 
-fn yaml_editor(ui: &mut egui::Ui, yaml: &mut String) {
+fn yaml_editor(ui: &mut egui::Ui, id: egui::Id, yaml: &mut String) {
     let theme = CodeTheme::from_memory(ui.ctx(), ui.style());
     let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
         let mut job = highlight(ui.ctx(), ui.style(), &theme, text.as_str(), "yaml");
@@ -98,15 +99,24 @@ fn yaml_editor(ui: &mut egui::Ui, yaml: &mut String) {
     };
 
     let width = ui.available_width();
-    ui.add_sized(
-        [width, RESOURCE_YAML_CONTENT_HEIGHT],
-        egui::TextEdit::multiline(yaml)
-            .font(egui::TextStyle::Monospace)
-            .code_editor()
-            .desired_width(width)
-            .lock_focus(true)
-            .layouter(&mut layouter),
-    );
+    let row_count = yaml.lines().count().max(24);
+    ui.allocate_ui([width, RESOURCE_YAML_EDIT_HEIGHT].into(), |ui| {
+        egui::ScrollArea::vertical()
+            .id_salt(id)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let width = ui.available_width();
+                ui.add(
+                    egui::TextEdit::multiline(yaml)
+                        .font(egui::TextStyle::Monospace)
+                        .code_editor()
+                        .desired_width(width)
+                        .desired_rows(row_count)
+                        .lock_focus(true)
+                        .layouter(&mut layouter),
+                );
+            });
+    });
 }
 
 fn yaml_viewer(ui: &mut egui::Ui, id: egui::Id, yaml: &str) {
