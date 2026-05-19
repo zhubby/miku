@@ -21,6 +21,7 @@ impl WebHandle {
 
     #[wasm_bindgen]
     pub async fn start(&self, canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
+        tracing::info!("starting web app");
         self.runner
             .start(
                 canvas,
@@ -35,6 +36,7 @@ impl WebHandle {
 
     #[wasm_bindgen]
     pub fn destroy(&self) {
+        tracing::info!("destroying web app");
         self.runner.destroy();
     }
 

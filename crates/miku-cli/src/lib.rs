@@ -63,4 +63,11 @@ mod tests {
             Command::Gui(_) => panic!("expected server command"),
         }
     }
+
+    #[test]
+    fn log_level_can_be_configured_globally() {
+        let cli = Cli::parse_from(["miku", "--log-level", "debug", "server"]);
+
+        assert_eq!(cli.log_level, "debug");
+    }
 }

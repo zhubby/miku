@@ -3,9 +3,9 @@ use kube::api::{ApiResource, ListParams, LogParams};
 use kube::core::{DynamicObject, GroupVersionKind};
 use kube::{Api, ResourceExt};
 use miku_api::{
-    ClusterRegistry, ClusterSummary, KubernetesResourceReader, KubernetesWatchService,
-    LocalPreferenceStore, LogLine, MikuServices, PodLogQuery, PodLogService, ResourceDetail,
-    ResourceList, ResourceQuery, ResourceSummary,
+    ClusterRegistry, ClusterSummary, CreateClusterRequest, KubernetesResourceReader,
+    KubernetesWatchService, LocalPreferenceStore, LogLine, MikuServices, PodLogQuery,
+    PodLogService, ResourceDetail, ResourceList, ResourceQuery, ResourceSummary,
 };
 use miku_core::{ResourceRef, ResourceScope};
 
@@ -17,16 +17,19 @@ pub struct KubeServices<S> {
 
 impl<S> KubeServices<S> {
     pub fn new_offline(store: S) -> Self {
+        tracing::info!("created offline Kubernetes services");
         Self {
             store,
             client: None,
         }
     }
 
+    #[tracing::instrument(name = "kube.try_default_client", skip(store))]
     pub async fn try_with_default_client(store: S) -> miku_core::Result<Self> {
         let client = kube::Client::try_default()
             .await
             .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?;
+        tracing::info!("configured default Kubernetes client");
         Ok(Self {
             store,
             client: Some(client),
@@ -81,19 +84,31 @@ fn kind_for_plural(plural: &str) -> String {
 #[async_trait]
 impl<S> ClusterRegistry for KubeServices<S>
 where
-    S: LocalPreferenceStore + Clone + Send + Sync,
+    S: ClusterRegistry + LocalPreferenceStore + Clone + Send + Sync,
 {
+    #[tracing::instrument(name = "kube.list_clusters", skip(self))]
     async fn list_clusters(&self) -> miku_core::Result<Vec<ClusterSummary>> {
+        let mut clusters = self.store.list_clusters().await?;
         if self.client.is_some() {
-            return Ok(vec![ClusterSummary {
+            tracing::debug!("returning default live kubeconfig context");
+            clusters.push(ClusterSummary {
                 id: miku_core::ClusterId::new("default"),
                 name: "Default kubeconfig context".to_owned(),
                 context: "default".to_owned(),
                 current: true,
-            }]);
+            });
         }
 
-        Ok(Vec::new())
+        tracing::debug!(count = clusters.len(), "listed clusters");
+        Ok(clusters)
+    }
+
+    #[tracing::instrument(name = "kube.create_cluster", skip(self, request), fields(context = %request.context))]
+    async fn create_cluster(
+        &self,
+        request: CreateClusterRequest,
+    ) -> miku_core::Result<ClusterSummary> {
+        self.store.create_cluster(request).await
     }
 }
 
@@ -102,6 +117,7 @@ impl<S> KubernetesResourceReader for KubeServices<S>
 where
     S: LocalPreferenceStore + Clone + Send + Sync,
 {
+    #[tracing::instrument(name = "kube.list_resources", skip(self), fields(path = %resource_query_path(&query)))]
     async fn list_resources(&self, query: ResourceQuery) -> miku_core::Result<ResourceList> {
         let Some(client) = self.client.clone() else {
             return Err(miku_core::MikuError::Kubernetes(format!(
@@ -139,6 +155,7 @@ where
         })
     }
 
+    #[tracing::instrument(name = "kube.get_resource", skip(self), fields(path = %resource_query_path(&query), name = %name))]
     async fn get_resource(
         &self,
         query: ResourceQuery,
@@ -201,6 +218,7 @@ impl<S> PodLogService for KubeServices<S>
 where
     S: LocalPreferenceStore + Clone + Send + Sync,
 {
+    #[tracing::instrument(name = "kube.read_logs", skip(self), fields(namespace = %query.namespace, pod = %query.pod))]
     async fn read_logs(&self, query: PodLogQuery) -> miku_core::Result<Vec<LogLine>> {
         let client = self.live_client()?;
         let pods: Api<k8s_openapi::api::core::v1::Pod> = Api::namespaced(client, &query.namespace);
@@ -241,7 +259,10 @@ where
     }
 }
 
-impl<S> MikuServices for KubeServices<S> where S: LocalPreferenceStore + Clone + Send + Sync {}
+impl<S> MikuServices for KubeServices<S> where
+    S: ClusterRegistry + LocalPreferenceStore + Clone + Send + Sync
+{
+}
 
 #[cfg(test)]
 mod tests {

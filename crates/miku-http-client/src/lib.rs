@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use miku_api::{
-    ClusterRegistry, ClusterSummary, KubernetesResourceReader, KubernetesWatchService,
-    LocalPreferenceStore, MikuServices, PodLogService, ResourceList, ResourceQuery,
+    ClusterRegistry, ClusterSummary, CreateClusterRequest, KubernetesResourceReader,
+    KubernetesWatchService, LocalPreferenceStore, MikuServices, PodLogService, ResourceList,
+    ResourceQuery,
 };
 use url::Url;
 
@@ -12,9 +13,11 @@ pub struct HttpMikuClient {
 }
 
 impl HttpMikuClient {
+    #[tracing::instrument(name = "http_client.new")]
     pub fn new(base_url: &str) -> miku_core::Result<Self> {
         let base_url = Url::parse(base_url)
             .map_err(|error| miku_core::MikuError::Config(error.to_string()))?;
+        tracing::debug!(%base_url, "created HTTP Miku client");
         Ok(Self {
             base_url,
             client: reqwest::Client::new(),
@@ -31,9 +34,31 @@ impl HttpMikuClient {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl ClusterRegistry for HttpMikuClient {
+    #[tracing::instrument(name = "http_client.list_clusters", skip(self))]
     async fn list_clusters(&self) -> miku_core::Result<Vec<ClusterSummary>> {
+        let endpoint = self.endpoint("/api/clusters");
+        tracing::debug!(url = %endpoint, "requesting clusters");
         self.client
-            .get(self.endpoint("/api/clusters"))
+            .get(endpoint)
+            .send()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .json()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))
+    }
+
+    #[tracing::instrument(name = "http_client.create_cluster", skip(self, request), fields(context = %request.context))]
+    async fn create_cluster(
+        &self,
+        request: CreateClusterRequest,
+    ) -> miku_core::Result<ClusterSummary> {
+        let endpoint = self.endpoint("/api/clusters");
+        self.client
+            .post(endpoint)
+            .json(&request)
             .send()
             .await
             .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
@@ -87,6 +112,16 @@ mod tests {
 
     #[test]
     fn builds_endpoint_urls_from_base_url() {
+        let client = HttpMikuClient::new("http://127.0.0.1:5174").unwrap();
+
+        assert_eq!(
+            client.endpoint("/api/clusters").as_str(),
+            "http://127.0.0.1:5174/api/clusters"
+        );
+    }
+
+    #[test]
+    fn create_cluster_uses_cluster_collection_endpoint() {
         let client = HttpMikuClient::new("http://127.0.0.1:5174").unwrap();
 
         assert_eq!(

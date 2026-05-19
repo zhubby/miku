@@ -6,7 +6,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use miku_api::{ClusterSummary, MikuServices};
+use miku_api::{ClusterSummary, CreateClusterRequest, MikuServices};
 use serde::Serialize;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
@@ -31,6 +31,7 @@ impl IntoResponse for ServerError {
             miku_core::MikuError::Config(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
+        tracing::error!(status = %status, error = %self.0, "request failed");
         (
             status,
             Json(serde_json::json!({"error": self.0.to_string()})),
@@ -48,7 +49,7 @@ struct HealthPayload {
 pub fn router(services: SharedServices) -> Router {
     Router::new()
         .route("/health", get(health))
-        .route("/api/clusters", get(list_clusters))
+        .route("/api/clusters", get(list_clusters).post(create_cluster))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(services)
@@ -58,21 +59,21 @@ pub async fn serve(
     bind: impl AsRef<str>,
     services: impl MikuServices + 'static,
 ) -> miku_core::Result<()> {
-    let address: SocketAddr =
-        bind.as_ref()
-            .parse()
-            .map_err(|error: std::net::AddrParseError| {
-                miku_core::MikuError::Config(error.to_string())
-            })?;
+    let bind = bind.as_ref();
+    let address: SocketAddr = bind.parse().map_err(|error: std::net::AddrParseError| {
+        miku_core::MikuError::Config(error.to_string())
+    })?;
     let listener = TcpListener::bind(address)
         .await
         .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?;
+    tracing::info!(%address, "server listening");
 
     axum::serve(listener, router(Arc::new(services)))
         .await
         .map_err(|error| miku_core::MikuError::Transport(error.to_string()))
 }
 
+#[tracing::instrument(name = "http.health")]
 async fn health() -> Json<HealthPayload> {
     Json(HealthPayload {
         service: "miku-server",
@@ -80,10 +81,21 @@ async fn health() -> Json<HealthPayload> {
     })
 }
 
+#[tracing::instrument(name = "http.list_clusters", skip(services))]
 async fn list_clusters(
     State(services): State<SharedServices>,
 ) -> ServerResult<Json<Vec<ClusterSummary>>> {
-    Ok(Json(services.list_clusters().await?))
+    let clusters = services.list_clusters().await?;
+    tracing::debug!(count = clusters.len(), "listed clusters");
+    Ok(Json(clusters))
+}
+
+#[tracing::instrument(name = "http.create_cluster", skip(services, request), fields(context = %request.context))]
+async fn create_cluster(
+    State(services): State<SharedServices>,
+    Json(request): Json<CreateClusterRequest>,
+) -> ServerResult<Json<ClusterSummary>> {
+    Ok(Json(services.create_cluster(request).await?))
 }
 
 #[cfg(test)]
@@ -135,6 +147,34 @@ mod tests {
         assert_eq!(payload[0]["name"], "local");
     }
 
+    #[tokio::test]
+    async fn create_cluster_route_serializes_trait_result() {
+        let response = router(std::sync::Arc::new(DummyServices))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/clusters")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "context": "kind-miku",
+                            "config": "apiVersion: v1"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload = serde_json::from_slice::<serde_json::Value>(&body).unwrap();
+        assert_eq!(payload["context"], "kind-miku");
+        assert!(payload.get("config").is_none());
+    }
+
     struct DummyServices;
 
     #[async_trait::async_trait]
@@ -146,6 +186,18 @@ mod tests {
                 context: "kind-miku".to_owned(),
                 current: true,
             }])
+        }
+
+        async fn create_cluster(
+            &self,
+            request: CreateClusterRequest,
+        ) -> miku_core::Result<ClusterSummary> {
+            Ok(ClusterSummary {
+                id: ClusterId::new(request.context.clone()),
+                name: request.context.clone(),
+                context: request.context,
+                current: false,
+            })
         }
     }
 

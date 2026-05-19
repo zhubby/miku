@@ -32,6 +32,12 @@ pub struct ClusterSummary {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CreateClusterRequest {
+    pub context: String,
+    pub config: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ResourceQuery {
     pub cluster_id: ClusterId,
     pub resource: ResourceRef,
@@ -111,6 +117,11 @@ pub struct LogLine {
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait ClusterRegistry: ServiceBounds {
     async fn list_clusters(&self) -> miku_core::Result<Vec<ClusterSummary>>;
+
+    async fn create_cluster(
+        &self,
+        request: CreateClusterRequest,
+    ) -> miku_core::Result<ClusterSummary>;
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -185,6 +196,19 @@ mod tests {
     use miku_core::{ClusterId, ResourceRef};
 
     #[test]
+    fn create_cluster_request_round_trips_as_json() {
+        let request = CreateClusterRequest {
+            context: "kind-miku".to_owned(),
+            config: "apiVersion: v1".to_owned(),
+        };
+
+        let serialized = serde_json::to_string(&request).unwrap();
+        let deserialized = serde_json::from_str::<CreateClusterRequest>(&serialized).unwrap();
+
+        assert_eq!(deserialized, request);
+    }
+
+    #[test]
     fn resource_query_defaults_to_no_namespace_or_selector() {
         let query = ResourceQuery::new(ClusterId::new("local"), ResourceRef::core("v1", "pods"));
 
@@ -204,6 +228,18 @@ mod tests {
         impl ClusterRegistry for Dummy {
             async fn list_clusters(&self) -> miku_core::Result<Vec<ClusterSummary>> {
                 Ok(Vec::new())
+            }
+
+            async fn create_cluster(
+                &self,
+                request: CreateClusterRequest,
+            ) -> miku_core::Result<ClusterSummary> {
+                Ok(ClusterSummary {
+                    id: ClusterId::new(request.context.clone()),
+                    name: request.context.clone(),
+                    context: request.context,
+                    current: false,
+                })
             }
         }
 
