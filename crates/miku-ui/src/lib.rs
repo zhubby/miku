@@ -44,26 +44,58 @@ pub fn app_title(runtime_mode: RuntimeMode) -> &'static str {
     }
 }
 
+pub fn install_icon_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    ctx.set_fonts(fonts);
+}
+
+fn dock_region_frame(ui: &egui::Ui) -> egui::Frame {
+    egui::Frame::new()
+        .inner_margin(egui::Margin::same(4))
+        .outer_margin(egui::Margin::same(2))
+        .corner_radius(egui::CornerRadius::same(2))
+        .fill(ui.visuals().panel_fill)
+        .stroke(egui::Stroke::new(
+            1.0,
+            ui.visuals().widgets.inactive.bg_stroke.color,
+        ))
+}
+
+fn show_dock_region<R>(
+    ui: &mut egui::Ui,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    ui.painter().rect_filled(
+        ui.max_rect(),
+        egui::CornerRadius::ZERO,
+        ui.visuals().panel_fill,
+    );
+    dock_region_frame(ui).show(ui, add_contents)
+}
+
 #[derive(Debug)]
 pub struct MikuApp {
     state: AppState,
     left_dock_state: DockState<AppTab>,
     center_dock_state: DockState<AppTab>,
     right_dock_state: DockState<AppTab>,
+    next_inspector_id: usize,
 }
 
 impl MikuApp {
     pub fn new(runtime_mode: RuntimeMode) -> Self {
         let left_dock_state = DockState::new(vec![AppTab::Clusters]);
-        let right_dock_state = DockState::new(vec![AppTab::Inspector]);
+        let right_dock_state = DockState::new(vec![AppTab::Inspector(1)]);
 
-        let center_dock_state = DockState::new(vec![AppTab::Workspace]);
+        let center_dock_state = DockState::new(vec![AppTab::Workspace(1)]);
 
         Self {
             state: AppState::new(runtime_mode),
             left_dock_state,
             center_dock_state,
             right_dock_state,
+            next_inspector_id: 2,
         }
     }
 
@@ -83,12 +115,16 @@ impl MikuApp {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum AppTab {
     Clusters,
-    Workspace,
-    Inspector,
+    Workspace(usize),
+    Inspector(usize),
 }
 
 struct AppTabViewer<'a> {
     state: &'a AppState,
+    closeable: bool,
+    allow_windows: bool,
+    add_tab: Option<AppTab>,
+    add_requested: bool,
 }
 
 impl TabViewer for AppTabViewer<'_> {
@@ -97,8 +133,10 @@ impl TabViewer for AppTabViewer<'_> {
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
         match tab {
             AppTab::Clusters => "Clusters",
-            AppTab::Workspace => "Workspace",
-            AppTab::Inspector => "Inspector",
+            AppTab::Workspace(1) => "Workspace",
+            AppTab::Workspace(id) => return format!("Workspace {id}").into(),
+            AppTab::Inspector(1) => "Inspector",
+            AppTab::Inspector(id) => return format!("Inspector {id}").into(),
         }
         .into()
     }
@@ -110,13 +148,13 @@ impl TabViewer for AppTabViewer<'_> {
                 ui.separator();
                 ui.label("No clusters loaded yet.");
             }
-            AppTab::Workspace => {
+            AppTab::Workspace(_) => {
                 ui.heading("Kubernetes workspace");
                 ui.label("Select a cluster to inspect namespaces, workloads, services, and logs.");
                 ui.separator();
                 ui.label(self.state.status_message());
             }
-            AppTab::Inspector => {
+            AppTab::Inspector(_) => {
                 ui.heading("Inspector");
                 ui.separator();
                 ui.label("Select a resource to inspect details.");
@@ -124,35 +162,32 @@ impl TabViewer for AppTabViewer<'_> {
         }
     }
 
-    fn is_closeable(&self, _tab: &Self::Tab) -> bool {
-        false
+    fn is_closeable(&self, tab: &Self::Tab) -> bool {
+        self.closeable && !matches!(tab, AppTab::Clusters)
+    }
+
+    fn on_add(&mut self, _path: egui_dock::NodePath) {
+        self.add_requested = self.add_tab.is_some();
     }
 
     fn allowed_in_windows(&self, _tab: &mut Self::Tab) -> bool {
-        false
+        self.allow_windows
     }
 }
 
 impl eframe::App for MikuApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::Panel::top("menu_bar")
-            .exact_size(32.0)
-            .show_inside(ui, |ui| {
-                egui::MenuBar::new().ui(ui, |ui| {
-                    self.show_menu_bar(ui);
-                });
+        egui::Panel::top("menu_bar").show_inside(ui, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                self.show_menu_bar(ui);
             });
+        });
 
         egui::Panel::bottom("status_bar")
             .exact_size(24.0)
             .show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(self.state.status_message());
-                    ui.separator();
-                    ui.label(match self.state.runtime_mode {
-                        RuntimeMode::Native => "Native",
-                        RuntimeMode::Web => "Web",
-                    });
                 });
             });
 
@@ -162,52 +197,86 @@ impl eframe::App for MikuApp {
             .resizable(true)
             .default_size(220.0)
             .size_range(160.0..=360.0)
+            .frame(egui::Frame::NONE)
             .show_inside(ui, |ui| {
-                let mut tab_viewer = AppTabViewer { state: &self.state };
+                let mut tab_viewer = AppTabViewer {
+                    state: &self.state,
+                    closeable: false,
+                    allow_windows: false,
+                    add_tab: None,
+                    add_requested: false,
+                };
 
-                DockArea::new(&mut self.left_dock_state)
-                    .id(egui::Id::new("left_sidebar_dock"))
-                    .style(dock_style.clone())
-                    .show_close_buttons(false)
-                    .show_leaf_close_all_buttons(false)
-                    .show_leaf_collapse_buttons(false)
-                    .show_inside(ui, &mut tab_viewer);
+                show_dock_region(ui, |ui| {
+                    DockArea::new(&mut self.left_dock_state)
+                        .id(egui::Id::new("left_sidebar_dock"))
+                        .style(dock_style.clone())
+                        .draggable_tabs(false)
+                        .show_close_buttons(false)
+                        .show_leaf_close_all_buttons(false)
+                        .show_leaf_collapse_buttons(false)
+                        .show_inside(ui, &mut tab_viewer);
+                });
             });
 
         egui::Panel::right("right_sidebar")
             .resizable(true)
             .default_size(260.0)
             .size_range(180.0..=420.0)
+            .frame(egui::Frame::NONE)
             .show_inside(ui, |ui| {
-                let mut tab_viewer = AppTabViewer { state: &self.state };
+                let mut tab_viewer = AppTabViewer {
+                    state: &self.state,
+                    closeable: true,
+                    allow_windows: false,
+                    add_tab: Some(AppTab::Inspector(self.next_inspector_id)),
+                    add_requested: false,
+                };
 
-                DockArea::new(&mut self.right_dock_state)
-                    .id(egui::Id::new("right_sidebar_dock"))
-                    .style(dock_style.clone())
-                    .show_close_buttons(false)
+                show_dock_region(ui, |ui| {
+                    DockArea::new(&mut self.right_dock_state)
+                        .id(egui::Id::new("right_sidebar_dock"))
+                        .style(dock_style.clone())
+                        .draggable_tabs(false)
+                        .show_add_buttons(true)
+                        .show_close_buttons(true)
+                        .show_leaf_close_all_buttons(false)
+                        .show_leaf_collapse_buttons(false)
+                        .show_inside(ui, &mut tab_viewer);
+                });
+
+                if tab_viewer.add_requested {
+                    self.right_dock_state
+                        .push_to_focused_leaf(AppTab::Inspector(self.next_inspector_id));
+                    self.next_inspector_id += 1;
+                }
+            });
+
+        egui::CentralPanel::no_frame().show_inside(ui, |ui| {
+            let mut tab_viewer = AppTabViewer {
+                state: &self.state,
+                closeable: true,
+                allow_windows: true,
+                add_tab: None,
+                add_requested: false,
+            };
+
+            show_dock_region(ui, |ui| {
+                DockArea::new(&mut self.center_dock_state)
+                    .id(egui::Id::new("center_workspace_dock"))
+                    .style(dock_style)
+                    .draggable_tabs(true)
+                    .show_close_buttons(true)
                     .show_leaf_close_all_buttons(false)
                     .show_leaf_collapse_buttons(false)
                     .show_inside(ui, &mut tab_viewer);
             });
-
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            let mut tab_viewer = AppTabViewer { state: &self.state };
-
-            DockArea::new(&mut self.center_dock_state)
-                .id(egui::Id::new("center_workspace_dock"))
-                .style(dock_style)
-                .show_close_buttons(false)
-                .show_leaf_close_all_buttons(false)
-                .show_leaf_collapse_buttons(false)
-                .show_inside(ui, &mut tab_viewer);
         });
     }
 }
 
 impl MikuApp {
     fn show_menu_bar(&self, ui: &mut egui::Ui) {
-        ui.heading("Miku");
-
         ui.menu_button("File", |ui| {
             if ui.button("Quit").clicked() {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -220,10 +289,6 @@ impl MikuApp {
         });
 
         ui.add_space(8.0);
-        ui.label(match self.state.runtime_mode {
-            RuntimeMode::Native => "Native",
-            RuntimeMode::Web => "Web",
-        });
 
         let drag_response = ui.interact(
             ui.available_rect_before_wrap(),
@@ -235,11 +300,19 @@ impl MikuApp {
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("x").clicked() {
+            if ui
+                .button(egui_phosphor::regular::X)
+                .on_hover_text("Close")
+                .clicked()
+            {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
 
-            if ui.button("□").clicked() {
+            if ui
+                .button(egui_phosphor::regular::SQUARE)
+                .on_hover_text("Maximize")
+                .clicked()
+            {
                 let maximized = ui
                     .ctx()
                     .input(|input| input.viewport().maximized.unwrap_or(false));
@@ -247,7 +320,11 @@ impl MikuApp {
                     .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
             }
 
-            if ui.button("-").clicked() {
+            if ui
+                .button(egui_phosphor::regular::MINUS)
+                .on_hover_text("Minimize")
+                .clicked()
+            {
                 ui.ctx()
                     .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             }
@@ -268,7 +345,10 @@ pub fn run_native_app() -> eframe::Result {
     eframe::run_native(
         app_title(RuntimeMode::Native),
         options,
-        Box::new(|_cc| Ok(Box::new(MikuApp::native()))),
+        Box::new(|cc| {
+            install_icon_fonts(&cc.egui_ctx);
+            Ok(Box::new(MikuApp::native()))
+        }),
     )
 }
 
