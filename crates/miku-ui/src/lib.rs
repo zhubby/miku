@@ -8,6 +8,8 @@ mod forms;
 mod menu;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
+mod resource_panel;
+mod resources;
 mod state;
 mod tabs;
 

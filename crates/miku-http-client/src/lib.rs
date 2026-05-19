@@ -73,10 +73,20 @@ impl ClusterRegistry for HttpMikuClient {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl KubernetesResourceReader for HttpMikuClient {
-    async fn list_resources(&self, _query: ResourceQuery) -> miku_core::Result<ResourceList> {
-        Err(miku_core::MikuError::UnsupportedRuntime(
-            "HTTP resource listing is not wired yet".to_owned(),
-        ))
+    #[tracing::instrument(name = "http_client.list_resources", skip(self, query), fields(resource = %query.resource.plural))]
+    async fn list_resources(&self, query: ResourceQuery) -> miku_core::Result<ResourceList> {
+        let endpoint = self.endpoint("/api/resources/list");
+        self.client
+            .post(endpoint)
+            .json(&query)
+            .send()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .json()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))
     }
 }
 
@@ -127,6 +137,16 @@ mod tests {
         assert_eq!(
             client.endpoint("/api/clusters").as_str(),
             "http://127.0.0.1:5174/api/clusters"
+        );
+    }
+
+    #[test]
+    fn list_resources_uses_resource_list_endpoint() {
+        let client = HttpMikuClient::new("http://127.0.0.1:5174").unwrap();
+
+        assert_eq!(
+            client.endpoint("/api/resources/list").as_str(),
+            "http://127.0.0.1:5174/api/resources/list"
         );
     }
 }

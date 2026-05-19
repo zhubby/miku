@@ -11,8 +11,13 @@ impl MigratorTrait for Migrator {
     }
 }
 
-#[derive(DeriveMigrationName)]
 struct CreateInitialTables;
+
+impl MigrationName for CreateInitialTables {
+    fn name(&self) -> &str {
+        "lib"
+    }
+}
 
 #[async_trait::async_trait]
 impl MigrationTrait for CreateInitialTables {

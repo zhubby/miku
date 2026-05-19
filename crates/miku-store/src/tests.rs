@@ -243,6 +243,69 @@ async fn migrator_accepts_existing_legacy_clusters_table() {
 }
 
 #[tokio::test]
+async fn migrator_accepts_pre_split_lib_migration_version() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = StorePaths::from_root(temp.path().join(".miku"));
+    fs::create_dir_all(paths.root()).unwrap();
+
+    let database = Database::connect(sqlite_url(&paths.database_path()))
+        .await
+        .unwrap();
+    database
+        .execute(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "create table seaql_migrations (
+                version varchar not null primary key,
+                applied_at bigint not null
+            )",
+        ))
+        .await
+        .unwrap();
+    database
+        .execute(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "insert into seaql_migrations (version, applied_at) values ('lib', 0)",
+        ))
+        .await
+        .unwrap();
+    database
+        .execute(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "create table preferences (
+                key text primary key,
+                value text not null,
+                updated_at integer not null default 0
+            )",
+        ))
+        .await
+        .unwrap();
+    database
+        .execute(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "create table clusters (
+                id text primary key,
+                name text not null,
+                kube_context text not null,
+                kubeconfig_path text not null default '',
+                config text not null default '',
+                default_namespace text,
+                last_used_at integer,
+                created_at integer not null default 0,
+                updated_at integer not null default 0
+            )",
+        ))
+        .await
+        .unwrap();
+    drop(database);
+
+    let store = SqliteStore::initialize(paths).await.unwrap();
+    store
+        .set_preference("ui.theme", serde_json::json!("dark"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn migrator_creates_config_column() {
     let temp = tempfile::tempdir().unwrap();
     let store = SqliteStore::initialize(StorePaths::from_root(temp.path().join(".miku")))

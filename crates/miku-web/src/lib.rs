@@ -28,7 +28,11 @@ impl WebHandle {
                 eframe::WebOptions::default(),
                 Box::new(|cc| {
                     miku_ui::install_fonts(&cc.egui_ctx);
-                    Ok(Box::new(miku_ui::MikuApp::web()))
+                    let app = web_app().unwrap_or_else(|error| {
+                        tracing::warn!(%error, "starting web app without HTTP services");
+                        miku_ui::MikuApp::web()
+                    });
+                    Ok(Box::new(app))
                 }),
             )
             .await
@@ -44,4 +48,18 @@ impl WebHandle {
     pub fn has_panicked(&self) -> bool {
         self.runner.has_panicked()
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_app() -> Result<miku_ui::MikuApp, String> {
+    let window = web_sys::window().ok_or_else(|| "browser window is not available".to_owned())?;
+    let origin = window
+        .location()
+        .origin()
+        .map_err(|error| format!("failed to read browser origin: {error:?}"))?;
+    let client =
+        miku_http_client::HttpMikuClient::new(&origin).map_err(|error| error.to_string())?;
+    Ok(miku_ui::MikuApp::web_with_services(std::sync::Arc::new(
+        client,
+    )))
 }

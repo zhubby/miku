@@ -1,3 +1,5 @@
+use crate::resources::ResourceNavItem;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeMode {
     Native,
@@ -8,6 +10,7 @@ pub enum RuntimeMode {
 pub struct AppState {
     runtime_mode: RuntimeMode,
     selected_cluster_name: Option<String>,
+    selected_resource: Option<ResourceNavItem>,
 }
 
 impl AppState {
@@ -15,6 +18,7 @@ impl AppState {
         Self {
             runtime_mode,
             selected_cluster_name: None,
+            selected_resource: None,
         }
     }
 
@@ -24,6 +28,18 @@ impl AppState {
 
     pub fn selected_cluster_name(&self) -> Option<&str> {
         self.selected_cluster_name.as_deref()
+    }
+
+    pub(crate) fn select_cluster(&mut self, name: impl Into<String>) {
+        self.selected_cluster_name = Some(name.into());
+    }
+
+    pub(crate) fn selected_resource(&self) -> Option<ResourceNavItem> {
+        self.selected_resource
+    }
+
+    pub(crate) fn select_resource(&mut self, resource: ResourceNavItem) {
+        self.selected_resource = Some(resource);
     }
 
     pub fn status_message(&self) -> &str {
@@ -52,6 +68,26 @@ mod tests {
         assert_eq!(state.runtime_mode(), RuntimeMode::Native);
         assert_eq!(state.selected_cluster_name(), None);
         assert_eq!(state.status_message(), "No cluster selected");
+    }
+
+    #[test]
+    fn app_state_tracks_selected_cluster() {
+        let mut state = AppState::new(RuntimeMode::Native);
+
+        state.select_cluster("kind-miku");
+
+        assert_eq!(state.selected_cluster_name(), Some("kind-miku"));
+        assert_eq!(state.status_message(), "Connected");
+    }
+
+    #[test]
+    fn app_state_tracks_selected_resource() {
+        let mut state = AppState::new(RuntimeMode::Native);
+        let resource = ResourceNavItem { name: "Pods" };
+
+        state.select_resource(resource);
+
+        assert_eq!(state.selected_resource(), Some(resource));
     }
 
     #[test]

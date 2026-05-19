@@ -2,12 +2,16 @@ use eframe::egui;
 use egui_dock::TabViewer;
 use miku_api::ClusterSummary;
 
+use crate::resource_panel::{PodResourcePanel, ResourceLoadRequest};
+use crate::resources::{RESOURCE_CATEGORIES, ResourceNavItem};
 use crate::state::AppState;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum AppTab {
     Clusters,
+    Resources,
     Workspace(usize),
+    Resource(ResourceNavItem),
     Inspector(usize),
 }
 
@@ -21,6 +25,11 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) add_tab: Option<AppTab>,
     pub(crate) add_requested: bool,
     pub(crate) new_cluster_requested: bool,
+    pub(crate) selected_cluster_name: Option<String>,
+    pub(crate) selected_resource: Option<ResourceNavItem>,
+    pub(crate) selected_cluster_id: Option<miku_core::ClusterId>,
+    pub(crate) pod_resource_panel: Option<&'a mut PodResourcePanel>,
+    pub(crate) resource_load_requests: Vec<ResourceLoadRequest>,
 }
 
 impl TabViewer for AppTabViewer<'_> {
@@ -29,8 +38,10 @@ impl TabViewer for AppTabViewer<'_> {
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
         match tab {
             AppTab::Clusters => "Clusters",
+            AppTab::Resources => "Resources",
             AppTab::Workspace(1) => "Workspace",
             AppTab::Workspace(id) => return format!("Workspace {id}").into(),
+            AppTab::Resource(resource) => return resource.name.into(),
             AppTab::Inspector(1) => "Inspector",
             AppTab::Inspector(id) => return format!("Inspector {id}").into(),
         }
@@ -40,8 +51,6 @@ impl TabViewer for AppTabViewer<'_> {
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
         match tab {
             AppTab::Clusters => {
-                ui.heading("Clusters");
-                ui.separator();
                 if ui
                     .add_sized(
                         [ui.available_width(), 30.0],
@@ -61,16 +70,32 @@ impl TabViewer for AppTabViewer<'_> {
                     ui.label("No clusters loaded yet.");
                 } else {
                     for cluster in self.clusters {
-                        ui.label(&cluster.name)
-                            .on_hover_text(format!("Context: {}", cluster.context));
+                        self.show_cluster_row(ui, cluster);
                     }
                 }
             }
+            AppTab::Resources => self.show_resources(ui),
             AppTab::Workspace(_) => {
                 ui.heading("Kubernetes workspace");
                 ui.label("Select a cluster to inspect namespaces, workloads, services, and logs.");
                 ui.separator();
                 ui.label(self.state.status_message());
+            }
+            AppTab::Resource(resource) => {
+                if resource.name == "Pods" {
+                    if let Some(panel) = self.pod_resource_panel.as_deref_mut() {
+                        self.resource_load_requests
+                            .extend(panel.show(ui, self.selected_cluster_id.as_ref()));
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("Pod resource panel is unavailable.");
+                        });
+                    }
+                } else {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(format!("{} panel is not implemented yet.", resource.name));
+                    });
+                }
             }
             AppTab::Inspector(_) => {
                 ui.heading("Inspector");
@@ -90,5 +115,49 @@ impl TabViewer for AppTabViewer<'_> {
 
     fn allowed_in_windows(&self, _tab: &mut Self::Tab) -> bool {
         self.allow_windows
+    }
+}
+
+impl AppTabViewer<'_> {
+    fn show_cluster_row(&mut self, ui: &mut egui::Ui, cluster: &ClusterSummary) {
+        let selected = self.state.selected_cluster_name() == Some(cluster.name.as_str());
+        let response = ui.selectable_label(selected, &cluster.name);
+
+        if response.clicked() || response.double_clicked() {
+            self.selected_cluster_name = Some(cluster.name.clone());
+        }
+
+        if response.secondary_clicked() {
+            self.selected_cluster_name = Some(cluster.name.clone());
+        }
+
+        response.context_menu(|ui| {
+            if ui.button("Select").clicked() {
+                self.selected_cluster_name = Some(cluster.name.clone());
+                ui.close();
+            }
+        });
+    }
+
+    fn show_resources(&mut self, ui: &mut egui::Ui) {
+        for category in RESOURCE_CATEGORIES {
+            ui.horizontal(|ui| {
+                let text_color = ui.visuals().weak_text_color();
+                ui.label(egui::RichText::new(category.icon).color(text_color));
+                ui.label(
+                    egui::RichText::new(category.name)
+                        .color(text_color)
+                        .strong(),
+                );
+            });
+
+            for resource in category.items {
+                let selected = self.state.selected_resource() == Some(*resource);
+                let response = ui.selectable_label(selected, resource.name);
+                if response.clicked() {
+                    self.selected_resource = Some(*resource);
+                }
+            }
+        }
     }
 }

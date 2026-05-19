@@ -4,9 +4,9 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
-use miku_api::{ClusterSummary, CreateClusterRequest, MikuServices};
+use miku_api::{ClusterSummary, CreateClusterRequest, MikuServices, ResourceList, ResourceQuery};
 use serde::Serialize;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
@@ -50,6 +50,7 @@ pub fn router(services: SharedServices) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/clusters", get(list_clusters).post(create_cluster))
+        .route("/api/resources/list", post(list_resources))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(services)
@@ -96,6 +97,16 @@ async fn create_cluster(
     Json(request): Json<CreateClusterRequest>,
 ) -> ServerResult<Json<ClusterSummary>> {
     Ok(Json(services.create_cluster(request).await?))
+}
+
+#[tracing::instrument(name = "http.list_resources", skip(services, query), fields(resource = %query.resource.plural))]
+async fn list_resources(
+    State(services): State<SharedServices>,
+    Json(query): Json<ResourceQuery>,
+) -> ServerResult<Json<ResourceList>> {
+    let resources = services.list_resources(query).await?;
+    tracing::debug!(count = resources.items.len(), "listed resources");
+    Ok(Json(resources))
 }
 
 #[cfg(test)]
@@ -175,6 +186,34 @@ mod tests {
         assert!(payload.get("config").is_none());
     }
 
+    #[tokio::test]
+    async fn resource_list_route_serializes_trait_result() {
+        let response = router(std::sync::Arc::new(DummyServices))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/resources/list")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&ResourceQuery::new(
+                            ClusterId::new("local"),
+                            miku_core::ResourceRef::core("v1", "pods"),
+                        ))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload = serde_json::from_slice::<serde_json::Value>(&body).unwrap();
+        assert_eq!(payload["items"][0]["name"], "api");
+        assert_eq!(payload["items"][0]["kind"], "Pod");
+    }
+
     struct DummyServices;
 
     #[async_trait::async_trait]
@@ -203,8 +242,18 @@ mod tests {
 
     #[async_trait::async_trait]
     impl KubernetesResourceReader for DummyServices {
-        async fn list_resources(&self, _query: ResourceQuery) -> miku_core::Result<ResourceList> {
-            Ok(ResourceList::default())
+        async fn list_resources(&self, query: ResourceQuery) -> miku_core::Result<ResourceList> {
+            assert_eq!(query.resource.plural, "pods");
+            Ok(ResourceList {
+                items: vec![ResourceSummary {
+                    name: "api".to_owned(),
+                    namespace: Some("default".to_owned()),
+                    kind: "Pod".to_owned(),
+                    status: Some("Running".to_owned()),
+                    raw: serde_json::json!({}),
+                }],
+                continue_token: None,
+            })
         }
     }
 
