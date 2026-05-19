@@ -27,7 +27,7 @@ impl WebHandle {
                 canvas,
                 eframe::WebOptions::default(),
                 Box::new(|cc| {
-                    miku_ui::install_icon_fonts(&cc.egui_ctx);
+                    miku_ui::install_fonts(&cc.egui_ctx);
                     Ok(Box::new(miku_ui::MikuApp::web()))
                 }),
             )
