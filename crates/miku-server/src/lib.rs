@@ -3,12 +3,14 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use futures::{Stream, StreamExt};
 use miku_api::{
-    ClusterSummary, CreateClusterRequest, MikuServices, ResourceApplyRequest,
-    ResourceDeleteRequest, ResourceList, ResourceQuery, ResourceSummary,
+    ClusterSummary, CreateClusterRequest, MikuServices, PodEvictRequest, PodLogQuery,
+    ResourceApplyRequest, ResourceDeleteRequest, ResourceList, ResourceQuery, ResourceSummary,
 };
 use serde::Serialize;
 use tokio::net::TcpListener;
@@ -56,6 +58,9 @@ pub fn router(services: SharedServices) -> Router {
         .route("/api/resources/list", post(list_resources))
         .route("/api/resources/apply", post(apply_resource))
         .route("/api/resources/delete", post(delete_resource))
+        .route("/api/pods/evict", post(evict_pod))
+        .route("/api/pods/logs", post(read_pod_logs))
+        .route("/api/pods/logs/stream", post(stream_pod_logs))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(services)
@@ -129,6 +134,41 @@ async fn delete_resource(
 ) -> ServerResult<StatusCode> {
     services.delete_resource(request).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[tracing::instrument(name = "http.evict_pod", skip(services, request), fields(namespace = %request.namespace, pod = %request.pod))]
+async fn evict_pod(
+    State(services): State<SharedServices>,
+    Json(request): Json<PodEvictRequest>,
+) -> ServerResult<StatusCode> {
+    services.evict_pod(request).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[tracing::instrument(name = "http.read_pod_logs", skip(services, query), fields(namespace = %query.namespace, pod = %query.pod))]
+async fn read_pod_logs(
+    State(services): State<SharedServices>,
+    Json(query): Json<PodLogQuery>,
+) -> ServerResult<Json<Vec<miku_api::LogLine>>> {
+    Ok(Json(services.read_logs(query).await?))
+}
+
+#[tracing::instrument(name = "http.stream_pod_logs", skip(services, query), fields(namespace = %query.namespace, pod = %query.pod))]
+async fn stream_pod_logs(
+    State(services): State<SharedServices>,
+    Json(query): Json<PodLogQuery>,
+) -> ServerResult<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>> {
+    let stream = services.stream_logs(query).await?.map(|result| {
+        let event = match result {
+            Ok(line) => Event::default()
+                .json_data(line)
+                .unwrap_or_else(|error| Event::default().event("error").data(error.to_string())),
+            Err(error) => Event::default().event("error").data(error.to_string()),
+        };
+        Ok(event)
+    });
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 #[cfg(test)]
@@ -294,6 +334,60 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 
+    #[tokio::test]
+    async fn pod_evict_route_returns_no_content() {
+        let response = router(std::sync::Arc::new(DummyServices))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/pods/evict")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&PodEvictRequest {
+                            cluster_id: ClusterId::new("local"),
+                            namespace: "default".to_owned(),
+                            pod: "api".to_owned(),
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn pod_logs_route_serializes_log_lines() {
+        let response = router(std::sync::Arc::new(DummyServices))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/pods/logs")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&PodLogQuery {
+                            cluster_id: ClusterId::new("local"),
+                            namespace: "default".to_owned(),
+                            pod: "api".to_owned(),
+                            container: Some("server".to_owned()),
+                            tail_lines: Some(100),
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload = serde_json::from_slice::<serde_json::Value>(&body).unwrap();
+        assert_eq!(payload[0]["text"], "api started");
+    }
+
     struct DummyServices;
 
     #[async_trait::async_trait]
@@ -355,13 +449,23 @@ mod tests {
         async fn delete_resource(&self, _request: ResourceDeleteRequest) -> miku_core::Result<()> {
             Ok(())
         }
+
+        async fn evict_pod(&self, _request: PodEvictRequest) -> miku_core::Result<()> {
+            Ok(())
+        }
     }
 
     #[async_trait::async_trait]
     impl KubernetesWatchService for DummyServices {}
 
     #[async_trait::async_trait]
-    impl PodLogService for DummyServices {}
+    impl PodLogService for DummyServices {
+        async fn read_logs(&self, _query: PodLogQuery) -> miku_core::Result<Vec<LogLine>> {
+            Ok(vec![LogLine {
+                text: "api started".to_owned(),
+            }])
+        }
+    }
 
     #[async_trait::async_trait]
     impl LocalPreferenceStore for DummyServices {

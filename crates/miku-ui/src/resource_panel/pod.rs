@@ -2,13 +2,14 @@ use std::collections::BTreeSet;
 
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
-use miku_api::ResourceSummary;
+use miku_api::{LogLine, ResourceSummary};
 use miku_core::ClusterId;
 
 use super::components::{ResourceToolbar, ResourceYamlEditDialog, ResourceYamlViewDialog};
 use super::{
-    LoadStatus, ResourceActionKind, ResourceActionOutcome, ResourceActionRequest, ResourceLoadKind,
-    ResourceLoadRequest, ResourcePanelRequests, ResourceUiEvent, namespaces_from_list,
+    LoadStatus, PodLogRequest, ResourceActionKind, ResourceActionOutcome, ResourceActionRequest,
+    ResourceLoadKind, ResourceLoadRequest, ResourcePanelRequests, ResourceUiEvent,
+    namespaces_from_list,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -24,10 +25,13 @@ pub(crate) struct PodResourcePanel {
     namespace_request_id: Option<u64>,
     row_request_id: Option<u64>,
     action_request_id: Option<u64>,
+    log_request_id: Option<u64>,
     last_cluster_id: Option<ClusterId>,
     view_dialog: Option<PodViewDialog>,
     edit_dialog: Option<PodEditDialog>,
     delete_dialog: Option<PodDeleteDialog>,
+    evict_dialog: Option<PodEvictDialog>,
+    log_dialog: Option<PodLogDialog>,
     action_error: Option<String>,
     refresh_after_action: bool,
 }
@@ -66,6 +70,8 @@ impl PodResourcePanel {
         self.show_view_dialog(ui.ctx());
         self.show_edit_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
+        self.show_evict_dialog(ui.ctx(), cluster_id, &mut requests.actions);
+        self.show_log_dialog(ui.ctx(), cluster_id, &mut requests.logs);
 
         requests
     }
@@ -121,7 +127,31 @@ impl PodResourcePanel {
                         self.action_error = None;
                         self.refresh_after_action = true;
                     }
+                    Ok(ResourceActionOutcome::Evicted) => {
+                        self.evict_dialog = None;
+                        self.action_error = None;
+                        self.refresh_after_action = true;
+                    }
                     Err(error) => self.action_error = Some(error),
+                }
+            }
+            ResourceUiEvent::PodLogsLoaded { request, result } => {
+                if self.log_request_id != Some(request.request_id) {
+                    return;
+                }
+                self.log_request_id = None;
+                if let Some(dialog) = self.log_dialog.as_mut() {
+                    match result {
+                        Ok(lines) => {
+                            dialog.lines = lines;
+                            dialog.status = LoadStatus::Loaded;
+                            dialog.error = None;
+                        }
+                        Err(error) => {
+                            dialog.status = LoadStatus::Error(error.clone());
+                            dialog.error = Some(error);
+                        }
+                    }
                 }
             }
         }
@@ -143,9 +173,12 @@ impl PodResourcePanel {
         self.namespace_request_id = None;
         self.row_request_id = None;
         self.action_request_id = None;
+        self.log_request_id = None;
         self.view_dialog = None;
         self.edit_dialog = None;
         self.delete_dialog = None;
+        self.evict_dialog = None;
+        self.log_dialog = None;
         self.action_error = None;
         self.refresh_after_action = false;
     }
@@ -216,6 +249,29 @@ impl PodResourcePanel {
 
     fn apply_table_action(&mut self, action: Option<PodTableAction>) {
         match action {
+            Some(PodTableAction::Logs(row)) => {
+                let containers = row.container_names.clone();
+                let selected_container = containers.first().cloned();
+                self.log_dialog = Some(PodLogDialog {
+                    key: row.key,
+                    namespace: empty_to_none(row.namespace).unwrap_or_else(|| "default".to_owned()),
+                    pod: row.name,
+                    containers,
+                    selected_container,
+                    lines: Vec::new(),
+                    status: LoadStatus::Idle,
+                    error: None,
+                });
+            }
+            Some(PodTableAction::Shell(_row)) => {}
+            Some(PodTableAction::Evict(row)) => {
+                self.evict_dialog = Some(PodEvictDialog {
+                    key: row.key,
+                    namespace: empty_to_none(row.namespace).unwrap_or_else(|| "default".to_owned()),
+                    name: row.name,
+                });
+                self.action_error = None;
+            }
             Some(PodTableAction::View(row)) => {
                 self.view_dialog = Some(PodViewDialog {
                     key: row.key,
@@ -383,6 +439,184 @@ impl PodResourcePanel {
         }
     }
 
+    fn show_evict_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.evict_dialog.clone() else {
+            return;
+        };
+
+        let mut cancel_clicked = false;
+        let mut evict_clicked = false;
+        egui::Window::new(format!("Evict {}", dialog.name))
+            .id(egui::Id::new(("pod-evict-dialog", &dialog.key)))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                if let Some(error) = self.action_error.as_deref() {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                    ui.separator();
+                }
+                ui.label(format!("Evict Pod {}?", dialog.name));
+                ui.label(format!("Namespace: {}", dialog.namespace));
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        cancel_clicked = true;
+                    }
+                    let evict_text =
+                        egui::RichText::new(format!("{} Evict", egui_phosphor::regular::WARNING))
+                            .color(evict_color());
+                    if ui
+                        .add_enabled(
+                            self.action_request_id.is_none(),
+                            egui::Button::new(evict_text),
+                        )
+                        .clicked()
+                    {
+                        evict_clicked = true;
+                    }
+                });
+            });
+
+        if cancel_clicked {
+            self.evict_dialog = None;
+            self.action_error = None;
+            return;
+        }
+
+        if evict_clicked {
+            let request = ResourceActionRequest {
+                request_id: self.allocate_request_id(),
+                cluster_id: cluster_id.clone(),
+                kind: ResourceActionKind::EvictPod {
+                    namespace: dialog.namespace,
+                    name: dialog.name,
+                },
+            };
+            self.action_request_id = Some(request.request_id);
+            requests.push(request);
+        }
+    }
+
+    fn show_log_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<PodLogRequest>,
+    ) {
+        if self.log_dialog.is_some() && self.log_request_id.is_none() {
+            let should_load = self
+                .log_dialog
+                .as_ref()
+                .is_some_and(|dialog| matches!(dialog.status, LoadStatus::Idle));
+            if should_load {
+                let request = self.request_logs(cluster_id.clone());
+                requests.push(request);
+            }
+        }
+
+        let Some(dialog) = self.log_dialog.as_mut() else {
+            return;
+        };
+
+        let mut open = true;
+        let mut reload_clicked = false;
+        let mut container_changed = false;
+        let log_request_in_flight = self.log_request_id.is_some();
+        egui::Window::new(format!("Logs {}", dialog.pod))
+            .id(egui::Id::new(("pod-log-dialog", &dialog.key)))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(780.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Container");
+                    let selected_label = dialog
+                        .selected_container
+                        .as_deref()
+                        .unwrap_or("default")
+                        .to_owned();
+                    egui::ComboBox::from_id_salt(("pod-log-container", &dialog.key))
+                        .selected_text(selected_label)
+                        .show_ui(ui, |ui| {
+                            for container in &dialog.containers {
+                                if ui
+                                    .selectable_value(
+                                        &mut dialog.selected_container,
+                                        Some(container.clone()),
+                                        container,
+                                    )
+                                    .changed()
+                                {
+                                    container_changed = true;
+                                }
+                            }
+                        });
+                    if ui
+                        .add_enabled(!log_request_in_flight, egui::Button::new("Refresh"))
+                        .clicked()
+                    {
+                        reload_clicked = true;
+                    }
+                });
+                if let Some(error) = dialog.error.as_deref() {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+                ui.separator();
+                ui.allocate_ui(
+                    [ui.available_width(), POD_LOG_CONTENT_HEIGHT].into(),
+                    |ui| {
+                        egui::ScrollArea::both()
+                            .id_salt(("pod-log-lines", &dialog.key))
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                if matches!(dialog.status, LoadStatus::Loading)
+                                    && dialog.lines.is_empty()
+                                {
+                                    ui.label("Loading logs...");
+                                } else if dialog.lines.is_empty() {
+                                    ui.label("No log lines.");
+                                } else {
+                                    let text = dialog
+                                        .lines
+                                        .iter()
+                                        .map(|line| line.text.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join("\n");
+                                    ui.add(
+                                        egui::Label::new(egui::RichText::new(text).monospace())
+                                            .selectable(true),
+                                    );
+                                }
+                            });
+                    },
+                );
+            });
+
+        if !open {
+            self.log_dialog = None;
+            self.log_request_id = None;
+            return;
+        }
+
+        if (container_changed || reload_clicked) && self.log_request_id.is_none() {
+            if let Some(dialog) = self.log_dialog.as_mut() {
+                dialog.status = LoadStatus::Idle;
+                dialog.lines.clear();
+                dialog.error = None;
+            }
+            let request = self.request_logs(cluster_id.clone());
+            requests.push(request);
+        }
+    }
+
     fn request_namespaces(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
         let request = ResourceLoadRequest {
             request_id: self.allocate_request_id(),
@@ -404,6 +638,34 @@ impl PodResourcePanel {
         };
         self.row_request_id = Some(request.request_id);
         self.row_status = LoadStatus::Loading;
+        request
+    }
+
+    fn request_logs(&mut self, cluster_id: ClusterId) -> PodLogRequest {
+        let (namespace, pod, container) = self
+            .log_dialog
+            .as_ref()
+            .map(|dialog| {
+                (
+                    dialog.namespace.clone(),
+                    dialog.pod.clone(),
+                    dialog.selected_container.clone(),
+                )
+            })
+            .unwrap_or_else(|| ("default".to_owned(), String::new(), None));
+        let request = PodLogRequest {
+            request_id: self.allocate_request_id(),
+            cluster_id,
+            namespace,
+            pod,
+            container,
+            tail_lines: Some(500),
+        };
+        if let Some(dialog) = self.log_dialog.as_mut() {
+            dialog.status = LoadStatus::Loading;
+            dialog.error = None;
+        }
+        self.log_request_id = Some(request.request_id);
         request
     }
 
@@ -507,6 +769,41 @@ fn show_pod_table(
                         table_row.col(|ui| {
                             ui.label(&row.age);
                         });
+                        table_row.col(|ui| {
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .small_button(format!(
+                                        "{} Logs",
+                                        egui_phosphor::regular::TERMINAL_WINDOW
+                                    ))
+                                    .clicked()
+                                {
+                                    action = Some(PodTableAction::Logs(row.clone()));
+                                }
+                                if ui
+                                    .add_enabled(
+                                        false,
+                                        egui::Button::new(format!(
+                                            "{} Shell",
+                                            egui_phosphor::regular::TERMINAL
+                                        ))
+                                        .small(),
+                                    )
+                                    .on_disabled_hover_text("Shell is not implemented yet.")
+                                    .clicked()
+                                {
+                                    action = Some(PodTableAction::Shell(row.clone()));
+                                }
+                                let evict_text = egui::RichText::new(format!(
+                                    "{} Evict",
+                                    egui_phosphor::regular::WARNING
+                                ))
+                                .color(evict_color());
+                                if ui.add(egui::Button::new(evict_text).small()).clicked() {
+                                    action = Some(PodTableAction::Evict(row.clone()));
+                                }
+                            });
+                        });
                         let response = table_row.response();
                         if response.clicked() && !checkbox_changed {
                             selected_rows.clear();
@@ -543,7 +840,7 @@ fn show_pod_table(
     action
 }
 
-const POD_COLUMNS: [&str; 12] = [
+const POD_COLUMNS: [&str; 13] = [
     "",
     "Name",
     "Namespace",
@@ -556,11 +853,14 @@ const POD_COLUMNS: [&str; 12] = [
     "QoS",
     "Status",
     "Age",
+    "Actions",
 ];
 
-const POD_COLUMN_WIDTHS: [f32; 12] = [
-    32.0, 260.0, 180.0, 110.0, 130.0, 100.0, 100.0, 170.0, 180.0, 100.0, 120.0, 90.0,
+const POD_COLUMN_WIDTHS: [f32; 13] = [
+    32.0, 260.0, 180.0, 110.0, 130.0, 100.0, 100.0, 170.0, 180.0, 100.0, 120.0, 90.0, 240.0,
 ];
+
+const POD_LOG_CONTENT_HEIGHT: f32 = 360.0;
 
 fn status_color(ui: &egui::Ui, status: &str) -> egui::Color32 {
     match status {
@@ -570,6 +870,10 @@ fn status_color(ui: &egui::Ui, status: &str) -> egui::Color32 {
         "Failed" | "CrashLoopBackOff" | "Error" => ui.visuals().error_fg_color,
         _ => ui.visuals().text_color(),
     }
+}
+
+fn evict_color() -> egui::Color32 {
+    egui::Color32::from_rgb(217, 119, 6)
 }
 
 fn filter_pod_rows(rows: &[PodRow], search_text: &str) -> Vec<PodRow> {
@@ -588,6 +892,7 @@ struct PodRow {
     cpu: String,
     memory: String,
     containers: String,
+    container_names: Vec<String>,
     restarts: String,
     controlled_by: String,
     node: String,
@@ -618,6 +923,7 @@ impl PodRow {
             .pointer("/spec/containers")
             .and_then(serde_json::Value::as_array)
             .map_or(0, Vec::len);
+        let container_names = container_names(raw);
         let ready_containers = container_statuses.map_or(0, |statuses| {
             statuses
                 .iter()
@@ -639,6 +945,7 @@ impl PodRow {
             cpu,
             memory,
             containers: format!("{ready_containers}/{total_containers}"),
+            container_names,
             restarts: restarts.to_string(),
             controlled_by: owner_reference(raw).unwrap_or_else(|| "N/A".to_owned()),
             node: value_str(raw, &["spec", "nodeName"])
@@ -659,6 +966,9 @@ impl PodRow {
 
 #[derive(Clone, Debug, PartialEq)]
 enum PodTableAction {
+    Logs(PodRow),
+    Shell(PodRow),
+    Evict(PodRow),
     View(PodRow),
     Edit(PodRow),
     Delete(PodRow),
@@ -685,6 +995,25 @@ struct PodDeleteDialog {
     key: String,
     namespace: Option<String>,
     name: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PodEvictDialog {
+    key: String,
+    namespace: String,
+    name: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PodLogDialog {
+    key: String,
+    namespace: String,
+    pod: String,
+    containers: Vec<String>,
+    selected_container: Option<String>,
+    lines: Vec<LogLine>,
+    status: LoadStatus,
+    error: Option<String>,
 }
 
 fn pod_key(namespace: &str, name: &str) -> String {
@@ -726,6 +1055,16 @@ fn full_manifest_yaml(raw: &serde_json::Value) -> String {
     serde_yaml::to_string(raw)
         .or_else(|_| serde_json::to_string_pretty(raw))
         .unwrap_or_default()
+}
+
+fn container_names(raw: &serde_json::Value) -> Vec<String> {
+    raw.pointer("/spec/containers")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|container| value_str(container, &["name"]))
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 fn resource_summaries(raw: &serde_json::Value) -> (String, String) {
@@ -933,6 +1272,7 @@ mod tests {
         assert_eq!(row.cpu, "150m / 500m");
         assert_eq!(row.memory, "192Mi / 512Mi");
         assert_eq!(row.containers, "1/2");
+        assert_eq!(row.container_names, vec!["api", "sidecar"]);
         assert_eq!(row.restarts, "3");
         assert_eq!(row.controlled_by, "ReplicaSet/api-75f");
         assert_eq!(row.node, "kind-worker");

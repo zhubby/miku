@@ -1,12 +1,13 @@
 use async_trait::async_trait;
-use kube::api::{ApiResource, DeleteParams, LogParams, Patch, PatchParams};
+use futures::{AsyncBufReadExt, StreamExt, TryStreamExt};
+use kube::api::{ApiResource, DeleteParams, EvictParams, LogParams, Patch, PatchParams};
 use kube::core::{DynamicObject, GroupVersionKind};
 use kube::{Api, ResourceExt};
 use miku_api::{
     ClusterRegistry, ClusterSummary, CreateClusterRequest, KubernetesResourceReader,
     KubernetesResourceWriter, KubernetesWatchService, LocalPreferenceStore, LogLine, MikuServices,
-    PodLogQuery, PodLogService, ResourceApplyRequest, ResourceDeleteRequest, ResourceDetail,
-    ResourceList, ResourceQuery, ResourceSummary,
+    PodEvictRequest, PodLogQuery, PodLogService, ResourceApplyRequest, ResourceDeleteRequest,
+    ResourceDetail, ResourceList, ResourceQuery, ResourceSummary,
 };
 use miku_core::{ResourceRef, ResourceScope};
 
@@ -215,6 +216,18 @@ where
 
         Ok(())
     }
+
+    #[tracing::instrument(name = "kube.evict_pod", skip(self, request), fields(namespace = %request.namespace, pod = %request.pod))]
+    async fn evict_pod(&self, request: PodEvictRequest) -> miku_core::Result<()> {
+        let client = self.live_client()?;
+        let pods: Api<k8s_openapi::api::core::v1::Pod> =
+            Api::namespaced(client, &request.namespace);
+        pods.evict(&request.pod, &EvictParams::default())
+            .await
+            .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?;
+
+        Ok(())
+    }
 }
 
 fn resource_summary(object: DynamicObject) -> ResourceSummary {
@@ -267,6 +280,31 @@ where
                 text: line.to_owned(),
             })
             .collect())
+    }
+
+    #[tracing::instrument(name = "kube.stream_logs", skip(self), fields(namespace = %query.namespace, pod = %query.pod))]
+    async fn stream_logs(
+        &self,
+        query: PodLogQuery,
+    ) -> miku_core::Result<miku_api::BoxEventStream<LogLine>> {
+        let client = self.live_client()?;
+        let pods: Api<k8s_openapi::api::core::v1::Pod> = Api::namespaced(client, &query.namespace);
+        let mut params = log_params(&query);
+        params.follow = true;
+        let lines = pods
+            .log_stream(&query.pod, &params)
+            .await
+            .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?
+            .lines();
+
+        Ok(futures::stream::try_unfold(lines, |mut lines| async move {
+            let line = lines
+                .try_next()
+                .await
+                .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?;
+            Ok(line.map(|text| (LogLine { text }, lines)))
+        })
+        .boxed())
     }
 }
 

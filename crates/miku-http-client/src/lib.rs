@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use miku_api::{
     ClusterRegistry, ClusterSummary, CreateClusterRequest, KubernetesResourceReader,
-    KubernetesResourceWriter, KubernetesWatchService, LocalPreferenceStore, MikuServices,
-    PodLogService, ResourceApplyRequest, ResourceDeleteRequest, ResourceList, ResourceQuery,
-    ResourceSummary,
+    KubernetesResourceWriter, KubernetesWatchService, LocalPreferenceStore, LogLine, MikuServices,
+    PodEvictRequest, PodLogQuery, PodLogService, ResourceApplyRequest, ResourceDeleteRequest,
+    ResourceList, ResourceQuery, ResourceSummary,
 };
 use url::Url;
 
@@ -127,6 +127,21 @@ impl KubernetesResourceWriter for HttpMikuClient {
 
         Ok(())
     }
+
+    #[tracing::instrument(name = "http_client.evict_pod", skip(self, request), fields(namespace = %request.namespace, pod = %request.pod))]
+    async fn evict_pod(&self, request: PodEvictRequest) -> miku_core::Result<()> {
+        let endpoint = self.endpoint("/api/pods/evict");
+        self.client
+            .post(endpoint)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?;
+
+        Ok(())
+    }
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -135,7 +150,23 @@ impl KubernetesWatchService for HttpMikuClient {}
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-impl PodLogService for HttpMikuClient {}
+impl PodLogService for HttpMikuClient {
+    #[tracing::instrument(name = "http_client.read_logs", skip(self, query), fields(namespace = %query.namespace, pod = %query.pod))]
+    async fn read_logs(&self, query: PodLogQuery) -> miku_core::Result<Vec<LogLine>> {
+        let endpoint = self.endpoint("/api/pods/logs");
+        self.client
+            .post(endpoint)
+            .json(&query)
+            .send()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .json()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))
+    }
+}
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -206,6 +237,26 @@ mod tests {
         assert_eq!(
             client.endpoint("/api/resources/delete").as_str(),
             "http://127.0.0.1:5174/api/resources/delete"
+        );
+    }
+
+    #[test]
+    fn pod_logs_use_pod_logs_endpoint() {
+        let client = HttpMikuClient::new("http://127.0.0.1:5174").unwrap();
+
+        assert_eq!(
+            client.endpoint("/api/pods/logs").as_str(),
+            "http://127.0.0.1:5174/api/pods/logs"
+        );
+    }
+
+    #[test]
+    fn pod_evict_uses_pod_evict_endpoint() {
+        let client = HttpMikuClient::new("http://127.0.0.1:5174").unwrap();
+
+        assert_eq!(
+            client.endpoint("/api/pods/evict").as_str(),
+            "http://127.0.0.1:5174/api/pods/evict"
         );
     }
 }

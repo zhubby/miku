@@ -106,6 +106,13 @@ pub struct ResourceDeleteRequest {
     pub name: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PodEvictRequest {
+    pub cluster_id: ClusterId,
+    pub namespace: String,
+    pub pod: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ResourceEvent {
     Applied(ResourceSummary),
@@ -173,6 +180,13 @@ pub trait KubernetesResourceWriter: ServiceBounds {
         Err(miku_core::MikuError::UnsupportedRuntime(format!(
             "resource delete is not implemented for {}",
             request.name
+        )))
+    }
+
+    async fn evict_pod(&self, request: PodEvictRequest) -> miku_core::Result<()> {
+        Err(miku_core::MikuError::UnsupportedRuntime(format!(
+            "pod eviction is not implemented for {}",
+            request.pod
         )))
     }
 }

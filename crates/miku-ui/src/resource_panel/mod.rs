@@ -1,4 +1,7 @@
-use miku_api::{ResourceApplyRequest, ResourceDeleteRequest, ResourceList, ResourceSummary};
+use miku_api::{
+    LogLine, PodEvictRequest, PodLogQuery, ResourceApplyRequest, ResourceDeleteRequest,
+    ResourceList, ResourceSummary,
+};
 use miku_core::{ClusterId, ResourceRef};
 
 mod components;
@@ -31,18 +34,45 @@ pub(crate) enum ResourceActionKind {
         namespace: Option<String>,
         name: String,
     },
+    EvictPod {
+        namespace: String,
+        name: String,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ResourcePanelRequests {
     pub(crate) loads: Vec<ResourceLoadRequest>,
     pub(crate) actions: Vec<ResourceActionRequest>,
+    pub(crate) logs: Vec<PodLogRequest>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ResourceLoadKind {
     Namespaces,
     Pods { namespace: Option<String> },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PodLogRequest {
+    pub(crate) request_id: u64,
+    pub(crate) cluster_id: ClusterId,
+    pub(crate) namespace: String,
+    pub(crate) pod: String,
+    pub(crate) container: Option<String>,
+    pub(crate) tail_lines: Option<u32>,
+}
+
+impl PodLogRequest {
+    pub(crate) fn query(&self) -> PodLogQuery {
+        PodLogQuery {
+            cluster_id: self.cluster_id.clone(),
+            namespace: self.namespace.clone(),
+            pod: self.pod.clone(),
+            container: self.container.clone(),
+            tail_lines: self.tail_lines,
+        }
+    }
 }
 
 impl ResourceLoadRequest {
@@ -80,19 +110,30 @@ impl ResourceActionRequest {
                 name: name.clone(),
                 manifest: manifest.clone(),
             }),
-            ResourceActionKind::DeletePod { .. } => None,
+            ResourceActionKind::DeletePod { .. } | ResourceActionKind::EvictPod { .. } => None,
         }
     }
 
     pub(crate) fn delete_request(&self) -> Option<ResourceDeleteRequest> {
         match &self.kind {
-            ResourceActionKind::ApplyPod { .. } => None,
+            ResourceActionKind::ApplyPod { .. } | ResourceActionKind::EvictPod { .. } => None,
             ResourceActionKind::DeletePod { namespace, name } => Some(ResourceDeleteRequest {
                 cluster_id: self.cluster_id.clone(),
                 resource: ResourceRef::core("v1", "pods"),
                 namespace: namespace.clone(),
                 name: name.clone(),
             }),
+        }
+    }
+
+    pub(crate) fn evict_request(&self) -> Option<PodEvictRequest> {
+        match &self.kind {
+            ResourceActionKind::EvictPod { namespace, name } => Some(PodEvictRequest {
+                cluster_id: self.cluster_id.clone(),
+                namespace: namespace.clone(),
+                pod: name.clone(),
+            }),
+            ResourceActionKind::ApplyPod { .. } | ResourceActionKind::DeletePod { .. } => None,
         }
     }
 }
@@ -107,12 +148,17 @@ pub(crate) enum ResourceUiEvent {
         request: ResourceActionRequest,
         result: Result<ResourceActionOutcome, String>,
     },
+    PodLogsLoaded {
+        request: PodLogRequest,
+        result: Result<Vec<LogLine>, String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ResourceActionOutcome {
     Applied(ResourceSummary),
     Deleted,
+    Evicted,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

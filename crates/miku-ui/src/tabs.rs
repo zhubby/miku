@@ -2,7 +2,9 @@ use eframe::egui;
 use egui_dock::TabViewer;
 use miku_api::ClusterSummary;
 
-use crate::resource_panel::{PodResourcePanel, ResourceActionRequest, ResourceLoadRequest};
+use crate::resource_panel::{
+    PodLogRequest, PodResourcePanel, ResourceActionRequest, ResourceLoadRequest,
+};
 use crate::resources::{RESOURCE_CATEGORIES, ResourceNavItem};
 use crate::state::AppState;
 
@@ -31,6 +33,7 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) pod_resource_panel: Option<&'a mut PodResourcePanel>,
     pub(crate) resource_load_requests: Vec<ResourceLoadRequest>,
     pub(crate) resource_action_requests: Vec<ResourceActionRequest>,
+    pub(crate) pod_log_requests: Vec<PodLogRequest>,
 }
 
 impl TabViewer for AppTabViewer<'_> {
@@ -88,6 +91,7 @@ impl TabViewer for AppTabViewer<'_> {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
                         self.resource_load_requests.extend(requests.loads);
                         self.resource_action_requests.extend(requests.actions);
+                        self.pod_log_requests.extend(requests.logs);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Pod resource panel is unavailable.");

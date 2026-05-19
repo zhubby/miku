@@ -11,8 +11,8 @@ use crate::cluster_events::ClusterUiEvent;
 use crate::dock::show_dock_region;
 use crate::forms::NewClusterForm;
 use crate::resource_panel::{
-    PodResourcePanel, ResourceActionOutcome, ResourceActionRequest, ResourceLoadRequest,
-    ResourceUiEvent,
+    PodLogRequest, PodResourcePanel, ResourceActionOutcome, ResourceActionRequest,
+    ResourceLoadRequest, ResourceUiEvent,
 };
 use crate::resources::ResourceNavItem;
 use crate::state::{AppState, RuntimeMode};
@@ -154,6 +154,7 @@ impl eframe::App for MikuApp {
                     pod_resource_panel: None,
                     resource_load_requests: Vec::new(),
                     resource_action_requests: Vec::new(),
+                    pod_log_requests: Vec::new(),
                 };
 
                 show_dock_region(ui, |ui| {
@@ -204,6 +205,7 @@ impl eframe::App for MikuApp {
                     pod_resource_panel: None,
                     resource_load_requests: Vec::new(),
                     resource_action_requests: Vec::new(),
+                    pod_log_requests: Vec::new(),
                 };
 
                 show_dock_region(ui, |ui| {
@@ -243,6 +245,7 @@ impl eframe::App for MikuApp {
                 pod_resource_panel: Some(&mut self.pod_resource_panel),
                 resource_load_requests: Vec::new(),
                 resource_action_requests: Vec::new(),
+                pod_log_requests: Vec::new(),
             };
 
             show_dock_region(ui, |ui| {
@@ -258,11 +261,15 @@ impl eframe::App for MikuApp {
 
             let resource_load_requests = tab_viewer.resource_load_requests;
             let resource_action_requests = tab_viewer.resource_action_requests;
+            let pod_log_requests = tab_viewer.pod_log_requests;
             for request in resource_load_requests {
                 self.request_resource_load(request);
             }
             for request in resource_action_requests {
                 self.request_resource_action(request);
+            }
+            for request in pod_log_requests {
+                self.request_pod_logs(request);
             }
         });
 
@@ -385,6 +392,49 @@ impl MikuApp {
             });
         }
     }
+
+    fn request_pod_logs(&mut self, request: PodLogRequest) {
+        let Some(services) = self.services.clone() else {
+            self.pod_resource_panel
+                .apply_event(ResourceUiEvent::PodLogsLoaded {
+                    request,
+                    result: Err("resource services are not available".to_owned()),
+                });
+            return;
+        };
+        let sender = self.resource_event_sender.clone();
+        let query = request.query();
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(runtime) = self.runtime.as_ref() else {
+                self.pod_resource_panel
+                    .apply_event(ResourceUiEvent::PodLogsLoaded {
+                        request,
+                        result: Err("resource runtime is not available".to_owned()),
+                    });
+                return;
+            };
+            runtime.spawn(async move {
+                let result = services
+                    .read_logs(query)
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(ResourceUiEvent::PodLogsLoaded { request, result });
+            });
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            wasm_bindgen_futures::spawn_local(async move {
+                let result = services
+                    .read_logs(query)
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(ResourceUiEvent::PodLogsLoaded { request, result });
+            });
+        }
+    }
 }
 
 async fn run_resource_action(
@@ -401,6 +451,11 @@ async fn run_resource_action(
     if let Some(delete_request) = request.delete_request() {
         services.delete_resource(delete_request).await?;
         return Ok(ResourceActionOutcome::Deleted);
+    }
+
+    if let Some(evict_request) = request.evict_request() {
+        services.evict_pod(evict_request).await?;
+        return Ok(ResourceActionOutcome::Evicted);
     }
 
     Err(miku_core::MikuError::UnsupportedRuntime(
