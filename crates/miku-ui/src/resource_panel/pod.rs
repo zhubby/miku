@@ -2,59 +2,13 @@ use std::collections::BTreeSet;
 
 use eframe::egui;
 use egui_table::{CellInfo, Column, HeaderCellInfo, HeaderRow, Table, TableDelegate};
-use miku_api::{ResourceList, ResourceSummary};
-use miku_core::{ClusterId, ResourceRef};
+use miku_api::ResourceSummary;
+use miku_core::ClusterId;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ResourceLoadRequest {
-    pub(crate) request_id: u64,
-    pub(crate) cluster_id: ClusterId,
-    pub(crate) kind: ResourceLoadKind,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ResourceLoadKind {
-    Namespaces,
-    Pods { namespace: Option<String> },
-}
-
-impl ResourceLoadRequest {
-    pub(crate) fn query(&self) -> miku_api::ResourceQuery {
-        match &self.kind {
-            ResourceLoadKind::Namespaces => miku_api::ResourceQuery::new(
-                self.cluster_id.clone(),
-                ResourceRef::core("v1", "namespaces").cluster_scoped(),
-            ),
-            ResourceLoadKind::Pods { namespace } => {
-                let mut query = miku_api::ResourceQuery::new(
-                    self.cluster_id.clone(),
-                    ResourceRef::core("v1", "pods"),
-                );
-                if let Some(namespace) = namespace {
-                    query = query.namespace(namespace.clone());
-                }
-                query
-            }
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(crate) enum ResourceUiEvent {
-    ResourcesLoaded {
-        request: ResourceLoadRequest,
-        result: Result<ResourceList, String>,
-    },
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-enum LoadStatus {
-    #[default]
-    Idle,
-    Loading,
-    Loaded,
-    Error(String),
-}
+use super::components::ResourceToolbar;
+use super::{
+    LoadStatus, ResourceLoadKind, ResourceLoadRequest, ResourceUiEvent, namespaces_from_list,
+};
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PodResourcePanel {
@@ -156,65 +110,35 @@ impl PodResourcePanel {
         cluster_id: &ClusterId,
         requests: &mut Vec<ResourceLoadRequest>,
     ) {
-        ui.horizontal(|ui| {
-            let selected_label = self
-                .namespace_filter
-                .as_deref()
-                .unwrap_or("All namespaces")
-                .to_owned();
-            let mut namespace_changed = false;
+        let filtered_rows = self.filtered_rows();
+        let response = ResourceToolbar {
+            id_salt: "pod_resource_toolbar",
+            namespaces: &self.namespaces,
+            namespace_filter: &mut self.namespace_filter,
+            search_text: &mut self.search_text,
+            search_hint: "Search Pods...",
+            item_count: filtered_rows.len(),
+            loading: matches!(self.row_status, LoadStatus::Loading),
+        }
+        .show(ui);
 
-            egui::ComboBox::from_id_salt("pod_namespace_filter")
-                .selected_text(selected_label)
-                .width(220.0)
-                .show_ui(ui, |ui| {
-                    namespace_changed |= ui
-                        .selectable_value(&mut self.namespace_filter, None, "All namespaces")
-                        .changed();
-                    for namespace in &self.namespaces {
-                        namespace_changed |= ui
-                            .selectable_value(
-                                &mut self.namespace_filter,
-                                Some(namespace.clone()),
-                                namespace,
-                            )
-                            .changed();
-                    }
-                });
+        if response.namespace_changed {
+            requests.push(self.request_pods(cluster_id.clone()));
+        }
 
-            if namespace_changed {
-                requests.push(self.request_pods(cluster_id.clone()));
-            }
+        if response.search_changed {
+            let visible_keys = self
+                .filtered_rows()
+                .into_iter()
+                .map(|row| row.key)
+                .collect::<BTreeSet<_>>();
+            self.selected_rows.retain(|key| visible_keys.contains(key));
+        }
 
-            let search_response = ui.add_sized(
-                [280.0, 24.0],
-                egui::TextEdit::singleline(&mut self.search_text).hint_text("Search Pods..."),
-            );
-            if search_response.changed() {
-                let visible_keys = self
-                    .filtered_rows()
-                    .into_iter()
-                    .map(|row| row.key)
-                    .collect::<BTreeSet<_>>();
-                self.selected_rows.retain(|key| visible_keys.contains(key));
-            }
-
-            if ui
-                .button(egui_phosphor::regular::ARROWS_CLOCKWISE)
-                .on_hover_text("Refresh")
-                .clicked()
-            {
-                requests.push(self.request_namespaces(cluster_id.clone()));
-                requests.push(self.request_pods(cluster_id.clone()));
-            }
-
-            ui.separator();
-            ui.label(format!("{} items", self.filtered_rows().len()));
-
-            if let LoadStatus::Loading = self.row_status {
-                ui.label("Loading...");
-            }
-        });
+        if response.refresh_clicked {
+            requests.push(self.request_namespaces(cluster_id.clone()));
+            requests.push(self.request_pods(cluster_id.clone()));
+        }
     }
 
     fn show_body(&mut self, ui: &mut egui::Ui) {
@@ -399,17 +323,6 @@ fn status_color(ui: &egui::Ui, status: &str) -> egui::Color32 {
         "Failed" | "CrashLoopBackOff" | "Error" => ui.visuals().error_fg_color,
         _ => ui.visuals().text_color(),
     }
-}
-
-fn namespaces_from_list(list: &ResourceList) -> Vec<String> {
-    let mut namespaces = list
-        .items
-        .iter()
-        .map(|item| item.name.clone())
-        .collect::<Vec<_>>();
-    namespaces.sort();
-    namespaces.dedup();
-    namespaces
 }
 
 fn filter_pod_rows(rows: &[PodRow], search_text: &str) -> Vec<PodRow> {
@@ -682,6 +595,7 @@ fn value_u64(value: &serde_json::Value, path: &[&str]) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use miku_api::ResourceList;
 
     #[test]
     fn pod_row_extracts_table_fields_from_raw_summary() {
