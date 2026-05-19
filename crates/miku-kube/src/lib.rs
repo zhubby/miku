@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use kube::api::{ApiResource, ListParams, LogParams};
+use kube::api::{ApiResource, LogParams};
 use kube::core::{DynamicObject, GroupVersionKind};
 use kube::{Api, ResourceExt};
 use miku_api::{
@@ -9,10 +9,15 @@ use miku_api::{
 };
 use miku_core::{ResourceRef, ResourceScope};
 
+mod resource_cache;
+
+use resource_cache::ResourceCacheRegistry;
+
 #[derive(Clone)]
 pub struct KubeServices<S> {
     store: S,
     client: Option<kube::Client>,
+    resource_cache: ResourceCacheRegistry,
 }
 
 impl<S> KubeServices<S> {
@@ -21,6 +26,7 @@ impl<S> KubeServices<S> {
         Self {
             store,
             client: None,
+            resource_cache: ResourceCacheRegistry::new(),
         }
     }
 
@@ -33,6 +39,7 @@ impl<S> KubeServices<S> {
         Ok(Self {
             store,
             client: Some(client),
+            resource_cache: ResourceCacheRegistry::new(),
         })
     }
 
@@ -126,32 +133,16 @@ where
             )));
         };
 
-        let api_resource = api_resource(&query.resource);
-        let api: Api<DynamicObject> = match query.namespace.as_deref() {
-            Some(namespace) => Api::namespaced_with(client, namespace, &api_resource),
-            None => match &query.resource.scope {
-                ResourceScope::Namespaced(namespace) => {
-                    Api::namespaced_with(client, namespace, &api_resource)
-                }
-                ResourceScope::Cluster => Api::all_with(client, &api_resource),
-            },
-        };
-        let mut params = ListParams::default();
-        if let Some(selector) = &query.label_selector {
-            params = params.labels(selector);
-        }
-        if let Some(limit) = query.limit {
-            params = params.limit(limit);
-        }
-
-        let list = api
-            .list(&params)
-            .await
-            .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?;
+        let cache = self.resource_cache.get_or_start(client, &query).await?;
+        cache.wait_until_ready().await?;
 
         Ok(ResourceList {
-            items: list.items.into_iter().map(resource_summary).collect(),
-            continue_token: list.metadata.continue_,
+            items: cache
+                .snapshot(query.limit)
+                .into_iter()
+                .map(resource_summary)
+                .collect(),
+            continue_token: None,
         })
     }
 
@@ -267,6 +258,8 @@ impl<S> MikuServices for KubeServices<S> where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kube::core::TypeMeta;
+    use miku_api::KubernetesResourceReader;
 
     #[tokio::test]
     async fn service_can_be_constructed_without_touching_a_cluster() {
@@ -319,5 +312,50 @@ mod tests {
 
         assert_eq!(params.container.as_deref(), Some("server"));
         assert_eq!(params.tail_lines, Some(100));
+    }
+
+    #[tokio::test]
+    async fn offline_list_resources_returns_no_client_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = miku_store::SqliteStore::initialize(miku_store::StorePaths::from_root(
+            temp.path().join(".miku"),
+        ))
+        .await
+        .unwrap();
+        let services = KubeServices::new_offline(store);
+
+        let error = services
+            .list_resources(miku_api::ResourceQuery::new(
+                miku_core::ClusterId::new("local"),
+                miku_core::ResourceRef::core("v1", "pods"),
+            ))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("no live Kubernetes client"));
+    }
+
+    #[test]
+    fn resource_summary_maps_dynamic_object_metadata_and_status() {
+        let api_resource = api_resource(&miku_core::ResourceRef::core("v1", "pods"));
+        let mut object = DynamicObject::new("api", &api_resource);
+        object.metadata.namespace = Some("default".to_owned());
+        object.types = Some(TypeMeta {
+            api_version: "v1".to_owned(),
+            kind: "Pod".to_owned(),
+        });
+        object.data = serde_json::json!({
+            "status": {
+                "phase": "Running"
+            }
+        });
+
+        let summary = resource_summary(object);
+
+        assert_eq!(summary.name, "api");
+        assert_eq!(summary.namespace.as_deref(), Some("default"));
+        assert_eq!(summary.kind, "Pod");
+        assert_eq!(summary.status.as_deref(), Some("Running"));
+        assert_eq!(summary.raw["metadata"]["name"], "api");
     }
 }
