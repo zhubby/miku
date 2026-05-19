@@ -17,13 +17,18 @@ fn human_duration_since_seconds(created_at: i64, now: i64) -> String {
     let elapsed = now.saturating_sub(created_at).max(0);
 
     match elapsed {
-        0..=59 => format!("{elapsed}秒前"),
-        60..=3_599 => format!("{}分钟前", elapsed / 60),
-        3_600..=86_399 => format!("{}小时前", elapsed / 3_600),
-        86_400..=2_591_999 => format!("{}天前", elapsed / 86_400),
-        2_592_000..=31_535_999 => format!("{}个月前", elapsed / 2_592_000),
-        _ => format!("{}年前", elapsed / 31_536_000),
+        0..=59 => format_relative_time(elapsed, "second"),
+        60..=3_599 => format_relative_time(elapsed / 60, "minute"),
+        3_600..=86_399 => format_relative_time(elapsed / 3_600, "hour"),
+        86_400..=2_591_999 => format_relative_time(elapsed / 86_400, "day"),
+        2_592_000..=31_535_999 => format_relative_time(elapsed / 2_592_000, "month"),
+        _ => format_relative_time(elapsed / 31_536_000, "year"),
     }
+}
+
+fn format_relative_time(value: i64, unit: &str) -> String {
+    let suffix = if value == 1 { "" } else { "s" };
+    format!("{value} {unit}{suffix} ago")
 }
 
 fn parse_rfc3339_utc_seconds(timestamp: &str) -> Option<i64> {
@@ -77,16 +82,16 @@ mod tests {
 
     #[test]
     fn formats_recent_age_in_seconds() {
-        assert_eq!(human_duration_since_seconds(100, 142), "42秒前");
+        assert_eq!(human_duration_since_seconds(100, 142), "42 seconds ago");
     }
 
     #[test]
     fn formats_age_in_larger_units() {
-        assert_eq!(human_duration_since_seconds(0, 60), "1分钟前");
-        assert_eq!(human_duration_since_seconds(0, 7_200), "2小时前");
-        assert_eq!(human_duration_since_seconds(0, 259_200), "3天前");
-        assert_eq!(human_duration_since_seconds(0, 5_184_000), "2个月前");
-        assert_eq!(human_duration_since_seconds(0, 63_072_000), "2年前");
+        assert_eq!(human_duration_since_seconds(0, 60), "1 minute ago");
+        assert_eq!(human_duration_since_seconds(0, 7_200), "2 hours ago");
+        assert_eq!(human_duration_since_seconds(0, 259_200), "3 days ago");
+        assert_eq!(human_duration_since_seconds(0, 5_184_000), "2 months ago");
+        assert_eq!(human_duration_since_seconds(0, 63_072_000), "2 years ago");
     }
 
     #[test]

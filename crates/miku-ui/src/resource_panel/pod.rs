@@ -1259,7 +1259,7 @@ mod tests {
         assert_eq!(row.node, "kind-worker");
         assert_eq!(row.qos, "Burstable");
         assert_eq!(row.status, "CrashLoopBackOff");
-        assert!(row.age.ends_with("前"));
+        assert!(row.age.ends_with(" ago"));
     }
 
     #[test]
