@@ -11,7 +11,8 @@ async-trait = { workspace = true }
 directories = { workspace = true }
 miku-api = { path = "../miku-api" }
 miku-core = { path = "../miku-core" }
-rusqlite = { workspace = true }
+sea-orm = { workspace = true }
+sea-orm-migration = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

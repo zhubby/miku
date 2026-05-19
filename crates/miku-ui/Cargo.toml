@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 eframe = { workspace = true }
 egui-phosphor = { workspace = true }
+egui-theme-switch = { workspace = true }
 egui_dock = { workspace = true }
 miku-api = { path = "../miku-api" }
 miku-core = { path = "../miku-core" }

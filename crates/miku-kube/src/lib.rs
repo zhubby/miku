@@ -247,12 +247,13 @@ impl<S> MikuServices for KubeServices<S> where S: LocalPreferenceStore + Clone +
 mod tests {
     use super::*;
 
-    #[test]
-    fn service_can_be_constructed_without_touching_a_cluster() {
+    #[tokio::test]
+    async fn service_can_be_constructed_without_touching_a_cluster() {
         let temp = tempfile::tempdir().unwrap();
         let store = miku_store::SqliteStore::initialize(miku_store::StorePaths::from_root(
             temp.path().join(".miku"),
         ))
+        .await
         .unwrap();
 
         let services = KubeServices::new_offline(store);

@@ -187,6 +187,8 @@ impl eframe::App for MikuApp {
             .exact_size(24.0)
             .show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
+                    egui_theme_switch::global_theme_switch(ui);
+                    ui.separator();
                     ui.label(self.state.status_message());
                 });
             });

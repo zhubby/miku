@@ -15,7 +15,7 @@ async fn main() -> miku_core::Result<()> {
                 .map(miku_store::StorePaths::from_root)
                 .map(Ok)
                 .unwrap_or_else(miku_store::StorePaths::default_for_user)?;
-            let store = miku_store::SqliteStore::initialize(paths)?;
+            let store = miku_store::SqliteStore::initialize(paths).await?;
             let services =
                 match miku_kube::KubeServices::try_with_default_client(store.clone()).await {
                     Ok(services) => services,
