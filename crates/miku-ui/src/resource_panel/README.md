@@ -9,7 +9,8 @@ Deployments, Services, and future resource lists.
 - `mod.rs`: shared resource-panel request/event types, load status, and namespace list helpers.
 - `components/`: reusable UI building blocks shared by resource panels.
 - `components/toolbar.rs`: namespace selector, name search input, refresh button, item count, and loading label.
-- `pod.rs`: the first concrete resource panel. It loads Pods, parses Pod-specific fields, and renders the Pod table with `egui_table`.
+- `components/yaml_dialog.rs`: reusable read-only and editable YAML dialogs for resource manifests.
+- `pod.rs`: the first concrete resource panel. It loads Pods, parses Pod-specific fields, and renders the Pod table with `egui_extras::TableBuilder`.
 
 Keep reusable widgets under `components/`. Keep resource-specific state,
 Kubernetes JSON parsing, table columns, and tests in that resource's file.

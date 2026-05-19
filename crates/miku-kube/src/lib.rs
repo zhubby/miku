@@ -1,11 +1,12 @@
 use async_trait::async_trait;
-use kube::api::{ApiResource, LogParams};
+use kube::api::{ApiResource, DeleteParams, LogParams, Patch, PatchParams};
 use kube::core::{DynamicObject, GroupVersionKind};
 use kube::{Api, ResourceExt};
 use miku_api::{
     ClusterRegistry, ClusterSummary, CreateClusterRequest, KubernetesResourceReader,
-    KubernetesWatchService, LocalPreferenceStore, LogLine, MikuServices, PodLogQuery,
-    PodLogService, ResourceDetail, ResourceList, ResourceQuery, ResourceSummary,
+    KubernetesResourceWriter, KubernetesWatchService, LocalPreferenceStore, LogLine, MikuServices,
+    PodLogQuery, PodLogService, ResourceApplyRequest, ResourceDeleteRequest, ResourceDetail,
+    ResourceList, ResourceQuery, ResourceSummary,
 };
 use miku_core::{ResourceRef, ResourceScope};
 
@@ -88,6 +89,23 @@ fn kind_for_plural(plural: &str) -> String {
     }
 }
 
+fn dynamic_api(
+    client: kube::Client,
+    resource: &ResourceRef,
+    namespace: Option<&str>,
+) -> Api<DynamicObject> {
+    let api_resource = api_resource(resource);
+    match namespace {
+        Some(namespace) => Api::namespaced_with(client, namespace, &api_resource),
+        None => match &resource.scope {
+            ResourceScope::Namespaced(namespace) => {
+                Api::namespaced_with(client, namespace, &api_resource)
+            }
+            ResourceScope::Cluster => Api::all_with(client, &api_resource),
+        },
+    }
+}
+
 #[async_trait]
 impl<S> ClusterRegistry for KubeServices<S>
 where
@@ -153,16 +171,7 @@ where
         name: &str,
     ) -> miku_core::Result<ResourceDetail> {
         let client = self.live_client()?;
-        let api_resource = api_resource(&query.resource);
-        let api: Api<DynamicObject> = match query.namespace.as_deref() {
-            Some(namespace) => Api::namespaced_with(client, namespace, &api_resource),
-            None => match &query.resource.scope {
-                ResourceScope::Namespaced(namespace) => {
-                    Api::namespaced_with(client, namespace, &api_resource)
-                }
-                ResourceScope::Cluster => Api::all_with(client, &api_resource),
-            },
-        };
+        let api = dynamic_api(client, &query.resource, query.namespace.as_deref());
         let object = api
             .get(name)
             .await
@@ -172,6 +181,39 @@ where
             summary: resource_summary(object.clone()),
             raw: serde_json::to_value(&object).unwrap_or(serde_json::Value::Null),
         })
+    }
+}
+
+#[async_trait]
+impl<S> KubernetesResourceWriter for KubeServices<S>
+where
+    S: LocalPreferenceStore + Clone + Send + Sync,
+{
+    #[tracing::instrument(name = "kube.apply_resource", skip(self, request), fields(name = %request.name))]
+    async fn apply_resource(
+        &self,
+        request: ResourceApplyRequest,
+    ) -> miku_core::Result<ResourceSummary> {
+        let client = self.live_client()?;
+        let api = dynamic_api(client, &request.resource, request.namespace.as_deref());
+        let params = PatchParams::apply("miku").force();
+        let object = api
+            .patch(&request.name, &params, &Patch::Apply(&request.manifest))
+            .await
+            .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?;
+
+        Ok(resource_summary(object))
+    }
+
+    #[tracing::instrument(name = "kube.delete_resource", skip(self, request), fields(name = %request.name))]
+    async fn delete_resource(&self, request: ResourceDeleteRequest) -> miku_core::Result<()> {
+        let client = self.live_client()?;
+        let api = dynamic_api(client, &request.resource, request.namespace.as_deref());
+        api.delete(&request.name, &DeleteParams::default())
+            .await
+            .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?;
+
+        Ok(())
     }
 }
 

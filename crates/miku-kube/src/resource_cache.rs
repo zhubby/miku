@@ -5,6 +5,7 @@ use futures::StreamExt;
 use kube::Api;
 use kube::api::ApiResource;
 use kube::core::DynamicObject;
+use kube::runtime::WatchStreamExt;
 use kube::runtime::reflector::{Store, store};
 use kube::runtime::{reflector, watcher};
 use miku_api::ResourceQuery;
@@ -70,9 +71,11 @@ impl ResourceCacheRegistry {
         let key = ResourceCacheKey::from_query(query);
         let mut caches = self.caches.lock().await;
         if let Some(cache) = caches.get(&key) {
+            tracing::debug!(?key, "reusing resource cache");
             return Ok(cache.clone());
         }
 
+        tracing::debug!(?key, "starting resource cache reflector");
         let cache = Arc::new(ResourceCacheEntry::start(client, key.clone())?);
         caches.insert(key, cache.clone());
         Ok(cache)
@@ -90,12 +93,9 @@ impl ResourceCacheEntry {
         let api_resource = api_resource(&key.resource_ref());
         let api = api_for_cache_key(client, &api_resource, &key);
         let (store, writer) = dynamic_store(api_resource);
-        let mut config = watcher::Config::default();
-        if let Some(selector) = &key.label_selector {
-            config = config.labels(selector);
-        }
+        let config = watcher_config(&key);
 
-        let stream = watcher(api, config);
+        let stream = watcher(api, config).default_backoff();
         let reflected = reflector(writer, stream);
         let task = tokio::spawn(async move {
             futures::pin_mut!(reflected);
@@ -138,6 +138,17 @@ impl ResourceCacheEntry {
         }
         objects
     }
+}
+
+fn watcher_config(key: &ResourceCacheKey) -> watcher::Config {
+    let mut config = watcher::Config {
+        page_size: None,
+        ..watcher::Config::default()
+    };
+    if let Some(selector) = &key.label_selector {
+        config = config.labels(selector);
+    }
+    config
 }
 
 #[derive(Debug)]
@@ -231,6 +242,21 @@ mod tests {
             ResourceCacheKey::from_query(&query).scope,
             ResourceCacheScope::Namespace("production".to_owned())
         );
+    }
+
+    #[test]
+    fn watcher_config_uses_single_initial_list_without_pagination() {
+        let query = ResourceQuery::new(
+            miku_core::ClusterId::new("local"),
+            ResourceRef::core("v1", "pods"),
+        )
+        .label_selector("app=api");
+        let key = ResourceCacheKey::from_query(&query);
+
+        let config = watcher_config(&key);
+
+        assert_eq!(config.page_size, None);
+        assert_eq!(config.label_selector.as_deref(), Some("app=api"));
     }
 
     #[tokio::test]

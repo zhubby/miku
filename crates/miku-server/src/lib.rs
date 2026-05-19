@@ -6,7 +6,10 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use miku_api::{ClusterSummary, CreateClusterRequest, MikuServices, ResourceList, ResourceQuery};
+use miku_api::{
+    ClusterSummary, CreateClusterRequest, MikuServices, ResourceApplyRequest,
+    ResourceDeleteRequest, ResourceList, ResourceQuery, ResourceSummary,
+};
 use serde::Serialize;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
@@ -51,6 +54,8 @@ pub fn router(services: SharedServices) -> Router {
         .route("/health", get(health))
         .route("/api/clusters", get(list_clusters).post(create_cluster))
         .route("/api/resources/list", post(list_resources))
+        .route("/api/resources/apply", post(apply_resource))
+        .route("/api/resources/delete", post(delete_resource))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(services)
@@ -107,6 +112,23 @@ async fn list_resources(
     let resources = services.list_resources(query).await?;
     tracing::debug!(count = resources.items.len(), "listed resources");
     Ok(Json(resources))
+}
+
+#[tracing::instrument(name = "http.apply_resource", skip(services, request), fields(resource = %request.resource.plural, name = %request.name))]
+async fn apply_resource(
+    State(services): State<SharedServices>,
+    Json(request): Json<ResourceApplyRequest>,
+) -> ServerResult<Json<ResourceSummary>> {
+    Ok(Json(services.apply_resource(request).await?))
+}
+
+#[tracing::instrument(name = "http.delete_resource", skip(services, request), fields(resource = %request.resource.plural, name = %request.name))]
+async fn delete_resource(
+    State(services): State<SharedServices>,
+    Json(request): Json<ResourceDeleteRequest>,
+) -> ServerResult<StatusCode> {
+    services.delete_resource(request).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]
@@ -214,6 +236,64 @@ mod tests {
         assert_eq!(payload["items"][0]["kind"], "Pod");
     }
 
+    #[tokio::test]
+    async fn resource_apply_route_serializes_trait_result() {
+        let response = router(std::sync::Arc::new(DummyServices))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/resources/apply")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&ResourceApplyRequest {
+                            cluster_id: ClusterId::new("local"),
+                            resource: miku_core::ResourceRef::core("v1", "pods"),
+                            namespace: Some("default".to_owned()),
+                            name: "api".to_owned(),
+                            manifest: serde_json::json!({
+                                "metadata": {"name": "api", "namespace": "default"}
+                            }),
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload = serde_json::from_slice::<serde_json::Value>(&body).unwrap();
+        assert_eq!(payload["name"], "api");
+        assert_eq!(payload["namespace"], "default");
+    }
+
+    #[tokio::test]
+    async fn resource_delete_route_returns_no_content() {
+        let response = router(std::sync::Arc::new(DummyServices))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/resources/delete")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&ResourceDeleteRequest {
+                            cluster_id: ClusterId::new("local"),
+                            resource: miku_core::ResourceRef::core("v1", "pods"),
+                            namespace: Some("default".to_owned()),
+                            name: "api".to_owned(),
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
     struct DummyServices;
 
     #[async_trait::async_trait]
@@ -254,6 +334,26 @@ mod tests {
                 }],
                 continue_token: None,
             })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl KubernetesResourceWriter for DummyServices {
+        async fn apply_resource(
+            &self,
+            request: ResourceApplyRequest,
+        ) -> miku_core::Result<ResourceSummary> {
+            Ok(ResourceSummary {
+                name: request.name,
+                namespace: request.namespace,
+                kind: "Pod".to_owned(),
+                status: Some("Running".to_owned()),
+                raw: request.manifest,
+            })
+        }
+
+        async fn delete_resource(&self, _request: ResourceDeleteRequest) -> miku_core::Result<()> {
+            Ok(())
         }
     }
 

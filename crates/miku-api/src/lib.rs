@@ -90,6 +90,23 @@ pub struct ResourceDetail {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ResourceApplyRequest {
+    pub cluster_id: ClusterId,
+    pub resource: ResourceRef,
+    pub namespace: Option<String>,
+    pub name: String,
+    pub manifest: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResourceDeleteRequest {
+    pub cluster_id: ClusterId,
+    pub resource: ResourceRef,
+    pub namespace: Option<String>,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ResourceEvent {
     Applied(ResourceSummary),
     Deleted {
@@ -142,6 +159,26 @@ pub trait KubernetesResourceReader: ServiceBounds {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait KubernetesResourceWriter: ServiceBounds {
+    async fn apply_resource(
+        &self,
+        _request: ResourceApplyRequest,
+    ) -> miku_core::Result<ResourceSummary> {
+        Err(miku_core::MikuError::UnsupportedRuntime(
+            "resource apply is not implemented in this service".to_owned(),
+        ))
+    }
+
+    async fn delete_resource(&self, request: ResourceDeleteRequest) -> miku_core::Result<()> {
+        Err(miku_core::MikuError::UnsupportedRuntime(format!(
+            "resource delete is not implemented for {}",
+            request.name
+        )))
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait KubernetesWatchService: ServiceBounds {
     async fn watch_resources(
         &self,
@@ -183,6 +220,7 @@ pub trait LocalPreferenceStore: ServiceBounds {
 pub trait MikuServices:
     ClusterRegistry
     + KubernetesResourceReader
+    + KubernetesResourceWriter
     + KubernetesWatchService
     + PodLogService
     + LocalPreferenceStore
@@ -252,6 +290,9 @@ mod tests {
                 Ok(ResourceList::default())
             }
         }
+
+        #[async_trait::async_trait]
+        impl KubernetesResourceWriter for Dummy {}
 
         #[async_trait::async_trait]
         impl KubernetesWatchService for Dummy {}

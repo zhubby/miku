@@ -1,4 +1,4 @@
-use miku_api::ResourceList;
+use miku_api::{ResourceApplyRequest, ResourceDeleteRequest, ResourceList, ResourceSummary};
 use miku_core::{ClusterId, ResourceRef};
 
 mod components;
@@ -11,6 +11,32 @@ pub(crate) struct ResourceLoadRequest {
     pub(crate) request_id: u64,
     pub(crate) cluster_id: ClusterId,
     pub(crate) kind: ResourceLoadKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ResourceActionRequest {
+    pub(crate) request_id: u64,
+    pub(crate) cluster_id: ClusterId,
+    pub(crate) kind: ResourceActionKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ResourceActionKind {
+    ApplyPod {
+        namespace: Option<String>,
+        name: String,
+        manifest: serde_json::Value,
+    },
+    DeletePod {
+        namespace: Option<String>,
+        name: String,
+    },
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ResourcePanelRequests {
+    pub(crate) loads: Vec<ResourceLoadRequest>,
+    pub(crate) actions: Vec<ResourceActionRequest>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -40,12 +66,53 @@ impl ResourceLoadRequest {
     }
 }
 
+impl ResourceActionRequest {
+    pub(crate) fn apply_request(&self) -> Option<ResourceApplyRequest> {
+        match &self.kind {
+            ResourceActionKind::ApplyPod {
+                namespace,
+                name,
+                manifest,
+            } => Some(ResourceApplyRequest {
+                cluster_id: self.cluster_id.clone(),
+                resource: ResourceRef::core("v1", "pods"),
+                namespace: namespace.clone(),
+                name: name.clone(),
+                manifest: manifest.clone(),
+            }),
+            ResourceActionKind::DeletePod { .. } => None,
+        }
+    }
+
+    pub(crate) fn delete_request(&self) -> Option<ResourceDeleteRequest> {
+        match &self.kind {
+            ResourceActionKind::ApplyPod { .. } => None,
+            ResourceActionKind::DeletePod { namespace, name } => Some(ResourceDeleteRequest {
+                cluster_id: self.cluster_id.clone(),
+                resource: ResourceRef::core("v1", "pods"),
+                namespace: namespace.clone(),
+                name: name.clone(),
+            }),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum ResourceUiEvent {
     ResourcesLoaded {
         request: ResourceLoadRequest,
         result: Result<ResourceList, String>,
     },
+    ResourceActionCompleted {
+        request: ResourceActionRequest,
+        result: Result<ResourceActionOutcome, String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ResourceActionOutcome {
+    Applied(ResourceSummary),
+    Deleted,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

@@ -47,9 +47,10 @@ impl ResourceToolbar<'_> {
                 });
 
             response.search_changed = ui
-                .add_sized(
-                    [280.0, 24.0],
-                    egui::TextEdit::singleline(self.search_text).hint_text(self.search_hint),
+                .add(
+                    egui::TextEdit::singleline(self.search_text)
+                        .hint_text(self.search_hint)
+                        .desired_width(280.0),
                 )
                 .changed();
 

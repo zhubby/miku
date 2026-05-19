@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use miku_api::{
     ClusterRegistry, ClusterSummary, CreateClusterRequest, KubernetesResourceReader,
-    KubernetesWatchService, LocalPreferenceStore, MikuServices, PodLogService, ResourceList,
-    ResourceQuery,
+    KubernetesResourceWriter, KubernetesWatchService, LocalPreferenceStore, MikuServices,
+    PodLogService, ResourceApplyRequest, ResourceDeleteRequest, ResourceList, ResourceQuery,
+    ResourceSummary,
 };
 use url::Url;
 
@@ -92,6 +93,44 @@ impl KubernetesResourceReader for HttpMikuClient {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl KubernetesResourceWriter for HttpMikuClient {
+    #[tracing::instrument(name = "http_client.apply_resource", skip(self, request), fields(resource = %request.resource.plural, name = %request.name))]
+    async fn apply_resource(
+        &self,
+        request: ResourceApplyRequest,
+    ) -> miku_core::Result<ResourceSummary> {
+        let endpoint = self.endpoint("/api/resources/apply");
+        self.client
+            .post(endpoint)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .json()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))
+    }
+
+    #[tracing::instrument(name = "http_client.delete_resource", skip(self, request), fields(resource = %request.resource.plural, name = %request.name))]
+    async fn delete_resource(&self, request: ResourceDeleteRequest) -> miku_core::Result<()> {
+        let endpoint = self.endpoint("/api/resources/delete");
+        self.client
+            .post(endpoint)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?;
+
+        Ok(())
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl KubernetesWatchService for HttpMikuClient {}
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -147,6 +186,26 @@ mod tests {
         assert_eq!(
             client.endpoint("/api/resources/list").as_str(),
             "http://127.0.0.1:5174/api/resources/list"
+        );
+    }
+
+    #[test]
+    fn apply_resource_uses_resource_apply_endpoint() {
+        let client = HttpMikuClient::new("http://127.0.0.1:5174").unwrap();
+
+        assert_eq!(
+            client.endpoint("/api/resources/apply").as_str(),
+            "http://127.0.0.1:5174/api/resources/apply"
+        );
+    }
+
+    #[test]
+    fn delete_resource_uses_resource_delete_endpoint() {
+        let client = HttpMikuClient::new("http://127.0.0.1:5174").unwrap();
+
+        assert_eq!(
+            client.endpoint("/api/resources/delete").as_str(),
+            "http://127.0.0.1:5174/api/resources/delete"
         );
     }
 }
