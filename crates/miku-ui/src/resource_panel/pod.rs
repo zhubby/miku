@@ -263,7 +263,6 @@ impl PodResourcePanel {
                     error: None,
                 });
             }
-            Some(PodTableAction::Shell(_row)) => {}
             Some(PodTableAction::Evict(row)) => {
                 self.evict_dialog = Some(PodEvictDialog {
                     key: row.key,
@@ -769,47 +768,37 @@ fn show_pod_table(
                         table_row.col(|ui| {
                             ui.label(&row.age);
                         });
-                        table_row.col(|ui| {
-                            ui.horizontal(|ui| {
-                                if ui
-                                    .small_button(format!(
-                                        "{} Logs",
-                                        egui_phosphor::regular::TERMINAL_WINDOW
-                                    ))
-                                    .clicked()
-                                {
-                                    action = Some(PodTableAction::Logs(row.clone()));
-                                }
-                                if ui
-                                    .add_enabled(
-                                        false,
-                                        egui::Button::new(format!(
-                                            "{} Shell",
-                                            egui_phosphor::regular::TERMINAL
-                                        ))
-                                        .small(),
-                                    )
-                                    .on_disabled_hover_text("Shell is not implemented yet.")
-                                    .clicked()
-                                {
-                                    action = Some(PodTableAction::Shell(row.clone()));
-                                }
-                                let evict_text = egui::RichText::new(format!(
-                                    "{} Evict",
-                                    egui_phosphor::regular::WARNING
-                                ))
-                                .color(evict_color());
-                                if ui.add(egui::Button::new(evict_text).small()).clicked() {
-                                    action = Some(PodTableAction::Evict(row.clone()));
-                                }
-                            });
-                        });
                         let response = table_row.response();
                         if response.clicked() && !checkbox_changed {
                             selected_rows.clear();
                             selected_rows.insert(row.key.clone());
                         }
                         response.context_menu(|ui| {
+                            if ui
+                                .button(format!("{} Logs", egui_phosphor::regular::TERMINAL_WINDOW))
+                                .clicked()
+                            {
+                                action = Some(PodTableAction::Logs(row.clone()));
+                                ui.close();
+                            }
+                            ui.add_enabled(
+                                false,
+                                egui::Button::new(format!(
+                                    "{} Shell",
+                                    egui_phosphor::regular::TERMINAL
+                                )),
+                            )
+                            .on_disabled_hover_text("Shell is not implemented yet.");
+                            let evict_text = egui::RichText::new(format!(
+                                "{} Evict",
+                                egui_phosphor::regular::WARNING
+                            ))
+                            .color(evict_color());
+                            if ui.button(evict_text).clicked() {
+                                action = Some(PodTableAction::Evict(row.clone()));
+                                ui.close();
+                            }
+                            ui.separator();
                             if ui
                                 .button(format!("{} View", egui_phosphor::regular::EYE))
                                 .clicked()
@@ -840,7 +829,7 @@ fn show_pod_table(
     action
 }
 
-const POD_COLUMNS: [&str; 13] = [
+const POD_COLUMNS: [&str; 12] = [
     "",
     "Name",
     "Namespace",
@@ -853,11 +842,10 @@ const POD_COLUMNS: [&str; 13] = [
     "QoS",
     "Status",
     "Age",
-    "Actions",
 ];
 
-const POD_COLUMN_WIDTHS: [f32; 13] = [
-    32.0, 260.0, 180.0, 110.0, 130.0, 100.0, 100.0, 170.0, 180.0, 100.0, 120.0, 90.0, 240.0,
+const POD_COLUMN_WIDTHS: [f32; 12] = [
+    32.0, 260.0, 180.0, 110.0, 130.0, 100.0, 100.0, 170.0, 180.0, 100.0, 120.0, 90.0,
 ];
 
 const POD_LOG_CONTENT_HEIGHT: f32 = 360.0;
@@ -967,7 +955,6 @@ impl PodRow {
 #[derive(Clone, Debug, PartialEq)]
 enum PodTableAction {
     Logs(PodRow),
-    Shell(PodRow),
     Evict(PodRow),
     View(PodRow),
     Edit(PodRow),
