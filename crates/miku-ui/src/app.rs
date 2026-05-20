@@ -22,6 +22,8 @@ use crate::resources::ResourceNavItem;
 use crate::state::{AppState, ClusterConnectionState, RuntimeMode};
 use crate::tabs::{AppTab, AppTabViewer, ClusterStatusLoadRequest, ClusterStatusPanel};
 
+const MAX_RESOURCE_EVENTS_PER_PASS: usize = 8;
+
 pub struct MikuApp {
     pub(crate) state: AppState,
     pub(crate) clusters: Vec<ClusterSummary>,
@@ -167,7 +169,7 @@ impl eframe::App for MikuApp {
 
         if ui.ctx().current_pass_index() == 0 {
             self.process_cluster_events();
-            self.process_resource_events();
+            self.process_resource_events(ui.ctx());
             self.process_status_events();
         }
         self.update_file_dialog(ui.ctx());
@@ -443,10 +445,16 @@ impl MikuApp {
         }
     }
 
-    fn process_resource_events(&mut self) {
-        while let Ok(event) = self.resource_event_receiver.try_recv() {
-            self.apply_resource_event(event);
+    fn process_resource_events(&mut self, ctx: &egui::Context) {
+        for _ in 0..MAX_RESOURCE_EVENTS_PER_PASS {
+            match self.resource_event_receiver.try_recv() {
+                Ok(event) => self.apply_resource_event(event),
+                Err(resource_mpsc::TryRecvError::Empty) => return,
+                Err(resource_mpsc::TryRecvError::Disconnected) => return,
+            }
         }
+
+        ctx.request_repaint();
     }
 
     fn process_status_events(&mut self) {

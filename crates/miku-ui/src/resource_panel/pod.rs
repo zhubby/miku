@@ -40,7 +40,6 @@ pub(crate) struct PodResourcePanel {
     evict_dialog: Option<PodEvictDialog>,
     log_dialog: Option<PodLogDialog>,
     action_error: Option<String>,
-    refresh_after_action: bool,
 }
 
 impl PodResourcePanel {
@@ -68,13 +67,6 @@ impl PodResourcePanel {
                 .watches
                 .push(self.request_pod_watch(cluster_id.clone()));
         }
-        if self.refresh_after_action && !matches!(self.row_status, LoadStatus::Loading) {
-            self.refresh_after_action = false;
-            requests
-                .watches
-                .push(self.request_pod_watch(cluster_id.clone()));
-        }
-
         self.show_toolbar(ui, cluster_id, &mut requests);
         ui.separator();
         self.show_body(ui);
@@ -129,7 +121,6 @@ impl PodResourcePanel {
                         self.create_dialog = None;
                         self.edit_dialog = None;
                         self.action_error = None;
-                        self.refresh_after_action = true;
                     }
                     Ok(ResourceActionOutcome::Deleted) => {
                         if let ResourceActionKind::DeletePod { namespace, name } = request.kind {
@@ -139,7 +130,6 @@ impl PodResourcePanel {
                         }
                         self.delete_dialog = None;
                         self.action_error = None;
-                        self.refresh_after_action = true;
                     }
                     Ok(ResourceActionOutcome::BatchDeleted(targets)) => {
                         for target in targets {
@@ -150,12 +140,10 @@ impl PodResourcePanel {
                         }
                         self.batch_delete_dialog = None;
                         self.action_error = None;
-                        self.refresh_after_action = true;
                     }
                     Ok(ResourceActionOutcome::Evicted) => {
                         self.evict_dialog = None;
                         self.action_error = None;
-                        self.refresh_after_action = true;
                     }
                     Err(error) => self.action_error = Some(error),
                 }
@@ -237,7 +225,6 @@ impl PodResourcePanel {
         self.evict_dialog = None;
         self.log_dialog = None;
         self.action_error = None;
-        self.refresh_after_action = false;
     }
 
     fn show_toolbar(
@@ -246,14 +233,14 @@ impl PodResourcePanel {
         cluster_id: &ClusterId,
         requests: &mut ResourcePanelRequests,
     ) {
-        let filtered_rows = self.filtered_rows();
+        let item_count = self.filtered_row_count();
         let response = ResourceToolbar {
             id_salt: "pod_resource_toolbar",
             namespaces: &self.namespaces,
             namespace_filter: &mut self.namespace_filter,
             search_text: &mut self.search_text,
             search_hint: "Search Pods...",
-            item_count: filtered_rows.len(),
+            item_count,
             selected_count: self.selected_rows.len(),
             loading: matches!(self.row_status, LoadStatus::Loading),
         }
@@ -267,9 +254,9 @@ impl PodResourcePanel {
 
         if response.search_changed {
             let visible_keys = self
-                .filtered_rows()
+                .filtered_row_indices()
                 .into_iter()
-                .map(|row| row.key)
+                .map(|index| self.rows[index].key.clone())
                 .collect::<BTreeSet<_>>();
             self.selected_rows.retain(|key| visible_keys.contains(key));
         }
@@ -313,15 +300,15 @@ impl PodResourcePanel {
                 });
             }
             _ => {
-                let rows = self.filtered_rows();
-                if rows.is_empty() {
+                let row_indices = self.filtered_row_indices();
+                if row_indices.is_empty() {
                     ui.centered_and_justified(|ui| {
                         ui.label("No pods match the current filters.");
                     });
                     return;
                 }
 
-                let action = show_pod_table(ui, rows, &mut self.selected_rows);
+                let action = show_pod_table(ui, &self.rows, row_indices, &mut self.selected_rows);
                 self.apply_table_action(action);
             }
         }
@@ -329,13 +316,22 @@ impl PodResourcePanel {
 
     fn apply_table_action(&mut self, action: Option<PodTableAction>) {
         match action {
-            Some(PodTableAction::Logs(row)) => {
-                let containers = row.container_names.clone();
+            Some(PodTableAction::Logs { key }) => {
+                let Some((namespace, name, containers)) = self.row_by_key(&key).map(|row| {
+                    (
+                        empty_to_none(row.namespace.clone())
+                            .unwrap_or_else(|| "default".to_owned()),
+                        row.name.clone(),
+                        row.container_names.clone(),
+                    )
+                }) else {
+                    return;
+                };
                 let selected_container = containers.first().cloned();
                 self.log_dialog = Some(PodLogDialog {
-                    key: row.key,
-                    namespace: empty_to_none(row.namespace).unwrap_or_else(|| "default".to_owned()),
-                    pod: row.name,
+                    key,
+                    namespace,
+                    pod: name,
                     containers,
                     selected_container,
                     lines: Vec::new(),
@@ -343,36 +339,62 @@ impl PodResourcePanel {
                     error: None,
                 });
             }
-            Some(PodTableAction::Evict(row)) => {
+            Some(PodTableAction::Evict { key }) => {
+                let Some((namespace, name)) = self.row_by_key(&key).map(|row| {
+                    (
+                        empty_to_none(row.namespace.clone())
+                            .unwrap_or_else(|| "default".to_owned()),
+                        row.name.clone(),
+                    )
+                }) else {
+                    return;
+                };
                 self.evict_dialog = Some(PodEvictDialog {
-                    key: row.key,
-                    namespace: empty_to_none(row.namespace).unwrap_or_else(|| "default".to_owned()),
-                    name: row.name,
+                    key,
+                    namespace,
+                    name,
                 });
                 self.action_error = None;
             }
-            Some(PodTableAction::View(row)) => {
-                self.view_dialog = Some(PodViewDialog {
-                    key: row.key,
-                    name: row.name,
-                    yaml: row.full_yaml,
-                });
+            Some(PodTableAction::View { key }) => {
+                let Some((name, yaml)) = self
+                    .row_by_key(&key)
+                    .map(|row| (row.name.clone(), full_manifest_yaml(&row.raw)))
+                else {
+                    return;
+                };
+                self.view_dialog = Some(PodViewDialog { key, name, yaml });
             }
-            Some(PodTableAction::Edit(row)) => {
+            Some(PodTableAction::Edit { key }) => {
+                let Some((namespace, name, yaml)) = self.row_by_key(&key).map(|row| {
+                    (
+                        empty_to_none(row.namespace.clone()),
+                        row.name.clone(),
+                        editable_manifest_yaml(&row.raw),
+                    )
+                }) else {
+                    return;
+                };
                 self.edit_dialog = Some(PodEditDialog {
-                    key: row.key,
-                    namespace: empty_to_none(row.namespace),
-                    name: row.name,
-                    yaml: row.edit_yaml,
+                    key,
+                    namespace,
+                    name,
+                    yaml,
                     parse_error: None,
                 });
                 self.action_error = None;
             }
-            Some(PodTableAction::Delete(row)) => {
+            Some(PodTableAction::Delete { key }) => {
+                let Some((namespace, name)) = self
+                    .row_by_key(&key)
+                    .map(|row| (empty_to_none(row.namespace.clone()), row.name.clone()))
+                else {
+                    return;
+                };
                 self.delete_dialog = Some(PodDeleteDialog {
-                    key: row.key,
-                    namespace: empty_to_none(row.namespace),
-                    name: row.name,
+                    key,
+                    namespace,
+                    name,
                 });
                 self.action_error = None;
             }
@@ -893,8 +915,19 @@ impl PodResourcePanel {
         self.next_request_id
     }
 
-    fn filtered_rows(&self) -> Vec<PodRow> {
-        filter_pod_rows(&self.rows, &self.search_text)
+    fn filtered_row_count(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|row| row_matches_search(row, &self.search_text))
+            .count()
+    }
+
+    fn filtered_row_indices(&self) -> Vec<usize> {
+        self.rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| row_matches_search(row, &self.search_text).then_some(index))
+            .collect()
     }
 
     fn replace_rows(&mut self, rows: Vec<PodRow>) {
@@ -904,6 +937,10 @@ impl PodResourcePanel {
             .collect::<BTreeSet<_>>();
         self.selected_rows.retain(|key| visible_keys.contains(key));
         self.rows = rows;
+    }
+
+    fn row_by_key(&self, key: &str) -> Option<&PodRow> {
+        self.rows.iter().find(|row| row.key == key)
     }
 
     fn selected_delete_targets(&self) -> Vec<ResourceDeleteTarget> {
@@ -920,7 +957,8 @@ impl PodResourcePanel {
 
 fn show_pod_table(
     ui: &mut egui::Ui,
-    rows: Vec<PodRow>,
+    rows: &[PodRow],
+    row_indices: Vec<usize>,
     selected_rows: &mut BTreeSet<String>,
 ) -> Option<PodTableAction> {
     let row_height = ui.spacing().interact_size.y;
@@ -955,9 +993,12 @@ fn show_pod_table(
                     }
                 })
                 .body(|body| {
-                    body.rows(row_height, rows.len(), |mut table_row| {
+                    body.rows(row_height, row_indices.len(), |mut table_row| {
                         let row_index = table_row.index();
-                        let Some(row) = rows.get(row_index) else {
+                        let Some(row) = row_indices
+                            .get(row_index)
+                            .and_then(|index| rows.get(*index))
+                        else {
                             return;
                         };
                         let row_selected = selected_rows.contains(&row.key);
@@ -1018,7 +1059,9 @@ fn show_pod_table(
                                 .button(format!("{} Logs", egui_phosphor::regular::TERMINAL_WINDOW))
                                 .clicked()
                             {
-                                action = Some(PodTableAction::Logs(row.clone()));
+                                action = Some(PodTableAction::Logs {
+                                    key: row.key.clone(),
+                                });
                                 ui.close();
                             }
                             ui.add_enabled(
@@ -1035,7 +1078,9 @@ fn show_pod_table(
                             ))
                             .color(evict_color());
                             if ui.button(evict_text).clicked() {
-                                action = Some(PodTableAction::Evict(row.clone()));
+                                action = Some(PodTableAction::Evict {
+                                    key: row.key.clone(),
+                                });
                                 ui.close();
                             }
                             ui.separator();
@@ -1043,14 +1088,18 @@ fn show_pod_table(
                                 .button(format!("{} View", egui_phosphor::regular::EYE))
                                 .clicked()
                             {
-                                action = Some(PodTableAction::View(row.clone()));
+                                action = Some(PodTableAction::View {
+                                    key: row.key.clone(),
+                                });
                                 ui.close();
                             }
                             if ui
                                 .button(format!("{} Edit", egui_phosphor::regular::PENCIL_SIMPLE))
                                 .clicked()
                             {
-                                action = Some(PodTableAction::Edit(row.clone()));
+                                action = Some(PodTableAction::Edit {
+                                    key: row.key.clone(),
+                                });
                                 ui.close();
                             }
                             let delete_text = egui::RichText::new(format!(
@@ -1059,7 +1108,9 @@ fn show_pod_table(
                             ))
                             .color(ui.visuals().error_fg_color);
                             if ui.button(delete_text).clicked() {
-                                action = Some(PodTableAction::Delete(row.clone()));
+                                action = Some(PodTableAction::Delete {
+                                    key: row.key.clone(),
+                                });
                                 ui.close();
                             }
                         });
@@ -1104,12 +1155,16 @@ fn evict_color() -> egui::Color32 {
     egui::Color32::from_rgb(217, 119, 6)
 }
 
-fn filter_pod_rows(rows: &[PodRow], search_text: &str) -> Vec<PodRow> {
-    let needle = search_text.trim().to_lowercase();
+#[cfg(test)]
+fn filter_pod_rows<'a>(rows: &'a [PodRow], search_text: &str) -> Vec<&'a PodRow> {
     rows.iter()
-        .filter(|row| needle.is_empty() || row.name.to_lowercase().contains(&needle))
-        .cloned()
+        .filter(|row| row_matches_search(row, search_text))
         .collect()
+}
+
+fn row_matches_search(row: &PodRow, search_text: &str) -> bool {
+    let needle = search_text.trim().to_lowercase();
+    needle.is_empty() || row.name.to_lowercase().contains(&needle)
 }
 
 fn pod_rows_from_list(items: &[ResourceSummary]) -> Vec<PodRow> {
@@ -1137,8 +1192,7 @@ struct PodRow {
     qos: String,
     status: String,
     age: String,
-    edit_yaml: String,
-    full_yaml: String,
+    raw: serde_json::Value,
 }
 
 impl PodRow {
@@ -1149,11 +1203,6 @@ impl PodRow {
             .or(summary.namespace.as_deref())
             .unwrap_or("N/A");
         let key = pod_key(namespace, name);
-        let full_yaml = full_manifest_yaml(&summary.raw);
-        let editable_manifest = editable_manifest(&summary.raw);
-        let edit_yaml = serde_yaml::to_string(&editable_manifest)
-            .or_else(|_| serde_json::to_string_pretty(&summary.raw))
-            .unwrap_or_default();
         let container_statuses = raw
             .pointer("/status/containerStatuses")
             .and_then(serde_json::Value::as_array);
@@ -1198,19 +1247,18 @@ impl PodRow {
                     human_age_from_rfc3339(timestamp).unwrap_or_else(|| timestamp.to_owned())
                 })
                 .unwrap_or_else(|| "N/A".to_owned()),
-            edit_yaml,
-            full_yaml,
+            raw: summary.raw.clone(),
         }
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 enum PodTableAction {
-    Logs(PodRow),
-    Evict(PodRow),
-    View(PodRow),
-    Edit(PodRow),
-    Delete(PodRow),
+    Logs { key: String },
+    Evict { key: String },
+    View { key: String },
+    Edit { key: String },
+    Delete { key: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1331,6 +1379,12 @@ fn editable_manifest(raw: &serde_json::Value) -> serde_json::Value {
         object.remove("status");
     }
     manifest
+}
+
+fn editable_manifest_yaml(raw: &serde_json::Value) -> String {
+    serde_yaml::to_string(&editable_manifest(raw))
+        .or_else(|_| serde_json::to_string_pretty(raw))
+        .unwrap_or_default()
 }
 
 fn full_manifest_yaml(raw: &serde_json::Value) -> String {
