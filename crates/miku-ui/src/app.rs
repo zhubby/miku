@@ -128,8 +128,14 @@ impl MikuApp {
 
 impl eframe::App for MikuApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.process_cluster_events();
-        self.process_resource_events();
+        #[cfg(debug_assertions)]
+        ui.ctx()
+            .global_style_mut(|style| style.debug.warn_if_rect_changes_id = false);
+
+        if ui.ctx().current_pass_index() == 0 {
+            self.process_cluster_events();
+            self.process_resource_events();
+        }
         self.update_file_dialog(ui.ctx());
 
         egui::Panel::top("menu_bar").show_inside(ui, |ui| {

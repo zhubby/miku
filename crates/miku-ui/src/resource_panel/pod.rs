@@ -104,7 +104,7 @@ impl PodResourcePanel {
                     self.row_request_id = None;
                     match result {
                         Ok(list) => {
-                            self.rows = list.items.iter().map(PodRow::from_summary).collect();
+                            self.rows = pod_rows_from_list(&list.items);
                             self.row_status = LoadStatus::Loaded;
                         }
                         Err(error) => self.row_status = LoadStatus::Error(error),
@@ -1045,6 +1045,16 @@ fn filter_pod_rows(rows: &[PodRow], search_text: &str) -> Vec<PodRow> {
         .collect()
 }
 
+fn pod_rows_from_list(items: &[ResourceSummary]) -> Vec<PodRow> {
+    let mut rows = items.iter().map(PodRow::from_summary).collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        left.namespace
+            .cmp(&right.namespace)
+            .then(left.name.cmp(&right.name))
+    });
+    rows
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct PodRow {
     key: String,
@@ -1494,6 +1504,39 @@ mod tests {
 
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].name, "api-75f");
+    }
+
+    #[test]
+    fn pod_rows_are_sorted_by_namespace_and_name() {
+        let rows = pod_rows_from_list(&[
+            ResourceSummary {
+                name: "worker".to_owned(),
+                namespace: Some("zeta".to_owned()),
+                kind: "Pod".to_owned(),
+                status: None,
+                raw: serde_json::json!({"metadata": {"namespace": "zeta", "name": "worker"}}),
+            },
+            ResourceSummary {
+                name: "api".to_owned(),
+                namespace: Some("default".to_owned()),
+                kind: "Pod".to_owned(),
+                status: None,
+                raw: serde_json::json!({"metadata": {"namespace": "default", "name": "api"}}),
+            },
+            ResourceSummary {
+                name: "scheduler".to_owned(),
+                namespace: Some("default".to_owned()),
+                kind: "Pod".to_owned(),
+                status: None,
+                raw: serde_json::json!({"metadata": {"namespace": "default", "name": "scheduler"}}),
+            },
+        ]);
+
+        let keys = rows.into_iter().map(|row| row.key).collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            vec!["default/api", "default/scheduler", "zeta/worker"]
+        );
     }
 
     #[test]
