@@ -1,13 +1,16 @@
 use std::collections::BTreeSet;
 
-use eframe::egui;
+use eframe::egui::{self, TextWrapMode};
 use egui_extras::{Column, TableBuilder};
 use miku_api::{LogLine, PodAttachInput, PodAttachOutput, ResourceSummary};
 use miku_core::ClusterId;
 
 #[cfg(test)]
 use super::ResourceLoadRequest;
-use super::components::{ResourceToolbar, ResourceYamlEditDialog, ResourceYamlViewDialog};
+use super::components::{
+    ResourceMapEntry, ResourceMapView, ResourceToolbar, ResourceYamlEditDialog,
+    ResourceYamlViewDialog,
+};
 use super::{
     LoadStatus, PodAttachInputRequest, PodAttachRequest, PodLogRequest, ResourceActionKind,
     ResourceActionOutcome, ResourceActionRequest, ResourceDeleteTarget, ResourceLoadKind,
@@ -509,13 +512,14 @@ impl PodResourcePanel {
             .show(ctx, |ui| {
                 ui.set_width(POD_DESCRIBE_DIALOG_WIDTH);
                 ui.set_height(POD_DESCRIBE_CONTENT_HEIGHT);
-                egui::ScrollArea::vertical()
+                egui::ScrollArea::both()
                     .id_salt(("pod-describe-content", &dialog.key))
                     .max_width(POD_DESCRIBE_DIALOG_WIDTH)
                     .max_height(POD_DESCRIBE_CONTENT_HEIGHT)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.set_width(POD_DESCRIBE_DIALOG_WIDTH - POD_DESCRIBE_CONTENT_INSET);
+                        ui.set_min_width(POD_DESCRIBE_CONTENT_WIDTH);
+                        ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
                         show_pod_describe(ui, &dialog.describe);
                     });
             });
@@ -1451,10 +1455,11 @@ const POD_ATTACH_INPUT_WIDTH: f32 = 720.0;
 const POD_DESCRIBE_DIALOG_WIDTH: f32 = 860.0;
 const POD_DESCRIBE_DIALOG_HEIGHT: f32 = 580.0;
 const POD_DESCRIBE_CONTENT_HEIGHT: f32 = 520.0;
-const POD_DESCRIBE_CONTENT_INSET: f32 = 28.0;
-const POD_DESCRIBE_FIELD_LABEL_WIDTH: f32 = 105.0;
-const POD_DESCRIBE_FIELD_VALUE_WIDTH: f32 = 250.0;
-const POD_DESCRIBE_LINE_WIDTH: f32 = 800.0;
+const POD_DESCRIBE_CONTENT_WIDTH: f32 = 1160.0;
+const POD_DESCRIBE_SECTION_WIDTH: f32 = 1128.0;
+const POD_DESCRIBE_FIELD_LABEL_WIDTH: f32 = 120.0;
+const POD_DESCRIBE_FIELD_VALUE_WIDTH: f32 = 390.0;
+const POD_DESCRIBE_LINE_WIDTH: f32 = 1080.0;
 
 fn status_color(ui: &egui::Ui, status: &str) -> egui::Color32 {
     match status {
@@ -1604,6 +1609,8 @@ struct PodDescribeDialog {
 struct PodDescribe {
     summary: Vec<DescribeField>,
     metadata: Vec<DescribeField>,
+    labels: Vec<ResourceMapEntry>,
+    annotations: Vec<ResourceMapEntry>,
     containers: Vec<ContainerDescribe>,
     conditions: Vec<ConditionDescribe>,
     volumes: Vec<String>,
@@ -1711,78 +1718,119 @@ enum PodAttachStatus {
 }
 
 fn show_pod_describe(ui: &mut egui::Ui, describe: &PodDescribe) {
-    describe_section(ui, egui_phosphor::regular::CUBE, "Pod");
-    describe_fields(ui, &describe.summary);
+    describe_group(ui, egui_phosphor::regular::CUBE, "Pod", |ui| {
+        describe_fields(ui, &describe.summary);
+    });
 
     ui.add_space(10.0);
-    describe_section(ui, egui_phosphor::regular::BOX_ARROW_DOWN, "Containers");
-    if describe.containers.is_empty() {
-        ui.label("N/A");
-    } else {
-        for (index, container) in describe.containers.iter().enumerate() {
-            if index > 0 {
-                ui.separator();
-            }
-            show_container_describe(ui, container);
-        }
-    }
-
-    ui.add_space(10.0);
-    describe_section(ui, egui_phosphor::regular::CHECK_CIRCLE, "Conditions");
-    if describe.conditions.is_empty() {
-        ui.label("N/A");
-    } else {
-        egui::Grid::new("pod-describe-conditions")
-            .num_columns(4)
-            .spacing([18.0, 4.0])
-            .striped(true)
-            .show(ui, |ui| {
-                ui.strong("Type");
-                ui.strong("Status");
-                ui.strong("Reason");
-                ui.strong("Message");
-                ui.end_row();
-                for condition in &describe.conditions {
-                    wrapped_value(ui, &condition.condition_type, 140.0);
-                    ui.colored_label(condition_color(ui, &condition.status), &condition.status);
-                    wrapped_value(ui, &condition.reason, 170.0);
-                    wrapped_value(ui, &condition.message, 330.0);
-                    ui.end_row();
+    describe_group(
+        ui,
+        egui_phosphor::regular::BOX_ARROW_DOWN,
+        "Containers",
+        |ui| {
+            if describe.containers.is_empty() {
+                non_wrapping_value(ui, "N/A", POD_DESCRIBE_LINE_WIDTH);
+            } else {
+                for (index, container) in describe.containers.iter().enumerate() {
+                    if index > 0 {
+                        ui.separator();
+                    }
+                    show_container_describe(ui, container);
                 }
+            }
+        },
+    );
+
+    ui.add_space(10.0);
+    describe_group(
+        ui,
+        egui_phosphor::regular::CHECK_CIRCLE,
+        "Conditions",
+        |ui| {
+            if describe.conditions.is_empty() {
+                non_wrapping_value(ui, "N/A", POD_DESCRIBE_LINE_WIDTH);
+            } else {
+                egui::Grid::new("pod-describe-conditions")
+                    .num_columns(4)
+                    .spacing([18.0, 4.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.strong("Type");
+                        ui.strong("Status");
+                        ui.strong("Reason");
+                        ui.strong("Message");
+                        ui.end_row();
+                        for condition in &describe.conditions {
+                            non_wrapping_value(ui, &condition.condition_type, 160.0);
+                            ui.colored_label(
+                                condition_color(ui, &condition.status),
+                                &condition.status,
+                            );
+                            non_wrapping_value(ui, &condition.reason, 200.0);
+                            non_wrapping_value(ui, &condition.message, 560.0);
+                            ui.end_row();
+                        }
+                    });
+            }
+        },
+    );
+
+    ui.add_space(10.0);
+    describe_group(ui, egui_phosphor::regular::HARD_DRIVES, "Volumes", |ui| {
+        describe_lines(ui, &describe.volumes);
+    });
+
+    ui.add_space(10.0);
+    describe_group(ui, egui_phosphor::regular::TAG, "Metadata", |ui| {
+        describe_fields(ui, &describe.metadata);
+        ui.add_space(8.0);
+        ResourceMapView {
+            id_salt: "pod-describe-labels",
+            icon: egui_phosphor::regular::TAG,
+            title: "Labels",
+            entries: &describe.labels,
+            empty_label: "No labels.",
+        }
+        .show(ui);
+        ui.add_space(8.0);
+        ResourceMapView {
+            id_salt: "pod-describe-annotations",
+            icon: egui_phosphor::regular::NOTE,
+            title: "Annotations",
+            entries: &describe.annotations,
+            empty_label: "No annotations.",
+        }
+        .show(ui);
+    });
+
+    ui.add_space(10.0);
+    describe_group(
+        ui,
+        egui_phosphor::regular::LIST_CHECKS,
+        "Scheduling",
+        |ui| {
+            ui.strong("Node selectors");
+            describe_lines(ui, &describe.node_selectors);
+            ui.add_space(6.0);
+            ui.strong("Tolerations");
+            describe_lines(ui, &describe.tolerations);
+        },
+    );
+
+    ui.add_space(10.0);
+    describe_group(ui, egui_phosphor::regular::CODE, "Raw manifest", |ui| {
+        egui::ScrollArea::both()
+            .id_salt("pod-describe-raw-manifest-content")
+            .max_height(180.0)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(&describe.raw_yaml).monospace())
+                        .wrap_mode(TextWrapMode::Extend)
+                        .selectable(true),
+                );
             });
-    }
-
-    ui.add_space(10.0);
-    describe_section(ui, egui_phosphor::regular::HARD_DRIVES, "Volumes");
-    describe_lines(ui, &describe.volumes);
-
-    ui.add_space(10.0);
-    describe_section(ui, egui_phosphor::regular::TAG, "Metadata");
-    describe_fields(ui, &describe.metadata);
-
-    ui.add_space(10.0);
-    describe_section(ui, egui_phosphor::regular::LIST_CHECKS, "Scheduling");
-    ui.strong("Node selectors");
-    describe_lines(ui, &describe.node_selectors);
-    ui.add_space(4.0);
-    ui.strong("Tolerations");
-    describe_lines(ui, &describe.tolerations);
-
-    ui.add_space(10.0);
-    egui::CollapsingHeader::new(format!("{} Raw manifest", egui_phosphor::regular::CODE))
-        .id_salt("pod-describe-raw-manifest")
-        .show(ui, |ui| {
-            egui::ScrollArea::both()
-                .id_salt("pod-describe-raw-manifest-content")
-                .max_height(180.0)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(&describe.raw_yaml).monospace())
-                            .selectable(true),
-                    );
-                });
-        });
+    });
 }
 
 fn show_container_describe(ui: &mut egui::Ui, container: &ContainerDescribe) {
@@ -1792,7 +1840,7 @@ fn show_container_describe(ui: &mut egui::Ui, container: &ContainerDescribe) {
             egui_phosphor::regular::PACKAGE,
             container.name
         ));
-        wrapped_value(ui, &container.image, 660.0);
+        non_wrapping_value(ui, &container.image, 760.0);
     });
 
     let ready_text = if container.ready {
@@ -1800,7 +1848,7 @@ fn show_container_describe(ui: &mut egui::Ui, container: &ContainerDescribe) {
     } else {
         format!("{} Not ready", egui_phosphor::regular::WARNING_CIRCLE)
     };
-    ui.horizontal_wrapped(|ui| {
+    ui.horizontal(|ui| {
         ui.colored_label(
             condition_color(ui, if container.ready { "True" } else { "False" }),
             ready_text,
@@ -1808,15 +1856,15 @@ fn show_container_describe(ui: &mut egui::Ui, container: &ContainerDescribe) {
         ui.label(format!("{} restarts", container.restarts));
         ui.label(format!("State: {}", container.state));
         if container.state_detail != "N/A" {
-            wrapped_value(ui, &container.state_detail, 360.0);
+            non_wrapping_value(ui, &container.state_detail, 420.0);
         }
     });
 
-    ui.add_space(4.0);
-    describe_section(ui, egui_phosphor::regular::GAUGE, "Resources");
+    ui.add_space(6.0);
+    describe_subsection(ui, egui_phosphor::regular::GAUGE, "Resources");
     describe_fields(ui, &container.resources);
 
-    ui.add_space(4.0);
+    ui.add_space(6.0);
     describe_fields(
         ui,
         &[
@@ -1826,11 +1874,33 @@ fn show_container_describe(ui: &mut egui::Ui, container: &ContainerDescribe) {
         ],
     );
 
-    ui.add_space(4.0);
+    ui.add_space(6.0);
     describe_fields(ui, &container.probes);
 }
 
-fn describe_section(ui: &mut egui::Ui, icon: &str, title: &str) {
+fn describe_group(
+    ui: &mut egui::Ui,
+    icon: &str,
+    title: &str,
+    contents: impl FnOnce(&mut egui::Ui),
+) {
+    egui::Frame::new()
+        .fill(ui.visuals().extreme_bg_color)
+        .stroke(egui::Stroke::new(
+            1.0,
+            ui.visuals().widgets.noninteractive.bg_stroke.color,
+        ))
+        .corner_radius(egui::CornerRadius::same(4))
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_min_width(POD_DESCRIBE_SECTION_WIDTH);
+            describe_subsection(ui, icon, title);
+            ui.separator();
+            contents(ui);
+        });
+}
+
+fn describe_subsection(ui: &mut egui::Ui, icon: &str, title: &str) {
     ui.horizontal(|ui| {
         ui.label(icon);
         ui.strong(title);
@@ -1846,9 +1916,10 @@ fn describe_fields(ui: &mut egui::Ui, fields: &[DescribeField]) {
                 for field in chunk {
                     ui.add_sized(
                         [POD_DESCRIBE_FIELD_LABEL_WIDTH, 0.0],
-                        egui::Label::new(egui::RichText::new(&field.label).weak()).wrap(),
+                        egui::Label::new(egui::RichText::new(&field.label).weak())
+                            .wrap_mode(TextWrapMode::Extend),
                     );
-                    wrapped_value(ui, &field.value, POD_DESCRIBE_FIELD_VALUE_WIDTH);
+                    non_wrapping_value(ui, &field.value, POD_DESCRIBE_FIELD_VALUE_WIDTH);
                 }
                 if chunk.len() == 1 {
                     ui.label("");
@@ -1861,17 +1932,22 @@ fn describe_fields(ui: &mut egui::Ui, fields: &[DescribeField]) {
 
 fn describe_lines(ui: &mut egui::Ui, lines: &[String]) {
     if lines.is_empty() {
-        ui.label("N/A");
+        non_wrapping_value(ui, "N/A", POD_DESCRIBE_LINE_WIDTH);
         return;
     }
 
     for line in lines {
-        wrapped_value(ui, line, POD_DESCRIBE_LINE_WIDTH);
+        non_wrapping_value(ui, line, POD_DESCRIBE_LINE_WIDTH);
     }
 }
 
-fn wrapped_value(ui: &mut egui::Ui, value: &str, width: f32) {
-    ui.add_sized([width, 0.0], egui::Label::new(value).wrap());
+fn non_wrapping_value(ui: &mut egui::Ui, value: &str, width: f32) {
+    ui.add_sized(
+        [width, 0.0],
+        egui::Label::new(value)
+            .wrap_mode(TextWrapMode::Extend)
+            .selectable(true),
+    );
 }
 
 fn condition_color(ui: &egui::Ui, status: &str) -> egui::Color32 {
@@ -1906,10 +1982,12 @@ fn pod_describe_from_row(row: &PodRow) -> PodDescribe {
             DescribeField::new("Restarts", row.restarts.clone()),
         ],
         metadata: pod_metadata_fields(raw),
+        labels: string_map_entries(raw.pointer("/metadata/labels")),
+        annotations: string_map_entries(raw.pointer("/metadata/annotations")),
         containers: pod_container_describes(raw),
         conditions: pod_condition_describes(raw),
         volumes: pod_volume_describes(raw),
-        node_selectors: string_map_entries(raw.pointer("/spec/nodeSelector")),
+        node_selectors: string_map_lines(raw.pointer("/spec/nodeSelector")),
         tolerations: pod_toleration_describes(raw),
         raw_yaml: full_manifest_yaml(raw),
     }
@@ -1932,14 +2010,6 @@ fn pod_metadata_fields(raw: &serde_json::Value) -> Vec<DescribeField> {
         DescribeField::new(
             "Host IP",
             value_str(raw, &["status", "hostIP"]).unwrap_or("N/A"),
-        ),
-        DescribeField::new(
-            "Labels",
-            string_map_summary(raw.pointer("/metadata/labels")),
-        ),
-        DescribeField::new(
-            "Annotations",
-            string_map_summary(raw.pointer("/metadata/annotations")),
         ),
     ]
 }
@@ -2146,17 +2216,8 @@ fn pod_toleration_describes(raw: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-fn string_map_summary(value: Option<&serde_json::Value>) -> String {
-    let entries = string_map_entries(value);
-    if entries.is_empty() {
-        "N/A".to_owned()
-    } else {
-        entries.join(", ")
-    }
-}
-
-fn string_map_entries(value: Option<&serde_json::Value>) -> Vec<String> {
-    value
+fn string_map_entries(value: Option<&serde_json::Value>) -> Vec<ResourceMapEntry> {
+    let mut entries = value
         .and_then(serde_json::Value::as_object)
         .into_iter()
         .flat_map(|object| {
@@ -2164,9 +2225,18 @@ fn string_map_entries(value: Option<&serde_json::Value>) -> Vec<String> {
                 let value = value
                     .as_str()
                     .map_or_else(|| value.to_string(), ToOwned::to_owned);
-                format!("{key}={value}")
+                ResourceMapEntry::new(key, value)
             })
         })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.key.cmp(&right.key));
+    entries
+}
+
+fn string_map_lines(value: Option<&serde_json::Value>) -> Vec<String> {
+    string_map_entries(value)
+        .into_iter()
+        .map(|entry| format!("{}={}", entry.key, entry.value))
         .collect()
 }
 
