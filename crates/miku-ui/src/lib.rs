@@ -1,10 +1,10 @@
 mod app;
-#[cfg(not(target_arch = "wasm32"))]
 mod cluster_events;
 mod dialogs;
 mod dock;
 mod fonts;
 mod forms;
+#[cfg(not(target_arch = "wasm32"))]
 mod menu;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;

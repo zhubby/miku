@@ -7,15 +7,6 @@ const CONFIG_TEXT_HEIGHT: f32 = 180.0;
 
 impl MikuApp {
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fn submit_new_cluster(&mut self) {
-        self.new_cluster_form
-            .save_failed("cluster storage is not available in web mode");
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fn process_cluster_events(&mut self) {}
-
-    #[cfg(target_arch = "wasm32")]
     pub(crate) fn update_file_dialog(&mut self, _ctx: &egui::Context) {}
 
     pub(crate) fn show_new_cluster_dialog(&mut self, ctx: &egui::Context) {

@@ -16,7 +16,6 @@ impl NewClusterForm {
         *self = Self::default();
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn save_started(&mut self) {
         self.error = None;
     }
@@ -25,7 +24,6 @@ impl NewClusterForm {
         self.error = Some(error.into());
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn save_succeeded(&mut self) {
         self.cancel();
     }

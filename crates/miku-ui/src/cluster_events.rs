@@ -1,9 +1,11 @@
+#[cfg(not(target_arch = "wasm32"))]
 use eframe::egui;
 use miku_api::{
     ClusterConnectionInfo, ClusterInitializeRequest, ClusterSummary, CreateClusterRequest,
 };
 
 use crate::app::MikuApp;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::native::read_config_file;
 use crate::state::ClusterConnectionState;
 
@@ -14,6 +16,7 @@ pub(crate) enum ClusterUiEvent {
         cluster_id: miku_core::ClusterId,
         result: Result<ClusterConnectionInfo, String>,
     },
+    #[cfg(not(target_arch = "wasm32"))]
     ConfigFileLoaded(Result<String, String>),
 }
 
@@ -22,13 +25,26 @@ impl MikuApp {
         let Some(services) = self.services.clone() else {
             return;
         };
+        #[cfg(not(target_arch = "wasm32"))]
         let Some(runtime) = self.runtime.as_ref() else {
             return;
         };
+
         self.cluster_load_in_flight = true;
         self.cluster_load_error = None;
         let sender = self.cluster_event_sender.clone();
+
+        #[cfg(not(target_arch = "wasm32"))]
         runtime.spawn(async move {
+            let result = services
+                .list_clusters()
+                .await
+                .map_err(|error| error.to_string());
+            let _ = sender.send(ClusterUiEvent::ClustersLoaded(result));
+        });
+
+        #[cfg(target_arch = "wasm32")]
+        wasm_bindgen_futures::spawn_local(async move {
             let result = services
                 .list_clusters()
                 .await
@@ -43,11 +59,7 @@ impl MikuApp {
                 .save_failed("cluster storage is not available");
             return;
         };
-        let Some(runtime) = self.runtime.as_ref() else {
-            self.new_cluster_form
-                .save_failed("cluster storage runtime is not available");
-            return;
-        };
+
         let context = self.new_cluster_form.context.trim().to_owned();
         let config = self.new_cluster_form.config.clone();
         if context.is_empty() {
@@ -59,10 +71,28 @@ impl MikuApp {
             return;
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
+        let Some(runtime) = self.runtime.as_ref() else {
+            self.new_cluster_form
+                .save_failed("cluster storage runtime is not available");
+            return;
+        };
+
         self.new_cluster_form.save_started();
         self.cluster_load_in_flight = true;
         let sender = self.cluster_event_sender.clone();
+
+        #[cfg(not(target_arch = "wasm32"))]
         runtime.spawn(async move {
+            let result = services
+                .create_cluster(CreateClusterRequest { context, config })
+                .await
+                .map_err(|error| error.to_string());
+            let _ = sender.send(ClusterUiEvent::ClusterCreated(result));
+        });
+
+        #[cfg(target_arch = "wasm32")]
+        wasm_bindgen_futures::spawn_local(async move {
             let result = services
                 .create_cluster(CreateClusterRequest { context, config })
                 .await
@@ -90,18 +120,33 @@ impl MikuApp {
             );
             return;
         };
-        let Some(runtime) = self.runtime.as_ref() else {
-            self.cluster_connection_states.insert(
-                cluster_id,
-                ClusterConnectionState::Failed {
-                    error: "cluster runtime is not available".to_owned(),
-                },
-            );
-            return;
-        };
 
         let sender = self.cluster_event_sender.clone();
-        runtime.spawn(async move {
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(runtime) = self.runtime.as_ref() else {
+                self.cluster_connection_states.insert(
+                    cluster_id,
+                    ClusterConnectionState::Failed {
+                        error: "cluster runtime is not available".to_owned(),
+                    },
+                );
+                return;
+            };
+            runtime.spawn(async move {
+                let result = services
+                    .initialize_cluster(ClusterInitializeRequest {
+                        cluster_id: cluster_id.clone(),
+                    })
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(ClusterUiEvent::ClusterInitialized { cluster_id, result });
+            });
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        wasm_bindgen_futures::spawn_local(async move {
             let result = services
                 .initialize_cluster(ClusterInitializeRequest {
                     cluster_id: cluster_id.clone(),
@@ -143,6 +188,7 @@ impl MikuApp {
                     };
                     self.cluster_connection_states.insert(cluster_id, state);
                 }
+                #[cfg(not(target_arch = "wasm32"))]
                 ClusterUiEvent::ConfigFileLoaded(result) => match result {
                     Ok(config) => {
                         self.new_cluster_form.config = config;
@@ -154,6 +200,7 @@ impl MikuApp {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn update_file_dialog(&mut self, ctx: &egui::Context) {
         self.file_dialog.update(ctx);
         if let Some(path) = self.file_dialog.take_picked() {

@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::mpsc;
 use std::sync::{Arc, mpsc as resource_mpsc};
 
 use eframe::egui;
@@ -8,7 +6,6 @@ use egui_dock::{DockArea, DockState, NodePath, Style, SurfaceIndex, TabPath};
 use futures::StreamExt;
 use miku_api::{ClusterSummary, MikuServices, PodAttachInput};
 
-#[cfg(not(target_arch = "wasm32"))]
 use crate::cluster_events::ClusterUiEvent;
 use crate::dock::show_dock_region;
 use crate::forms::NewClusterForm;
@@ -47,10 +44,8 @@ pub struct MikuApp {
     pub(crate) status_event_receiver: resource_mpsc::Receiver<ClusterStatusUiEvent>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) runtime: Option<tokio::runtime::Handle>,
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) cluster_event_sender: mpsc::Sender<ClusterUiEvent>,
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) cluster_event_receiver: mpsc::Receiver<ClusterUiEvent>,
+    pub(crate) cluster_event_sender: resource_mpsc::Sender<ClusterUiEvent>,
+    pub(crate) cluster_event_receiver: resource_mpsc::Receiver<ClusterUiEvent>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) file_dialog: egui_file_dialog::FileDialog,
 }
@@ -85,8 +80,7 @@ pub(crate) enum ClusterStatusUiEvent {
 impl MikuApp {
     pub fn new(runtime_mode: RuntimeMode) -> Self {
         tracing::debug!(?runtime_mode, "creating Miku app");
-        #[cfg(not(target_arch = "wasm32"))]
-        let (cluster_event_sender, cluster_event_receiver) = mpsc::channel();
+        let (cluster_event_sender, cluster_event_receiver) = resource_mpsc::channel();
         let (resource_event_sender, resource_event_receiver) = resource_mpsc::channel();
         let (status_event_sender, status_event_receiver) = resource_mpsc::channel();
         let left_dock_state = DockState::new(vec![AppTab::Clusters, AppTab::Resources]);
@@ -113,9 +107,7 @@ impl MikuApp {
             status_event_receiver,
             #[cfg(not(target_arch = "wasm32"))]
             runtime: None,
-            #[cfg(not(target_arch = "wasm32"))]
             cluster_event_sender,
-            #[cfg(not(target_arch = "wasm32"))]
             cluster_event_receiver,
             #[cfg(not(target_arch = "wasm32"))]
             file_dialog: egui_file_dialog::FileDialog::new(),
@@ -138,25 +130,7 @@ impl MikuApp {
     pub fn web_with_services(services: Arc<dyn MikuServices>) -> Self {
         let mut app = Self::new(RuntimeMode::Web);
         app.services = Some(services);
-        let cluster = ClusterSummary {
-            id: miku_core::ClusterId::new("server"),
-            name: "Server".to_owned(),
-            context: "server".to_owned(),
-            current: true,
-        };
-        app.state
-            .select_cluster(cluster.id.clone(), cluster.name.clone());
-        app.cluster_connection_states.insert(
-            cluster.id.clone(),
-            ClusterConnectionState::Ready {
-                info: miku_api::ClusterConnectionInfo {
-                    version: "server".to_owned(),
-                    platform: None,
-                },
-            },
-        );
-        app.ensure_workspace(cluster.id.clone());
-        app.clusters.push(cluster);
+        app.request_cluster_refresh();
         app
     }
 
@@ -178,11 +152,14 @@ impl eframe::App for MikuApp {
         }
         self.update_file_dialog(ui.ctx());
 
-        egui::Panel::top("menu_bar").show_inside(ui, |ui| {
-            egui::MenuBar::new().ui(ui, |ui| {
-                self.show_menu_bar(ui);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            egui::Panel::top("menu_bar").show_inside(ui, |ui| {
+                egui::MenuBar::new().ui(ui, |ui| {
+                    self.show_menu_bar(ui);
+                });
             });
-        });
+        }
 
         egui::Panel::bottom("status_bar")
             .exact_size(24.0)
@@ -403,7 +380,6 @@ impl MikuApp {
         self.state
             .select_cluster(cluster.id.clone(), cluster.name.clone());
         self.ensure_workspace(cluster.id.clone());
-        #[cfg(not(target_arch = "wasm32"))]
         self.request_cluster_initialization(cluster.id);
     }
 
