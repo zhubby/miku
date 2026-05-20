@@ -1,6 +1,10 @@
 use async_trait::async_trait;
-use futures::{AsyncBufReadExt, StreamExt, TryStreamExt};
-use kube::api::{ApiResource, DeleteParams, EvictParams, LogParams, Patch, PatchParams};
+use futures::channel::mpsc;
+use futures::{AsyncBufReadExt, SinkExt, StreamExt, TryStreamExt};
+use kube::api::{
+    ApiResource, AttachParams, DeleteParams, EvictParams, LogParams, Patch, PatchParams,
+    TerminalSize,
+};
 use kube::config::{KubeConfigOptions, Kubeconfig};
 use kube::core::{DynamicObject, GroupVersionKind};
 use kube::{Api, Config, ResourceExt};
@@ -10,11 +14,13 @@ use miku_api::{
     ClusterStatusReader, ClusterStatusReport, ClusterStatusRequest, ClusterStatusSeverity,
     ClusterStatusWorkloadSummary, ClusterSummary, CreateClusterRequest, KubernetesResourceReader,
     KubernetesResourceWriter, KubernetesWatchService, LocalPreferenceStore, LogLine, MikuServices,
+    PodAttachInput, PodAttachOutput, PodAttachRequest, PodAttachService, PodAttachSession,
     PodEvictRequest, PodLogQuery, PodLogService, ResourceApplyRequest, ResourceDeleteRequest,
     ResourceDetail, ResourceEvent, ResourceList, ResourceQuery, ResourceSummary,
 };
 use miku_core::{ClusterId, ResourceRef, ResourceScope};
 use std::collections::HashMap;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
 
 mod resource_cache;
@@ -575,6 +581,138 @@ where
     }
 }
 
+#[async_trait]
+impl<S> PodAttachService for KubeServices<S>
+where
+    S: ClusterConfigStore + ClusterRegistry + LocalPreferenceStore + Clone + Send + Sync,
+{
+    #[tracing::instrument(name = "kube.attach_pod", skip(self), fields(namespace = %request.namespace, pod = %request.pod))]
+    async fn attach_pod(&self, request: PodAttachRequest) -> miku_core::Result<PodAttachSession> {
+        let client = self.client_for_cluster(&request.cluster_id).await?;
+        let pods: Api<k8s_openapi::api::core::v1::Pod> =
+            Api::namespaced(client, &request.namespace);
+        let params = attach_params(&request);
+        let mut attached = pods
+            .attach(&request.pod, &params)
+            .await
+            .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?;
+
+        let stdin = attached.stdin();
+        let stdout = attached.stdout();
+        let stderr = attached.stderr();
+        let terminal_size = attached.terminal_size();
+        let (input_tx, input_rx) = mpsc::unbounded();
+        let (output_tx, output_rx) = mpsc::unbounded();
+
+        tokio::spawn(run_attach_input(input_rx, stdin, terminal_size));
+        if let Some(stdout) = stdout {
+            tokio::spawn(read_attach_output(
+                stdout,
+                output_tx.clone(),
+                PodAttachOutputKind::Stdout,
+            ));
+        }
+        if let Some(stderr) = stderr {
+            tokio::spawn(read_attach_output(
+                stderr,
+                output_tx.clone(),
+                PodAttachOutputKind::Stderr,
+            ));
+        }
+        tokio::spawn(async move {
+            let result = attached
+                .join()
+                .await
+                .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()));
+            if let Err(error) = result {
+                let _ = output_tx.unbounded_send(Err(error));
+            }
+            let _ = output_tx.unbounded_send(Ok(PodAttachOutput::Closed));
+        });
+
+        Ok(PodAttachSession {
+            input: input_tx,
+            output: output_rx.boxed(),
+        })
+    }
+}
+
+enum PodAttachOutputKind {
+    Stdout,
+    Stderr,
+}
+
+async fn run_attach_input<W>(
+    mut input: mpsc::UnboundedReceiver<PodAttachInput>,
+    mut stdin: Option<W>,
+    mut terminal_size: Option<impl futures::Sink<TerminalSize> + Unpin>,
+) where
+    W: AsyncWrite + Unpin,
+{
+    while let Some(message) = input.next().await {
+        match message {
+            PodAttachInput::Bytes(bytes) => {
+                if let Some(stdin) = stdin.as_mut()
+                    && stdin.write_all(&bytes).await.is_err()
+                {
+                    break;
+                }
+            }
+            PodAttachInput::Resize { cols, rows } => {
+                if let Some(terminal_size) = terminal_size.as_mut() {
+                    let _ = terminal_size
+                        .send(TerminalSize {
+                            width: cols,
+                            height: rows,
+                        })
+                        .await;
+                }
+            }
+            PodAttachInput::Close => break,
+        }
+    }
+}
+
+async fn read_attach_output<R>(
+    mut reader: R,
+    output: mpsc::UnboundedSender<miku_core::Result<PodAttachOutput>>,
+    kind: PodAttachOutputKind,
+) where
+    R: AsyncRead + Unpin,
+{
+    let mut buffer = [0_u8; 4096];
+    loop {
+        match reader.read(&mut buffer).await {
+            Ok(0) => break,
+            Ok(count) => {
+                let bytes = buffer[..count].to_vec();
+                let message = match kind {
+                    PodAttachOutputKind::Stdout => PodAttachOutput::Stdout(bytes),
+                    PodAttachOutputKind::Stderr => PodAttachOutput::Stderr(bytes),
+                };
+                if output.unbounded_send(Ok(message)).is_err() {
+                    break;
+                }
+            }
+            Err(error) => {
+                let _ =
+                    output.unbounded_send(Err(miku_core::MikuError::Kubernetes(error.to_string())));
+                break;
+            }
+        }
+    }
+}
+
+fn attach_params(request: &PodAttachRequest) -> AttachParams {
+    let mut params = AttachParams::interactive_tty()
+        .tty(request.tty)
+        .stderr(!request.tty);
+    if let Some(container) = request.container.as_deref() {
+        params = params.container(container);
+    }
+    params
+}
+
 fn log_params(query: &PodLogQuery) -> LogParams {
     LogParams {
         container: query.container.clone(),
@@ -856,6 +994,44 @@ mod tests {
 
         assert_eq!(params.container.as_deref(), Some("server"));
         assert_eq!(params.tail_lines, Some(100));
+    }
+
+    #[test]
+    fn attach_params_use_tty_without_stderr_and_container() {
+        let request = miku_api::PodAttachRequest {
+            cluster_id: miku_core::ClusterId::new("local"),
+            namespace: "default".to_owned(),
+            pod: "api".to_owned(),
+            container: Some("server".to_owned()),
+            tty: true,
+        };
+
+        let params = attach_params(&request);
+
+        assert!(params.stdin);
+        assert!(params.stdout);
+        assert!(params.tty);
+        assert!(!params.stderr);
+        assert_eq!(params.container.as_deref(), Some("server"));
+    }
+
+    #[test]
+    fn attach_params_enable_stderr_when_tty_is_disabled() {
+        let request = miku_api::PodAttachRequest {
+            cluster_id: miku_core::ClusterId::new("local"),
+            namespace: "default".to_owned(),
+            pod: "api".to_owned(),
+            container: None,
+            tty: false,
+        };
+
+        let params = attach_params(&request);
+
+        assert!(params.stdin);
+        assert!(params.stdout);
+        assert!(!params.tty);
+        assert!(params.stderr);
+        assert!(params.container.is_none());
     }
 
     #[test]

@@ -1,9 +1,12 @@
 use axum::Json;
-use axum::extract::State;
+use axum::extract::ws::{Message, WebSocket};
+use axum::extract::{Query, State, WebSocketUpgrade};
 use axum::http::StatusCode;
+use axum::response::Response;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::{Stream, StreamExt};
-use miku_api::{PodEvictRequest, PodLogQuery};
+use miku_api::{PodAttachInput, PodAttachOutput, PodAttachRequest, PodEvictRequest, PodLogQuery};
+use serde::Deserialize;
 
 use crate::SharedServices;
 use crate::error::ServerResult;
@@ -15,6 +18,116 @@ pub(crate) async fn evict_pod(
 ) -> ServerResult<StatusCode> {
     services.evict_pod(request).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PodAttachQuery {
+    cluster_id: String,
+    namespace: String,
+    pod: String,
+    container: Option<String>,
+    tty: Option<bool>,
+}
+
+pub(crate) async fn attach_pod(
+    State(services): State<SharedServices>,
+    Query(query): Query<PodAttachQuery>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    upgrade.on_upgrade(move |socket| async move {
+        let request = PodAttachRequest {
+            cluster_id: miku_core::ClusterId::new(query.cluster_id),
+            namespace: query.namespace,
+            pod: query.pod,
+            container: query.container,
+            tty: query.tty.unwrap_or(true),
+        };
+        handle_attach_socket(socket, services, request).await;
+    })
+}
+
+async fn handle_attach_socket(
+    mut socket: WebSocket,
+    services: SharedServices,
+    request: PodAttachRequest,
+) {
+    let Ok(mut session) = services.attach_pod(request).await else {
+        let _ = socket
+            .send(Message::Text(
+                serde_json::to_string(&PodAttachOutput::Closed)
+                    .unwrap_or_else(|_| "{\"Closed\":null}".to_owned())
+                    .into(),
+            ))
+            .await;
+        return;
+    };
+
+    loop {
+        tokio::select! {
+            message = socket.recv() => {
+                let Some(Ok(message)) = message else {
+                    let _ = session.input.unbounded_send(PodAttachInput::Close);
+                    break;
+                };
+                match message {
+                    Message::Binary(bytes) => {
+                        let _ = session.input.unbounded_send(PodAttachInput::Bytes(bytes.to_vec()));
+                    }
+                    Message::Text(text) => {
+                        match serde_json::from_str::<PodAttachInput>(&text) {
+                            Ok(input) => {
+                                let close = matches!(input, PodAttachInput::Close);
+                                let _ = session.input.unbounded_send(input);
+                                if close {
+                                    break;
+                                }
+                            }
+                            Err(error) => {
+                                let output = PodAttachOutput::Stderr(error.to_string().into_bytes());
+                                if send_attach_output(&mut socket, output).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Message::Close(_) => {
+                        let _ = session.input.unbounded_send(PodAttachInput::Close);
+                        break;
+                    }
+                    Message::Ping(_) | Message::Pong(_) => {}
+                }
+            }
+            output = session.output.next() => {
+                let Some(output) = output else {
+                    let _ = send_attach_output(&mut socket, PodAttachOutput::Closed).await;
+                    break;
+                };
+                let output = output.unwrap_or_else(|error| PodAttachOutput::Stderr(error.to_string().into_bytes()));
+                let close = matches!(output, PodAttachOutput::Closed);
+                if send_attach_output(&mut socket, output).await.is_err() || close {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+async fn send_attach_output(
+    socket: &mut WebSocket,
+    output: PodAttachOutput,
+) -> Result<(), axum::Error> {
+    match output {
+        PodAttachOutput::Stdout(bytes) => socket.send(Message::Binary(bytes.into())).await,
+        PodAttachOutput::Stderr(_) | PodAttachOutput::Closed => {
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&output)
+                        .unwrap_or_else(|_| "{\"Closed\":null}".to_owned())
+                        .into(),
+                ))
+                .await
+        }
+    }
 }
 
 #[tracing::instrument(name = "http.read_pod_logs", skip(services, query), fields(namespace = %query.namespace, pod = %query.pod))]

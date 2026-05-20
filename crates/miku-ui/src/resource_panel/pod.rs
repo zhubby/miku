@@ -2,16 +2,16 @@ use std::collections::BTreeSet;
 
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
-use miku_api::{LogLine, ResourceSummary};
+use miku_api::{LogLine, PodAttachInput, PodAttachOutput, ResourceSummary};
 use miku_core::ClusterId;
 
 #[cfg(test)]
 use super::ResourceLoadRequest;
 use super::components::{ResourceToolbar, ResourceYamlEditDialog, ResourceYamlViewDialog};
 use super::{
-    LoadStatus, PodLogRequest, ResourceActionKind, ResourceActionOutcome, ResourceActionRequest,
-    ResourceDeleteTarget, ResourceLoadKind, ResourcePanelRequests, ResourceUiEvent,
-    ResourceWatchRequest, namespaces_from_list,
+    LoadStatus, PodAttachInputRequest, PodAttachRequest, PodLogRequest, ResourceActionKind,
+    ResourceActionOutcome, ResourceActionRequest, ResourceDeleteTarget, ResourceLoadKind,
+    ResourcePanelRequests, ResourceUiEvent, ResourceWatchRequest, namespaces_from_list,
 };
 use crate::time::human_age_from_rfc3339;
 
@@ -33,12 +33,14 @@ pub(crate) struct PodResourcePanel {
     log_request_id: Option<u64>,
     last_cluster_id: Option<ClusterId>,
     create_dialog: Option<PodCreateDialog>,
+    describe_dialog: Option<PodDescribeDialog>,
     view_dialog: Option<PodViewDialog>,
     edit_dialog: Option<PodEditDialog>,
     delete_dialog: Option<PodDeleteDialog>,
     batch_delete_dialog: Option<PodBatchDeleteDialog>,
     evict_dialog: Option<PodEvictDialog>,
     log_dialog: Option<PodLogDialog>,
+    attach_dialog: Option<PodAttachDialog>,
     action_error: Option<String>,
 }
 
@@ -71,12 +73,19 @@ impl PodResourcePanel {
         ui.separator();
         self.show_body(ui);
         self.show_create_dialog(ui.ctx(), cluster_id, &mut requests.actions);
+        self.show_describe_dialog(ui.ctx());
         self.show_view_dialog(ui.ctx());
         self.show_edit_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_batch_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_evict_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_log_dialog(ui.ctx(), cluster_id, &mut requests.logs);
+        self.show_attach_dialog(
+            ui.ctx(),
+            cluster_id,
+            &mut requests.attaches,
+            &mut requests.attach_inputs,
+        );
 
         requests
     }
@@ -167,6 +176,49 @@ impl PodResourcePanel {
                     }
                 }
             }
+            ResourceUiEvent::PodAttachConnected { request, result } => {
+                let Some(dialog) = self.attach_dialog.as_mut() else {
+                    return;
+                };
+                if dialog.request_id != Some(request.request_id) {
+                    return;
+                }
+                match result {
+                    Ok(_) => {
+                        dialog.status = PodAttachStatus::Attached;
+                        dialog.error = None;
+                        dialog.output.push_str("attached\n");
+                    }
+                    Err(error) => {
+                        dialog.status = PodAttachStatus::Error(error.clone());
+                        dialog.error = Some(error);
+                        dialog.request_id = None;
+                    }
+                }
+            }
+            ResourceUiEvent::PodAttachOutput { request, result } => {
+                let Some(dialog) = self.attach_dialog.as_mut() else {
+                    return;
+                };
+                if dialog.request_id != Some(request.request_id) {
+                    return;
+                }
+                match result {
+                    Ok(PodAttachOutput::Stdout(bytes)) | Ok(PodAttachOutput::Stderr(bytes)) => {
+                        dialog.output.push_str(&String::from_utf8_lossy(&bytes));
+                    }
+                    Ok(PodAttachOutput::Closed) => {
+                        dialog.output.push_str("\ndisconnected\n");
+                        dialog.status = PodAttachStatus::Disconnected;
+                        dialog.request_id = None;
+                    }
+                    Err(error) => {
+                        dialog.status = PodAttachStatus::Error(error.clone());
+                        dialog.error = Some(error);
+                        dialog.request_id = None;
+                    }
+                }
+            }
             ResourceUiEvent::ResourceWatchUpdated { request, result } => match request.kind {
                 ResourceLoadKind::Namespaces => {
                     if self.namespace_watch_request_id != Some(request.request_id) {
@@ -218,12 +270,14 @@ impl PodResourcePanel {
         self.action_request_id = None;
         self.log_request_id = None;
         self.create_dialog = None;
+        self.describe_dialog = None;
         self.view_dialog = None;
         self.edit_dialog = None;
         self.delete_dialog = None;
         self.batch_delete_dialog = None;
         self.evict_dialog = None;
         self.log_dialog = None;
+        self.attach_dialog = None;
         self.action_error = None;
     }
 
@@ -339,6 +393,31 @@ impl PodResourcePanel {
                     error: None,
                 });
             }
+            Some(PodTableAction::Attach { key }) => {
+                let Some((namespace, name, containers)) = self.row_by_key(&key).map(|row| {
+                    (
+                        empty_to_none(row.namespace.clone())
+                            .unwrap_or_else(|| "default".to_owned()),
+                        row.name.clone(),
+                        row.container_names.clone(),
+                    )
+                }) else {
+                    return;
+                };
+                let selected_container = containers.first().cloned();
+                self.attach_dialog = Some(PodAttachDialog {
+                    key,
+                    namespace,
+                    pod: name,
+                    containers,
+                    selected_container,
+                    input: String::new(),
+                    output: String::new(),
+                    request_id: None,
+                    status: PodAttachStatus::Disconnected,
+                    error: None,
+                });
+            }
             Some(PodTableAction::Evict { key }) => {
                 let Some((namespace, name)) = self.row_by_key(&key).map(|row| {
                     (
@@ -355,6 +434,19 @@ impl PodResourcePanel {
                     name,
                 });
                 self.action_error = None;
+            }
+            Some(PodTableAction::Describe { key }) => {
+                let Some((name, describe)) = self
+                    .row_by_key(&key)
+                    .map(|row| (row.name.clone(), pod_describe_from_row(row)))
+                else {
+                    return;
+                };
+                self.describe_dialog = Some(PodDescribeDialog {
+                    key,
+                    name,
+                    describe,
+                });
             }
             Some(PodTableAction::View { key }) => {
                 let Some((name, yaml)) = self
@@ -399,6 +491,37 @@ impl PodResourcePanel {
                 self.action_error = None;
             }
             None => {}
+        }
+    }
+
+    fn show_describe_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.describe_dialog.as_ref() else {
+            return;
+        };
+
+        let mut open = true;
+        egui::Window::new(format!("Describe {}", dialog.name))
+            .id(egui::Id::new(("pod-describe-dialog", &dialog.key)))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .open(&mut open)
+            .collapsible(false)
+            .fixed_size([POD_DESCRIBE_DIALOG_WIDTH, POD_DESCRIBE_DIALOG_HEIGHT])
+            .show(ctx, |ui| {
+                ui.set_width(POD_DESCRIBE_DIALOG_WIDTH);
+                ui.set_height(POD_DESCRIBE_CONTENT_HEIGHT);
+                egui::ScrollArea::vertical()
+                    .id_salt(("pod-describe-content", &dialog.key))
+                    .max_width(POD_DESCRIBE_DIALOG_WIDTH)
+                    .max_height(POD_DESCRIBE_CONTENT_HEIGHT)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_width(POD_DESCRIBE_DIALOG_WIDTH - POD_DESCRIBE_CONTENT_INSET);
+                        show_pod_describe(ui, &dialog.describe);
+                    });
+            });
+
+        if !open {
+            self.describe_dialog = None;
         }
     }
 
@@ -844,6 +967,176 @@ impl PodResourcePanel {
         }
     }
 
+    fn show_attach_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<PodAttachRequest>,
+        input_requests: &mut Vec<PodAttachInputRequest>,
+    ) {
+        let Some(dialog) = self.attach_dialog.as_mut() else {
+            return;
+        };
+
+        let mut open = true;
+        let mut attach_clicked = false;
+        let mut disconnect_clicked = false;
+        let mut clear_clicked = false;
+        let mut send_clicked = false;
+        let connected = matches!(dialog.status, PodAttachStatus::Attached);
+        let connecting = matches!(dialog.status, PodAttachStatus::Connecting);
+
+        egui::Window::new(format!("Attach {}", dialog.pod))
+            .id(egui::Id::new(("pod-attach-dialog", &dialog.key)))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size([POD_ATTACH_DIALOG_WIDTH, POD_ATTACH_DIALOG_HEIGHT])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Container");
+                    let selected_label = dialog
+                        .selected_container
+                        .as_deref()
+                        .unwrap_or("default")
+                        .to_owned();
+                    ui.add_enabled_ui(!connected && !connecting, |ui| {
+                        egui::ComboBox::from_id_salt(("pod-attach-container", &dialog.key))
+                            .selected_text(selected_label)
+                            .show_ui(ui, |ui| {
+                                for container in &dialog.containers {
+                                    ui.selectable_value(
+                                        &mut dialog.selected_container,
+                                        Some(container.clone()),
+                                        container,
+                                    );
+                                }
+                            });
+                    });
+                    ui.separator();
+                    ui.label(pod_attach_status_label(&dialog.status));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        clear_clicked = ui
+                            .button(egui_phosphor::regular::BROOM)
+                            .on_hover_text("Clear")
+                            .clicked();
+                        disconnect_clicked = ui
+                            .add_enabled(
+                                connected || connecting,
+                                egui::Button::new(egui_phosphor::regular::PLUGS_CONNECTED),
+                            )
+                            .on_hover_text("Disconnect")
+                            .clicked();
+                        attach_clicked = ui
+                            .add_enabled(
+                                !connected && !connecting,
+                                egui::Button::new(egui_phosphor::regular::PLUG),
+                            )
+                            .on_hover_text("Attach")
+                            .clicked();
+                    });
+                });
+                if let Some(error) = dialog.error.as_deref() {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+                ui.separator();
+                ui.allocate_ui(
+                    [POD_ATTACH_OUTPUT_WIDTH, POD_ATTACH_OUTPUT_HEIGHT].into(),
+                    |ui| {
+                        egui::ScrollArea::both()
+                            .id_salt(("pod-attach-output", &dialog.key))
+                            .auto_shrink([false, false])
+                            .stick_to_bottom(true)
+                            .show(ui, |ui| {
+                                ui.set_min_width(POD_ATTACH_OUTPUT_WIDTH - 16.0);
+                                let output = if dialog.output.is_empty() {
+                                    "No output."
+                                } else {
+                                    &dialog.output
+                                };
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(output).monospace())
+                                        .selectable(true),
+                                );
+                            });
+                    },
+                );
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let response = ui.add_enabled(
+                        connected,
+                        egui::TextEdit::singleline(&mut dialog.input)
+                            .desired_width(POD_ATTACH_INPUT_WIDTH)
+                            .hint_text("stdin"),
+                    );
+                    send_clicked = ui
+                        .add_enabled(
+                            connected,
+                            egui::Button::new(egui_phosphor::regular::PAPER_PLANE_TILT),
+                        )
+                        .on_hover_text("Send")
+                        .clicked()
+                        || (response.lost_focus()
+                            && ui.input(|input| input.key_pressed(egui::Key::Enter)));
+                });
+            });
+
+        if !open {
+            if let Some(request_id) = dialog.request_id {
+                input_requests.push(PodAttachInputRequest {
+                    request_id,
+                    input: PodAttachInput::Close,
+                });
+            }
+            self.attach_dialog = None;
+            return;
+        }
+
+        if clear_clicked {
+            dialog.output.clear();
+        }
+
+        if disconnect_clicked {
+            if let Some(request_id) = dialog.request_id.take() {
+                input_requests.push(PodAttachInputRequest {
+                    request_id,
+                    input: PodAttachInput::Close,
+                });
+            }
+            dialog.status = PodAttachStatus::Disconnected;
+        }
+
+        if attach_clicked {
+            self.next_request_id += 1;
+            let request_id = self.next_request_id;
+            let request = PodAttachRequest {
+                request_id,
+                cluster_id: cluster_id.clone(),
+                namespace: dialog.namespace.clone(),
+                pod: dialog.pod.clone(),
+                container: dialog.selected_container.clone(),
+                tty: true,
+            };
+            dialog.request_id = Some(request.request_id);
+            dialog.status = PodAttachStatus::Connecting;
+            dialog.error = None;
+            requests.push(request);
+        }
+
+        if send_clicked
+            && let Some(request_id) = dialog.request_id
+            && !dialog.input.is_empty()
+        {
+            let mut bytes = std::mem::take(&mut dialog.input).into_bytes();
+            bytes.push(b'\n');
+            input_requests.push(PodAttachInputRequest {
+                request_id,
+                input: PodAttachInput::Bytes(bytes),
+            });
+        }
+    }
+
     #[cfg(test)]
     fn request_pods(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
         let request = ResourceLoadRequest {
@@ -1064,14 +1357,24 @@ fn show_pod_table(
                                 });
                                 ui.close();
                             }
-                            ui.add_enabled(
-                                false,
-                                egui::Button::new(format!(
-                                    "{} Shell",
-                                    egui_phosphor::regular::TERMINAL
-                                )),
-                            )
-                            .on_disabled_hover_text("Shell is not implemented yet.");
+                            if ui
+                                .button(format!("{} Attach", egui_phosphor::regular::TERMINAL))
+                                .clicked()
+                            {
+                                action = Some(PodTableAction::Attach {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
+                            if ui
+                                .button(format!("{} Describe", egui_phosphor::regular::INFO))
+                                .clicked()
+                            {
+                                action = Some(PodTableAction::Describe {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
                             let evict_text = egui::RichText::new(format!(
                                 "{} Evict",
                                 egui_phosphor::regular::WARNING
@@ -1140,6 +1443,18 @@ const POD_COLUMN_WIDTHS: [f32; 12] = [
 ];
 
 const POD_LOG_CONTENT_HEIGHT: f32 = 360.0;
+const POD_ATTACH_DIALOG_WIDTH: f32 = 820.0;
+const POD_ATTACH_DIALOG_HEIGHT: f32 = 520.0;
+const POD_ATTACH_OUTPUT_WIDTH: f32 = 780.0;
+const POD_ATTACH_OUTPUT_HEIGHT: f32 = 360.0;
+const POD_ATTACH_INPUT_WIDTH: f32 = 720.0;
+const POD_DESCRIBE_DIALOG_WIDTH: f32 = 860.0;
+const POD_DESCRIBE_DIALOG_HEIGHT: f32 = 580.0;
+const POD_DESCRIBE_CONTENT_HEIGHT: f32 = 520.0;
+const POD_DESCRIBE_CONTENT_INSET: f32 = 28.0;
+const POD_DESCRIBE_FIELD_LABEL_WIDTH: f32 = 105.0;
+const POD_DESCRIBE_FIELD_VALUE_WIDTH: f32 = 250.0;
+const POD_DESCRIBE_LINE_WIDTH: f32 = 800.0;
 
 fn status_color(ui: &egui::Ui, status: &str) -> egui::Color32 {
     match status {
@@ -1153,6 +1468,15 @@ fn status_color(ui: &egui::Ui, status: &str) -> egui::Color32 {
 
 fn evict_color() -> egui::Color32 {
     egui::Color32::from_rgb(217, 119, 6)
+}
+
+fn pod_attach_status_label(status: &PodAttachStatus) -> String {
+    match status {
+        PodAttachStatus::Disconnected => "Disconnected".to_owned(),
+        PodAttachStatus::Connecting => "Connecting".to_owned(),
+        PodAttachStatus::Attached => "Attached".to_owned(),
+        PodAttachStatus::Error(error) => format!("Error: {error}"),
+    }
 }
 
 #[cfg(test)]
@@ -1255,7 +1579,9 @@ impl PodRow {
 #[derive(Clone, Debug, PartialEq)]
 enum PodTableAction {
     Logs { key: String },
+    Attach { key: String },
     Evict { key: String },
+    Describe { key: String },
     View { key: String },
     Edit { key: String },
     Delete { key: String },
@@ -1265,6 +1591,54 @@ enum PodTableAction {
 struct PodCreateDialog {
     yaml: String,
     parse_error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PodDescribeDialog {
+    key: String,
+    name: String,
+    describe: PodDescribe,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PodDescribe {
+    summary: Vec<DescribeField>,
+    metadata: Vec<DescribeField>,
+    containers: Vec<ContainerDescribe>,
+    conditions: Vec<ConditionDescribe>,
+    volumes: Vec<String>,
+    node_selectors: Vec<String>,
+    tolerations: Vec<String>,
+    raw_yaml: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ContainerDescribe {
+    name: String,
+    image: String,
+    ready: bool,
+    restarts: String,
+    state: String,
+    state_detail: String,
+    resources: Vec<DescribeField>,
+    ports: String,
+    env_count: String,
+    volume_mounts: String,
+    probes: Vec<DescribeField>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ConditionDescribe {
+    condition_type: String,
+    status: String,
+    reason: String,
+    message: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct DescribeField {
+    label: String,
+    value: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1312,6 +1686,488 @@ struct PodLogDialog {
     lines: Vec<LogLine>,
     status: LoadStatus,
     error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PodAttachDialog {
+    key: String,
+    namespace: String,
+    pod: String,
+    containers: Vec<String>,
+    selected_container: Option<String>,
+    input: String,
+    output: String,
+    request_id: Option<u64>,
+    status: PodAttachStatus,
+    error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum PodAttachStatus {
+    Disconnected,
+    Connecting,
+    Attached,
+    Error(String),
+}
+
+fn show_pod_describe(ui: &mut egui::Ui, describe: &PodDescribe) {
+    describe_section(ui, egui_phosphor::regular::CUBE, "Pod");
+    describe_fields(ui, &describe.summary);
+
+    ui.add_space(10.0);
+    describe_section(ui, egui_phosphor::regular::BOX_ARROW_DOWN, "Containers");
+    if describe.containers.is_empty() {
+        ui.label("N/A");
+    } else {
+        for (index, container) in describe.containers.iter().enumerate() {
+            if index > 0 {
+                ui.separator();
+            }
+            show_container_describe(ui, container);
+        }
+    }
+
+    ui.add_space(10.0);
+    describe_section(ui, egui_phosphor::regular::CHECK_CIRCLE, "Conditions");
+    if describe.conditions.is_empty() {
+        ui.label("N/A");
+    } else {
+        egui::Grid::new("pod-describe-conditions")
+            .num_columns(4)
+            .spacing([18.0, 4.0])
+            .striped(true)
+            .show(ui, |ui| {
+                ui.strong("Type");
+                ui.strong("Status");
+                ui.strong("Reason");
+                ui.strong("Message");
+                ui.end_row();
+                for condition in &describe.conditions {
+                    wrapped_value(ui, &condition.condition_type, 140.0);
+                    ui.colored_label(condition_color(ui, &condition.status), &condition.status);
+                    wrapped_value(ui, &condition.reason, 170.0);
+                    wrapped_value(ui, &condition.message, 330.0);
+                    ui.end_row();
+                }
+            });
+    }
+
+    ui.add_space(10.0);
+    describe_section(ui, egui_phosphor::regular::HARD_DRIVES, "Volumes");
+    describe_lines(ui, &describe.volumes);
+
+    ui.add_space(10.0);
+    describe_section(ui, egui_phosphor::regular::TAG, "Metadata");
+    describe_fields(ui, &describe.metadata);
+
+    ui.add_space(10.0);
+    describe_section(ui, egui_phosphor::regular::LIST_CHECKS, "Scheduling");
+    ui.strong("Node selectors");
+    describe_lines(ui, &describe.node_selectors);
+    ui.add_space(4.0);
+    ui.strong("Tolerations");
+    describe_lines(ui, &describe.tolerations);
+
+    ui.add_space(10.0);
+    egui::CollapsingHeader::new(format!("{} Raw manifest", egui_phosphor::regular::CODE))
+        .id_salt("pod-describe-raw-manifest")
+        .show(ui, |ui| {
+            egui::ScrollArea::both()
+                .id_salt("pod-describe-raw-manifest-content")
+                .max_height(180.0)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(&describe.raw_yaml).monospace())
+                            .selectable(true),
+                    );
+                });
+        });
+}
+
+fn show_container_describe(ui: &mut egui::Ui, container: &ContainerDescribe) {
+    ui.horizontal(|ui| {
+        ui.strong(format!(
+            "{} {}",
+            egui_phosphor::regular::PACKAGE,
+            container.name
+        ));
+        wrapped_value(ui, &container.image, 660.0);
+    });
+
+    let ready_text = if container.ready {
+        format!("{} Ready", egui_phosphor::regular::CHECK_CIRCLE)
+    } else {
+        format!("{} Not ready", egui_phosphor::regular::WARNING_CIRCLE)
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.colored_label(
+            condition_color(ui, if container.ready { "True" } else { "False" }),
+            ready_text,
+        );
+        ui.label(format!("{} restarts", container.restarts));
+        ui.label(format!("State: {}", container.state));
+        if container.state_detail != "N/A" {
+            wrapped_value(ui, &container.state_detail, 360.0);
+        }
+    });
+
+    ui.add_space(4.0);
+    describe_section(ui, egui_phosphor::regular::GAUGE, "Resources");
+    describe_fields(ui, &container.resources);
+
+    ui.add_space(4.0);
+    describe_fields(
+        ui,
+        &[
+            DescribeField::new("Ports", &container.ports),
+            DescribeField::new("Env", &container.env_count),
+            DescribeField::new("Mounts", &container.volume_mounts),
+        ],
+    );
+
+    ui.add_space(4.0);
+    describe_fields(ui, &container.probes);
+}
+
+fn describe_section(ui: &mut egui::Ui, icon: &str, title: &str) {
+    ui.horizontal(|ui| {
+        ui.label(icon);
+        ui.strong(title);
+    });
+}
+
+fn describe_fields(ui: &mut egui::Ui, fields: &[DescribeField]) {
+    egui::Grid::new(ui.next_auto_id())
+        .num_columns(4)
+        .spacing([16.0, 4.0])
+        .show(ui, |ui| {
+            for chunk in fields.chunks(2) {
+                for field in chunk {
+                    ui.add_sized(
+                        [POD_DESCRIBE_FIELD_LABEL_WIDTH, 0.0],
+                        egui::Label::new(egui::RichText::new(&field.label).weak()).wrap(),
+                    );
+                    wrapped_value(ui, &field.value, POD_DESCRIBE_FIELD_VALUE_WIDTH);
+                }
+                if chunk.len() == 1 {
+                    ui.label("");
+                    ui.label("");
+                }
+                ui.end_row();
+            }
+        });
+}
+
+fn describe_lines(ui: &mut egui::Ui, lines: &[String]) {
+    if lines.is_empty() {
+        ui.label("N/A");
+        return;
+    }
+
+    for line in lines {
+        wrapped_value(ui, line, POD_DESCRIBE_LINE_WIDTH);
+    }
+}
+
+fn wrapped_value(ui: &mut egui::Ui, value: &str, width: f32) {
+    ui.add_sized([width, 0.0], egui::Label::new(value).wrap());
+}
+
+fn condition_color(ui: &egui::Ui, status: &str) -> egui::Color32 {
+    match status {
+        "True" | "Ready" | "Running" => egui::Color32::from_rgb(46, 160, 67),
+        "False" | "Not ready" | "Waiting" | "Pending" => egui::Color32::from_rgb(191, 135, 0),
+        "Unknown" | "Terminated" | "Failed" | "Error" => ui.visuals().error_fg_color,
+        _ => ui.visuals().text_color(),
+    }
+}
+
+impl DescribeField {
+    fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            value: value.into(),
+        }
+    }
+}
+
+fn pod_describe_from_row(row: &PodRow) -> PodDescribe {
+    let raw = &row.raw;
+    PodDescribe {
+        summary: vec![
+            DescribeField::new("Name", row.name.clone()),
+            DescribeField::new("Namespace", row.namespace.clone()),
+            DescribeField::new("Status", row.status.clone()),
+            DescribeField::new("Node", row.node.clone()),
+            DescribeField::new("QoS", row.qos.clone()),
+            DescribeField::new("Age", row.age.clone()),
+            DescribeField::new("Owner", row.controlled_by.clone()),
+            DescribeField::new("Restarts", row.restarts.clone()),
+        ],
+        metadata: pod_metadata_fields(raw),
+        containers: pod_container_describes(raw),
+        conditions: pod_condition_describes(raw),
+        volumes: pod_volume_describes(raw),
+        node_selectors: string_map_entries(raw.pointer("/spec/nodeSelector")),
+        tolerations: pod_toleration_describes(raw),
+        raw_yaml: full_manifest_yaml(raw),
+    }
+}
+
+fn pod_metadata_fields(raw: &serde_json::Value) -> Vec<DescribeField> {
+    vec![
+        DescribeField::new(
+            "Service account",
+            value_str(raw, &["spec", "serviceAccountName"]).unwrap_or("N/A"),
+        ),
+        DescribeField::new(
+            "Priority class",
+            value_str(raw, &["spec", "priorityClassName"]).unwrap_or("N/A"),
+        ),
+        DescribeField::new(
+            "Pod IP",
+            value_str(raw, &["status", "podIP"]).unwrap_or("N/A"),
+        ),
+        DescribeField::new(
+            "Host IP",
+            value_str(raw, &["status", "hostIP"]).unwrap_or("N/A"),
+        ),
+        DescribeField::new(
+            "Labels",
+            string_map_summary(raw.pointer("/metadata/labels")),
+        ),
+        DescribeField::new(
+            "Annotations",
+            string_map_summary(raw.pointer("/metadata/annotations")),
+        ),
+    ]
+}
+
+fn pod_container_describes(raw: &serde_json::Value) -> Vec<ContainerDescribe> {
+    raw.pointer("/spec/containers")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|container| container_describe(raw, container))
+        .collect()
+}
+
+fn container_describe(raw: &serde_json::Value, container: &serde_json::Value) -> ContainerDescribe {
+    let name = value_str(container, &["name"]).unwrap_or("N/A").to_owned();
+    let status = container_status_by_name(raw, &name);
+    let ready = status
+        .and_then(|status| value_bool(status, &["ready"]))
+        .unwrap_or(false);
+    let restarts = status
+        .and_then(|status| value_u64(status, &["restartCount"]))
+        .map_or_else(|| "N/A".to_owned(), |value| value.to_string());
+    let (state, state_detail) = status
+        .map(container_state)
+        .unwrap_or_else(|| ("N/A".to_owned(), "N/A".to_owned()));
+
+    ContainerDescribe {
+        name,
+        image: value_str(container, &["image"]).unwrap_or("N/A").to_owned(),
+        ready,
+        restarts,
+        state,
+        state_detail,
+        resources: vec![
+            DescribeField::new(
+                "CPU request",
+                value_str(container, &["resources", "requests", "cpu"]).unwrap_or("N/A"),
+            ),
+            DescribeField::new(
+                "CPU limit",
+                value_str(container, &["resources", "limits", "cpu"]).unwrap_or("N/A"),
+            ),
+            DescribeField::new(
+                "Memory request",
+                value_str(container, &["resources", "requests", "memory"]).unwrap_or("N/A"),
+            ),
+            DescribeField::new(
+                "Memory limit",
+                value_str(container, &["resources", "limits", "memory"]).unwrap_or("N/A"),
+            ),
+        ],
+        ports: container_ports(container),
+        env_count: value_array(container, &["env"]).map_or_else(
+            || "0 vars".to_owned(),
+            |items| format!("{} vars", items.len()),
+        ),
+        volume_mounts: container_volume_mounts(container),
+        probes: vec![
+            DescribeField::new("Liveness", probe_label(container, "livenessProbe")),
+            DescribeField::new("Readiness", probe_label(container, "readinessProbe")),
+            DescribeField::new("Startup", probe_label(container, "startupProbe")),
+        ],
+    }
+}
+
+fn container_status_by_name<'a>(
+    raw: &'a serde_json::Value,
+    name: &str,
+) -> Option<&'a serde_json::Value> {
+    raw.pointer("/status/containerStatuses")
+        .and_then(serde_json::Value::as_array)?
+        .iter()
+        .find(|status| value_str(status, &["name"]) == Some(name))
+}
+
+fn container_state(status: &serde_json::Value) -> (String, String) {
+    if let Some(waiting) = status.pointer("/state/waiting") {
+        return (
+            "Waiting".to_owned(),
+            value_str(waiting, &["reason"]).unwrap_or("N/A").to_owned(),
+        );
+    }
+    if let Some(terminated) = status.pointer("/state/terminated") {
+        let reason = value_str(terminated, &["reason"]).unwrap_or("N/A");
+        let exit_code = terminated
+            .get("exitCode")
+            .and_then(serde_json::Value::as_i64)
+            .map_or_else(|| "N/A".to_owned(), |value| value.to_string());
+        return (
+            "Terminated".to_owned(),
+            format!("{reason} exit {exit_code}"),
+        );
+    }
+    if let Some(running) = status.pointer("/state/running") {
+        return (
+            "Running".to_owned(),
+            value_str(running, &["startedAt"])
+                .unwrap_or("N/A")
+                .to_owned(),
+        );
+    }
+    ("N/A".to_owned(), "N/A".to_owned())
+}
+
+fn container_ports(container: &serde_json::Value) -> String {
+    let Some(ports) = value_array(container, &["ports"]) else {
+        return "N/A".to_owned();
+    };
+    if ports.is_empty() {
+        return "N/A".to_owned();
+    }
+
+    ports
+        .iter()
+        .map(|port| {
+            let port_number = port
+                .get("containerPort")
+                .and_then(serde_json::Value::as_u64)
+                .map_or_else(|| "N/A".to_owned(), |value| value.to_string());
+            let protocol = value_str(port, &["protocol"]).unwrap_or("TCP");
+            match value_str(port, &["name"]) {
+                Some(name) => format!("{name}:{port_number}/{protocol}"),
+                None => format!("{port_number}/{protocol}"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn container_volume_mounts(container: &serde_json::Value) -> String {
+    let Some(mounts) = value_array(container, &["volumeMounts"]) else {
+        return "N/A".to_owned();
+    };
+    if mounts.is_empty() {
+        return "N/A".to_owned();
+    }
+
+    mounts
+        .iter()
+        .map(|mount| {
+            let name = value_str(mount, &["name"]).unwrap_or("N/A");
+            let path = value_str(mount, &["mountPath"]).unwrap_or("N/A");
+            format!("{name} at {path}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn probe_label(container: &serde_json::Value, name: &str) -> String {
+    if container.get(name).is_some() {
+        format!("{} configured", egui_phosphor::regular::CHECK)
+    } else {
+        "N/A".to_owned()
+    }
+}
+
+fn pod_condition_describes(raw: &serde_json::Value) -> Vec<ConditionDescribe> {
+    raw.pointer("/status/conditions")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|condition| ConditionDescribe {
+            condition_type: value_str(condition, &["type"]).unwrap_or("N/A").to_owned(),
+            status: value_str(condition, &["status"])
+                .unwrap_or("N/A")
+                .to_owned(),
+            reason: value_str(condition, &["reason"])
+                .unwrap_or("N/A")
+                .to_owned(),
+            message: value_str(condition, &["message"])
+                .unwrap_or("N/A")
+                .to_owned(),
+        })
+        .collect()
+}
+
+fn pod_volume_describes(raw: &serde_json::Value) -> Vec<String> {
+    raw.pointer("/spec/volumes")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|volume| {
+            let name = value_str(volume, &["name"]).unwrap_or("N/A");
+            let kind = volume
+                .as_object()
+                .and_then(|object| object.keys().find(|key| key.as_str() != "name"))
+                .map_or("N/A", String::as_str);
+            format!("{name} ({kind})")
+        })
+        .collect()
+}
+
+fn pod_toleration_describes(raw: &serde_json::Value) -> Vec<String> {
+    raw.pointer("/spec/tolerations")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|toleration| {
+            let key = value_str(toleration, &["key"]).unwrap_or("N/A");
+            let operator = value_str(toleration, &["operator"]).unwrap_or("Equal");
+            let effect = value_str(toleration, &["effect"]).unwrap_or("N/A");
+            format!("{key} {operator} {effect}")
+        })
+        .collect()
+}
+
+fn string_map_summary(value: Option<&serde_json::Value>) -> String {
+    let entries = string_map_entries(value);
+    if entries.is_empty() {
+        "N/A".to_owned()
+    } else {
+        entries.join(", ")
+    }
+}
+
+fn string_map_entries(value: Option<&serde_json::Value>) -> Vec<String> {
+    value
+        .and_then(serde_json::Value::as_object)
+        .into_iter()
+        .flat_map(|object| {
+            object.iter().map(|(key, value)| {
+                let value = value
+                    .as_str()
+                    .map_or_else(|| value.to_string(), ToOwned::to_owned);
+                format!("{key}={value}")
+            })
+        })
+        .collect()
 }
 
 fn pod_key(namespace: &str, name: &str) -> String {
@@ -1577,6 +2433,17 @@ fn value_bool(value: &serde_json::Value, path: &[&str]) -> Option<bool> {
     current.as_bool()
 }
 
+fn value_array<'a>(
+    value: &'a serde_json::Value,
+    path: &[&str],
+) -> Option<&'a Vec<serde_json::Value>> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_array()
+}
+
 fn value_u64(value: &serde_json::Value, path: &[&str]) -> Option<u64> {
     let mut current = value;
     for key in path {
@@ -1751,6 +2618,115 @@ spec:
     }
 
     #[test]
+    fn pod_table_action_can_describe_row() {
+        assert_eq!(
+            PodTableAction::Describe {
+                key: "default/api-75f".to_owned()
+            },
+            PodTableAction::Describe {
+                key: "default/api-75f".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn pod_table_action_can_attach_row() {
+        assert_eq!(
+            PodTableAction::Attach {
+                key: "default/api-75f".to_owned()
+            },
+            PodTableAction::Attach {
+                key: "default/api-75f".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn pod_attach_status_labels_are_stable() {
+        assert_eq!(
+            pod_attach_status_label(&PodAttachStatus::Disconnected),
+            "Disconnected"
+        );
+        assert_eq!(
+            pod_attach_status_label(&PodAttachStatus::Connecting),
+            "Connecting"
+        );
+        assert_eq!(
+            pod_attach_status_label(&PodAttachStatus::Attached),
+            "Attached"
+        );
+        assert_eq!(
+            pod_attach_status_label(&PodAttachStatus::Error("denied".to_owned())),
+            "Error: denied"
+        );
+    }
+
+    #[test]
+    fn pod_describe_extracts_container_details() {
+        let row = PodRow::from_summary(&pod_summary());
+        let describe = pod_describe_from_row(&row);
+
+        assert_eq!(describe.containers.len(), 2);
+        let api = &describe.containers[0];
+        assert_eq!(api.name, "api");
+        assert_eq!(api.image, "ghcr.io/example/api:1.0.0");
+        assert!(api.ready);
+        assert_eq!(api.restarts, "1");
+        assert_eq!(api.state, "Running");
+        assert_eq!(api.ports, "http:8080/TCP");
+        assert_eq!(api.env_count, "1 vars");
+        assert_eq!(api.volume_mounts, "config at /etc/config");
+        assert_eq!(
+            api.resources,
+            vec![
+                DescribeField::new("CPU request", "100m"),
+                DescribeField::new("CPU limit", "500m"),
+                DescribeField::new("Memory request", "128Mi"),
+                DescribeField::new("Memory limit", "512Mi"),
+            ]
+        );
+        assert_eq!(
+            api.probes[1].value,
+            format!("{} configured", egui_phosphor::regular::CHECK)
+        );
+
+        let sidecar = &describe.containers[1];
+        assert_eq!(sidecar.state, "Waiting");
+        assert_eq!(sidecar.state_detail, "CrashLoopBackOff");
+
+        assert_eq!(describe.conditions[0].condition_type, "Ready");
+        assert_eq!(describe.volumes, vec!["config (configMap)"]);
+        assert_eq!(describe.node_selectors, vec!["disk=ssd"]);
+        assert_eq!(describe.tolerations, vec!["dedicated Equal NoSchedule"]);
+    }
+
+    #[test]
+    fn pod_describe_handles_missing_optional_fields() {
+        let row = PodRow::from_summary(&ResourceSummary {
+            name: "minimal".to_owned(),
+            namespace: Some("default".to_owned()),
+            kind: "Pod".to_owned(),
+            status: Some("Pending".to_owned()),
+            raw: serde_json::json!({
+                "metadata": {"name": "minimal", "namespace": "default"},
+                "spec": {"containers": [{"name": "app"}]},
+                "status": {}
+            }),
+        });
+
+        let describe = pod_describe_from_row(&row);
+
+        assert_eq!(describe.containers.len(), 1);
+        assert_eq!(describe.containers[0].image, "N/A");
+        assert_eq!(describe.containers[0].restarts, "N/A");
+        assert_eq!(describe.containers[0].state, "N/A");
+        assert_eq!(describe.containers[0].ports, "N/A");
+        assert_eq!(describe.containers[0].volume_mounts, "N/A");
+        assert!(describe.conditions.is_empty());
+        assert!(describe.volumes.is_empty());
+    }
+
+    #[test]
     fn namespaces_are_sorted_and_deduplicated() {
         let list = ResourceList {
             items: vec![
@@ -1877,15 +2853,36 @@ spec:
                     "name": "api-75f",
                     "namespace": "default",
                     "creationTimestamp": "2026-05-18T10:00:00Z",
+                    "labels": {"app": "api"},
+                    "annotations": {"checksum/config": "abc123"},
                     "ownerReferences": [
                         {"kind": "ReplicaSet", "name": "api-75f"}
                     ]
                 },
                 "spec": {
                     "nodeName": "kind-worker",
+                    "serviceAccountName": "api",
+                    "nodeSelector": {"disk": "ssd"},
+                    "tolerations": [
+                        {"key": "dedicated", "operator": "Equal", "effect": "NoSchedule"}
+                    ],
+                    "volumes": [
+                        {"name": "config", "configMap": {"name": "api-config"}}
+                    ],
                     "containers": [
                         {
                             "name": "api",
+                            "image": "ghcr.io/example/api:1.0.0",
+                            "ports": [
+                                {"name": "http", "containerPort": 8080, "protocol": "TCP"}
+                            ],
+                            "env": [
+                                {"name": "RUST_LOG", "value": "info"}
+                            ],
+                            "volumeMounts": [
+                                {"name": "config", "mountPath": "/etc/config"}
+                            ],
+                            "readinessProbe": {"httpGet": {"path": "/health", "port": 8080}},
                             "resources": {
                                 "requests": {"cpu": "100m", "memory": "128Mi"},
                                 "limits": {"cpu": "500m", "memory": "512Mi"}
@@ -1893,6 +2890,7 @@ spec:
                         },
                         {
                             "name": "sidecar",
+                            "image": "ghcr.io/example/sidecar:1.0.0",
                             "resources": {
                                 "requests": {"cpu": "50m", "memory": "64Mi"}
                             }
@@ -1902,9 +2900,20 @@ spec:
                 "status": {
                     "phase": "Running",
                     "qosClass": "Burstable",
+                    "podIP": "10.244.0.42",
+                    "hostIP": "172.18.0.2",
+                    "conditions": [
+                        {"type": "Ready", "status": "False", "reason": "ContainersNotReady", "message": "sidecar is waiting"}
+                    ],
                     "containerStatuses": [
-                        {"ready": true, "restartCount": 1, "state": {"running": {}}},
                         {
+                            "name": "api",
+                            "ready": true,
+                            "restartCount": 1,
+                            "state": {"running": {"startedAt": "2026-05-18T10:00:30Z"}}
+                        },
+                        {
+                            "name": "sidecar",
                             "ready": false,
                             "restartCount": 2,
                             "state": {"waiting": {"reason": "CrashLoopBackOff"}}

@@ -36,6 +36,7 @@ pub fn router(services: SharedServices) -> Router {
         .route("/api/resources/apply", post(resources::apply_resource))
         .route("/api/resources/delete", post(resources::delete_resource))
         .route("/api/pods/evict", post(pods::evict_pod))
+        .route("/api/pods/attach", get(pods::attach_pod))
         .route("/api/pods/logs", post(pods::read_pod_logs))
         .route("/api/pods/logs/stream", post(pods::stream_pod_logs))
         .layer(CorsLayer::permissive())

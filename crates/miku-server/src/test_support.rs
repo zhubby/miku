@@ -158,6 +158,19 @@ impl PodLogService for DummyServices {
 }
 
 #[async_trait::async_trait]
+impl PodAttachService for DummyServices {
+    async fn attach_pod(&self, _request: PodAttachRequest) -> miku_core::Result<PodAttachSession> {
+        let (input, _input_rx) = futures::channel::mpsc::unbounded();
+        let output = futures::stream::iter([
+            Ok(PodAttachOutput::Stdout(b"attached\n".to_vec())),
+            Ok(PodAttachOutput::Closed),
+        ])
+        .boxed();
+        Ok(PodAttachSession { input, output })
+    }
+}
+
+#[async_trait::async_trait]
 impl LocalPreferenceStore for DummyServices {
     async fn get_preference(&self, _key: &str) -> miku_core::Result<Option<serde_json::Value>> {
         Ok(None)

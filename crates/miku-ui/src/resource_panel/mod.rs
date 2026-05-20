@@ -1,6 +1,7 @@
 use miku_api::{
-    LogLine, PodEvictRequest, PodLogQuery, ResourceApplyRequest, ResourceDeleteRequest,
-    ResourceEvent, ResourceList, ResourceSummary,
+    LogLine, PodAttachInput, PodAttachOutput, PodAttachRequest as ApiPodAttachRequest,
+    PodEvictRequest, PodLogQuery, ResourceApplyRequest, ResourceDeleteRequest, ResourceEvent,
+    ResourceList, ResourceSummary,
 };
 use miku_core::{ClusterId, ResourceRef};
 
@@ -69,6 +70,8 @@ pub(crate) struct ResourcePanelRequests {
     pub(crate) watches: Vec<ResourceWatchRequest>,
     pub(crate) actions: Vec<ResourceActionRequest>,
     pub(crate) logs: Vec<PodLogRequest>,
+    pub(crate) attaches: Vec<PodAttachRequest>,
+    pub(crate) attach_inputs: Vec<PodAttachInputRequest>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -97,6 +100,34 @@ impl PodLogRequest {
             tail_lines: self.tail_lines,
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PodAttachRequest {
+    pub(crate) request_id: u64,
+    pub(crate) cluster_id: ClusterId,
+    pub(crate) namespace: String,
+    pub(crate) pod: String,
+    pub(crate) container: Option<String>,
+    pub(crate) tty: bool,
+}
+
+impl PodAttachRequest {
+    pub(crate) fn query(&self) -> ApiPodAttachRequest {
+        ApiPodAttachRequest {
+            cluster_id: self.cluster_id.clone(),
+            namespace: self.namespace.clone(),
+            pod: self.pod.clone(),
+            container: self.container.clone(),
+            tty: self.tty,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PodAttachInputRequest {
+    pub(crate) request_id: u64,
+    pub(crate) input: PodAttachInput,
 }
 
 impl ResourceLoadRequest {
@@ -203,6 +234,14 @@ pub(crate) enum ResourceUiEvent {
         request: PodLogRequest,
         result: Result<Vec<LogLine>, String>,
     },
+    PodAttachConnected {
+        request: PodAttachRequest,
+        result: Result<futures::channel::mpsc::UnboundedSender<PodAttachInput>, String>,
+    },
+    PodAttachOutput {
+        request: PodAttachRequest,
+        result: Result<PodAttachOutput, String>,
+    },
     ResourceWatchUpdated {
         request: ResourceWatchRequest,
         result: Result<ResourceEvent, String>,
@@ -215,6 +254,8 @@ impl ResourceUiEvent {
             Self::ResourcesLoaded { request, .. } => &request.cluster_id,
             Self::ResourceActionCompleted { request, .. } => &request.cluster_id,
             Self::PodLogsLoaded { request, .. } => &request.cluster_id,
+            Self::PodAttachConnected { request, .. } => &request.cluster_id,
+            Self::PodAttachOutput { request, .. } => &request.cluster_id,
             Self::ResourceWatchUpdated { request, .. } => &request.cluster_id,
         }
     }

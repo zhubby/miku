@@ -1,10 +1,12 @@
 use async_trait::async_trait;
-use futures::StreamExt;
+use futures::channel::mpsc;
+use futures::{SinkExt, StreamExt};
 use miku_api::{
     ClusterConnectionInfo, ClusterInitializeRequest, ClusterInitializer, ClusterRegistry,
     ClusterStatusReader, ClusterStatusReport, ClusterStatusRequest, ClusterSummary,
     CreateClusterRequest, KubernetesResourceReader, KubernetesResourceWriter,
-    KubernetesWatchService, LocalPreferenceStore, LogLine, MikuServices, PodEvictRequest,
+    KubernetesWatchService, LocalPreferenceStore, LogLine, MikuServices, PodAttachInput,
+    PodAttachOutput, PodAttachRequest, PodAttachService, PodAttachSession, PodEvictRequest,
     PodLogQuery, PodLogService, ResourceApplyRequest, ResourceDeleteRequest, ResourceEvent,
     ResourceList, ResourceQuery, ResourceSummary,
 };
@@ -58,6 +60,32 @@ impl HttpMikuClient {
             }
         }
         endpoint
+    }
+
+    pub fn pod_attach_endpoint(&self, request: &PodAttachRequest) -> miku_core::Result<Url> {
+        let mut endpoint = self.endpoint("/api/pods/attach");
+        endpoint
+            .set_scheme(match self.base_url.scheme() {
+                "https" | "wss" => "wss",
+                _ => "ws",
+            })
+            .map_err(|_| {
+                miku_core::MikuError::Config(format!(
+                    "could not build websocket URL from {}",
+                    self.base_url
+                ))
+            })?;
+        {
+            let mut pairs = endpoint.query_pairs_mut();
+            pairs.append_pair("cluster_id", request.cluster_id.as_str());
+            pairs.append_pair("namespace", &request.namespace);
+            pairs.append_pair("pod", &request.pod);
+            if let Some(container) = &request.container {
+                pairs.append_pair("container", container);
+            }
+            pairs.append_pair("tty", if request.tty { "true" } else { "false" });
+        }
+        Ok(endpoint)
     }
 }
 
@@ -253,6 +281,14 @@ impl PodLogService for HttpMikuClient {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl PodAttachService for HttpMikuClient {
+    async fn attach_pod(&self, request: PodAttachRequest) -> miku_core::Result<PodAttachSession> {
+        attach_pod(self, request).await
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl LocalPreferenceStore for HttpMikuClient {
     async fn get_preference(&self, _key: &str) -> miku_core::Result<Option<serde_json::Value>> {
         Err(miku_core::MikuError::UnsupportedRuntime(
@@ -268,6 +304,83 @@ impl LocalPreferenceStore for HttpMikuClient {
 }
 
 impl MikuServices for HttpMikuClient {}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn attach_pod(
+    client: &HttpMikuClient,
+    request: PodAttachRequest,
+) -> miku_core::Result<PodAttachSession> {
+    let endpoint = client.pod_attach_endpoint(&request)?;
+    let (socket, _) = tokio_tungstenite::connect_async(endpoint.as_str())
+        .await
+        .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?;
+    let (mut socket_tx, mut socket_rx) = socket.split();
+    let (input_tx, mut input_rx) = mpsc::unbounded();
+    let (output_tx, output_rx) = mpsc::unbounded();
+
+    tokio::spawn(async move {
+        while let Some(input) = input_rx.next().await {
+            let close = matches!(input, PodAttachInput::Close);
+            let message = match input {
+                PodAttachInput::Bytes(bytes) => {
+                    tokio_tungstenite::tungstenite::Message::Binary(bytes.into())
+                }
+                PodAttachInput::Resize { .. } | PodAttachInput::Close => {
+                    let Ok(text) = serde_json::to_string(&input) else {
+                        break;
+                    };
+                    tokio_tungstenite::tungstenite::Message::Text(text.into())
+                }
+            };
+            if socket_tx.send(message).await.is_err() {
+                break;
+            }
+            if close {
+                break;
+            }
+        }
+    });
+
+    tokio::spawn(async move {
+        while let Some(message) = socket_rx.next().await {
+            let output = match message {
+                Ok(tokio_tungstenite::tungstenite::Message::Binary(bytes)) => {
+                    Ok(PodAttachOutput::Stdout(bytes.to_vec()))
+                }
+                Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
+                    serde_json::from_str::<PodAttachOutput>(&text)
+                        .map_err(|error| miku_core::MikuError::Transport(error.to_string()))
+                }
+                Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => {
+                    Ok(PodAttachOutput::Closed)
+                }
+                Ok(_) => continue,
+                Err(error) => Err(miku_core::MikuError::Transport(error.to_string())),
+            };
+            let close = matches!(output, Ok(PodAttachOutput::Closed));
+            if output_tx.unbounded_send(output).is_err() || close {
+                break;
+            }
+        }
+        let _ = output_tx.unbounded_send(Ok(PodAttachOutput::Closed));
+    });
+
+    Ok(PodAttachSession {
+        input: input_tx,
+        output: output_rx.boxed(),
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn attach_pod(
+    _client: &HttpMikuClient,
+    request: PodAttachRequest,
+) -> miku_core::Result<PodAttachSession> {
+    Err(miku_core::MikuError::UnsupportedRuntime(format!(
+        "pod attach is not supported in web mode for {}",
+        request.pod
+    )))
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 async fn watch_resources(

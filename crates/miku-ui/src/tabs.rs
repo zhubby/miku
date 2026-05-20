@@ -7,8 +7,8 @@ use miku_api::{
 };
 
 use crate::resource_panel::{
-    PodLogRequest, PodResourcePanel, ResourceActionRequest, ResourceLoadRequest,
-    ResourceWatchRequest,
+    PodAttachInputRequest, PodAttachRequest, PodLogRequest, PodResourcePanel,
+    ResourceActionRequest, ResourceLoadRequest, ResourceWatchRequest,
 };
 use crate::resources::{RESOURCE_CATEGORIES, ResourceNavItem};
 use crate::state::{AppState, ClusterConnectionState};
@@ -44,6 +44,8 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) resource_watch_requests: Vec<ResourceWatchRequest>,
     pub(crate) resource_action_requests: Vec<ResourceActionRequest>,
     pub(crate) pod_log_requests: Vec<PodLogRequest>,
+    pub(crate) pod_attach_requests: Vec<PodAttachRequest>,
+    pub(crate) pod_attach_input_requests: Vec<PodAttachInputRequest>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -143,6 +145,9 @@ impl TabViewer for AppTabViewer<'_> {
                         self.resource_watch_requests.extend(requests.watches);
                         self.resource_action_requests.extend(requests.actions);
                         self.pod_log_requests.extend(requests.logs);
+                        self.pod_attach_requests.extend(requests.attaches);
+                        self.pod_attach_input_requests
+                            .extend(requests.attach_inputs);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Pod resource panel is unavailable.");

@@ -2,6 +2,7 @@ use std::pin::Pin;
 
 use async_trait::async_trait;
 use futures::Stream;
+use futures::channel::mpsc;
 use miku_core::{ClusterId, ResourceRef};
 use serde::{Deserialize, Serialize};
 
@@ -202,6 +203,34 @@ pub struct PodLogQuery {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PodAttachRequest {
+    pub cluster_id: ClusterId,
+    pub namespace: String,
+    pub pod: String,
+    pub container: Option<String>,
+    pub tty: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum PodAttachInput {
+    Bytes(Vec<u8>),
+    Resize { cols: u16, rows: u16 },
+    Close,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum PodAttachOutput {
+    Stdout(Vec<u8>),
+    Stderr(Vec<u8>),
+    Closed,
+}
+
+pub struct PodAttachSession {
+    pub input: mpsc::UnboundedSender<PodAttachInput>,
+    pub output: BoxEventStream<PodAttachOutput>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LogLine {
     pub text: String,
 }
@@ -319,6 +348,17 @@ pub trait PodLogService: ServiceBounds {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait PodAttachService: ServiceBounds {
+    async fn attach_pod(&self, request: PodAttachRequest) -> miku_core::Result<PodAttachSession> {
+        Err(miku_core::MikuError::UnsupportedRuntime(format!(
+            "pod attach is not implemented for {}",
+            request.pod
+        )))
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait LocalPreferenceStore: ServiceBounds {
     async fn get_preference(&self, key: &str) -> miku_core::Result<Option<serde_json::Value>>;
 
@@ -333,6 +373,7 @@ pub trait MikuServices:
     + KubernetesResourceWriter
     + KubernetesWatchService
     + PodLogService
+    + PodAttachService
     + LocalPreferenceStore
     + ServiceBounds
 {
@@ -419,6 +460,39 @@ mod tests {
         let deserialized = serde_json::from_str::<ClusterStatusReport>(&serialized).unwrap();
 
         assert_eq!(deserialized, report);
+    }
+
+    #[test]
+    fn pod_attach_contract_round_trips_as_json() {
+        let request = PodAttachRequest {
+            cluster_id: ClusterId::new("local"),
+            namespace: "default".to_owned(),
+            pod: "api".to_owned(),
+            container: Some("server".to_owned()),
+            tty: true,
+        };
+        let input = PodAttachInput::Resize {
+            cols: 120,
+            rows: 32,
+        };
+        let output = PodAttachOutput::Stdout(b"ready\n".to_vec());
+
+        let request_json = serde_json::to_string(&request).unwrap();
+        let input_json = serde_json::to_string(&input).unwrap();
+        let output_json = serde_json::to_string(&output).unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<PodAttachRequest>(&request_json).unwrap(),
+            request
+        );
+        assert_eq!(
+            serde_json::from_str::<PodAttachInput>(&input_json).unwrap(),
+            input
+        );
+        assert_eq!(
+            serde_json::from_str::<PodAttachOutput>(&output_json).unwrap(),
+            output
+        );
     }
 
     #[test]
@@ -516,6 +590,9 @@ mod tests {
 
         #[async_trait::async_trait]
         impl PodLogService for Dummy {}
+
+        #[async_trait::async_trait]
+        impl PodAttachService for Dummy {}
 
         #[async_trait::async_trait]
         impl LocalPreferenceStore for Dummy {
