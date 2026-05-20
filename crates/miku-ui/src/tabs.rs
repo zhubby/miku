@@ -187,6 +187,8 @@ impl ClusterStatusPanel {
             requests.push(request);
         }
 
+        let page_rect = ui.available_rect_before_wrap();
+
         ui.horizontal(|ui| {
             ui.heading(cluster_name);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -230,12 +232,12 @@ impl ClusterStatusPanel {
 
         match &self.state {
             ClusterStatusPanelState::Idle => {
-                ui.centered_and_justified(|ui| {
+                show_centered_in_rect(ui, page_rect, |ui| {
                     ui.label("Preparing cluster status.");
                 });
             }
             ClusterStatusPanelState::Loading { .. } => {
-                ui.centered_and_justified(|ui| {
+                show_centered_in_rect(ui, page_rect, |ui| {
                     ui.horizontal(|ui| {
                         ui.add(egui::Spinner::new().size(18.0));
                         ui.label("Loading cluster status...");
@@ -299,6 +301,21 @@ impl ClusterStatusPanel {
     ) -> Option<ClusterStatusLoadRequest> {
         matches!(self.state, ClusterStatusPanelState::Idle).then(|| self.request_status(cluster_id))
     }
+}
+
+fn show_centered_in_rect<R>(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::centered_and_justified(
+                egui::Direction::TopDown,
+            )),
+        add_contents,
+    )
 }
 
 impl AppTabViewer<'_> {
