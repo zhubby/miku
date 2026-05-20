@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc;
 use std::sync::{Arc, mpsc as resource_mpsc};
@@ -25,11 +26,10 @@ pub struct MikuApp {
     pub(crate) cluster_load_error: Option<String>,
     pub(crate) new_cluster_form: NewClusterForm,
     pub(crate) left_dock_state: DockState<AppTab>,
-    pub(crate) center_dock_state: DockState<AppTab>,
     pub(crate) right_dock_state: DockState<AppTab>,
+    pub(crate) workspaces: HashMap<miku_core::ClusterId, ClusterWorkspace>,
     pub(crate) next_inspector_id: usize,
     pub(crate) services: Option<Arc<dyn MikuServices>>,
-    pub(crate) pod_resource_panel: PodResourcePanel,
     pub(crate) resource_event_sender: resource_mpsc::Sender<ResourceUiEvent>,
     pub(crate) resource_event_receiver: resource_mpsc::Receiver<ResourceUiEvent>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -42,6 +42,23 @@ pub struct MikuApp {
     pub(crate) file_dialog: egui_file_dialog::FileDialog,
 }
 
+#[derive(Debug)]
+pub(crate) struct ClusterWorkspace {
+    pub(crate) dock_state: DockState<AppTab>,
+    pub(crate) selected_resource: Option<ResourceNavItem>,
+    pub(crate) pod_resource_panel: PodResourcePanel,
+}
+
+impl Default for ClusterWorkspace {
+    fn default() -> Self {
+        Self {
+            dock_state: DockState::new(vec![AppTab::Workspace(1)]),
+            selected_resource: None,
+            pod_resource_panel: PodResourcePanel::default(),
+        }
+    }
+}
+
 impl MikuApp {
     pub fn new(runtime_mode: RuntimeMode) -> Self {
         tracing::debug!(?runtime_mode, "creating Miku app");
@@ -50,7 +67,6 @@ impl MikuApp {
         let (resource_event_sender, resource_event_receiver) = resource_mpsc::channel();
         let left_dock_state = DockState::new(vec![AppTab::Clusters, AppTab::Resources]);
         let right_dock_state = DockState::new(vec![AppTab::Inspector(1)]);
-        let center_dock_state = DockState::new(vec![AppTab::Workspace(1)]);
 
         Self {
             state: AppState::new(runtime_mode),
@@ -59,11 +75,10 @@ impl MikuApp {
             cluster_load_error: None,
             new_cluster_form: NewClusterForm::default(),
             left_dock_state,
-            center_dock_state,
             right_dock_state,
+            workspaces: HashMap::new(),
             next_inspector_id: 2,
             services: None,
-            pod_resource_panel: PodResourcePanel::default(),
             resource_event_sender,
             resource_event_receiver,
             #[cfg(not(target_arch = "wasm32"))]
@@ -93,13 +108,16 @@ impl MikuApp {
     pub fn web_with_services(services: Arc<dyn MikuServices>) -> Self {
         let mut app = Self::new(RuntimeMode::Web);
         app.services = Some(services);
-        app.clusters.push(ClusterSummary {
+        let cluster = ClusterSummary {
             id: miku_core::ClusterId::new("server"),
             name: "Server".to_owned(),
             context: "server".to_owned(),
             current: true,
-        });
-        app.state.select_cluster("Server");
+        };
+        app.state
+            .select_cluster(cluster.id.clone(), cluster.name.clone());
+        app.ensure_workspace(cluster.id.clone());
+        app.clusters.push(cluster);
         app
     }
 
@@ -148,7 +166,8 @@ impl eframe::App for MikuApp {
                     add_tab: None,
                     add_requested: false,
                     new_cluster_requested: false,
-                    selected_cluster_name: None,
+                    selected_cluster: None,
+                    active_resource: self.selected_workspace_resource(),
                     selected_resource: None,
                     selected_cluster_id: self.selected_cluster_id(),
                     pod_resource_panel: None,
@@ -171,14 +190,13 @@ impl eframe::App for MikuApp {
                 if tab_viewer.new_cluster_requested {
                     self.new_cluster_form.open();
                 }
-                let selected_cluster_name = tab_viewer.selected_cluster_name;
+                let selected_cluster = tab_viewer.selected_cluster;
                 let selected_resource = tab_viewer.selected_resource;
 
-                if let Some(cluster_name) = selected_cluster_name {
-                    self.state.select_cluster(cluster_name);
+                if let Some(cluster) = selected_cluster {
+                    self.select_cluster(cluster);
                 }
                 if let Some(resource) = selected_resource {
-                    self.state.select_resource(resource);
                     self.open_resource_tab(resource);
                 }
             });
@@ -199,7 +217,8 @@ impl eframe::App for MikuApp {
                     add_tab: Some(AppTab::Inspector(self.next_inspector_id)),
                     add_requested: false,
                     new_cluster_requested: false,
-                    selected_cluster_name: None,
+                    selected_cluster: None,
+                    active_resource: self.selected_workspace_resource(),
                     selected_resource: None,
                     selected_cluster_id: self.selected_cluster_id(),
                     pod_resource_panel: None,
@@ -228,28 +247,46 @@ impl eframe::App for MikuApp {
             });
 
         egui::CentralPanel::no_frame().show_inside(ui, |ui| {
-            let selected_cluster_id = self.selected_cluster_id();
+            let Some(selected_cluster_id) = self.selected_cluster_id() else {
+                show_dock_region(ui, |ui| {
+                    ui.centered_and_justified(|ui| {
+                        ui.label("Select a cluster to open its workspace.");
+                    });
+                });
+                return;
+            };
+
+            let active_resource = self
+                .workspaces
+                .get(&selected_cluster_id)
+                .and_then(|workspace| workspace.selected_resource);
+            let state_snapshot = self.state.clone();
+            let clusters_snapshot = self.clusters.clone();
+            let cluster_load_in_flight = self.cluster_load_in_flight;
+            let cluster_load_error = self.cluster_load_error.clone();
+            let workspace = self.ensure_workspace(selected_cluster_id.clone());
             let mut tab_viewer = AppTabViewer {
-                state: &self.state,
-                clusters: &self.clusters,
-                cluster_load_in_flight: self.cluster_load_in_flight,
-                cluster_load_error: self.cluster_load_error.as_deref(),
+                state: &state_snapshot,
+                clusters: &clusters_snapshot,
+                cluster_load_in_flight,
+                cluster_load_error: cluster_load_error.as_deref(),
                 closeable: true,
                 allow_windows: true,
                 add_tab: None,
                 add_requested: false,
                 new_cluster_requested: false,
-                selected_cluster_name: None,
+                selected_cluster: None,
+                active_resource,
                 selected_resource: None,
-                selected_cluster_id,
-                pod_resource_panel: Some(&mut self.pod_resource_panel),
+                selected_cluster_id: Some(selected_cluster_id),
+                pod_resource_panel: Some(&mut workspace.pod_resource_panel),
                 resource_load_requests: Vec::new(),
                 resource_action_requests: Vec::new(),
                 pod_log_requests: Vec::new(),
             };
 
             show_dock_region(ui, |ui| {
-                DockArea::new(&mut self.center_dock_state)
+                DockArea::new(&mut workspace.dock_state)
                     .id(egui::Id::new("center_workspace_dock"))
                     .style(dock_style)
                     .draggable_tabs(true)
@@ -262,6 +299,9 @@ impl eframe::App for MikuApp {
             let resource_load_requests = tab_viewer.resource_load_requests;
             let resource_action_requests = tab_viewer.resource_action_requests;
             let pod_log_requests = tab_viewer.pod_log_requests;
+            if let Some(resource) = tab_viewer.selected_resource {
+                workspace.selected_resource = Some(resource);
+            }
             for request in resource_load_requests {
                 self.request_resource_load(request);
             }
@@ -278,45 +318,68 @@ impl eframe::App for MikuApp {
 }
 
 impl MikuApp {
+    fn select_cluster(&mut self, cluster: ClusterSummary) {
+        self.state
+            .select_cluster(cluster.id.clone(), cluster.name.clone());
+        self.ensure_workspace(cluster.id);
+    }
+
+    fn ensure_workspace(&mut self, cluster_id: miku_core::ClusterId) -> &mut ClusterWorkspace {
+        self.workspaces.entry(cluster_id).or_default()
+    }
+
+    fn selected_workspace_resource(&self) -> Option<ResourceNavItem> {
+        self.state
+            .selected_cluster_id()
+            .and_then(|cluster_id| self.workspaces.get(cluster_id))
+            .and_then(|workspace| workspace.selected_resource)
+    }
+
     fn open_resource_tab(&mut self, resource: ResourceNavItem) {
+        let Some(cluster_id) = self.selected_cluster_id() else {
+            return;
+        };
+        let workspace = self.ensure_workspace(cluster_id);
+        workspace.selected_resource = Some(resource);
         let tab = AppTab::Resource(resource);
-        if let Some((node, tab_index)) = self.center_dock_state.main_surface().find_tab(&tab) {
+        if let Some((node, tab_index)) = workspace.dock_state.main_surface().find_tab(&tab) {
             let node_path = NodePath {
                 surface: SurfaceIndex::main(),
                 node,
             };
-            let _ = self
-                .center_dock_state
+            let _ = workspace
+                .dock_state
                 .set_active_tab(TabPath::from((node_path, tab_index)));
-            self.center_dock_state
-                .set_focused_node_and_surface(node_path);
+            workspace.dock_state.set_focused_node_and_surface(node_path);
             return;
         }
 
-        self.center_dock_state.push_to_first_leaf(tab);
+        workspace.dock_state.push_to_first_leaf(tab);
     }
 
     fn selected_cluster_id(&self) -> Option<miku_core::ClusterId> {
-        let selected_name = self.state.selected_cluster_name()?;
-        self.clusters
-            .iter()
-            .find(|cluster| cluster.name == selected_name)
-            .map(|cluster| cluster.id.clone())
+        self.state.selected_cluster_id().cloned()
     }
 
     fn process_resource_events(&mut self) {
         while let Ok(event) = self.resource_event_receiver.try_recv() {
-            self.pod_resource_panel.apply_event(event);
+            self.apply_resource_event(event);
         }
+    }
+
+    fn apply_resource_event(&mut self, event: ResourceUiEvent) {
+        let cluster_id = event.cluster_id().clone();
+        self.ensure_workspace(cluster_id)
+            .pod_resource_panel
+            .apply_event(event);
     }
 
     fn request_resource_load(&mut self, request: ResourceLoadRequest) {
         let Some(services) = self.services.clone() else {
-            self.pod_resource_panel
-                .apply_event(ResourceUiEvent::ResourcesLoaded {
-                    request,
-                    result: Err("resource services are not available".to_owned()),
-                });
+            self.apply_resource_event(ResourceUiEvent::ResourcesLoaded {
+                request,
+                result: Err("resource services are not available".to_owned()),
+            });
             return;
         };
         let sender = self.resource_event_sender.clone();
@@ -325,11 +388,10 @@ impl MikuApp {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let Some(runtime) = self.runtime.as_ref() else {
-                self.pod_resource_panel
-                    .apply_event(ResourceUiEvent::ResourcesLoaded {
-                        request,
-                        result: Err("resource runtime is not available".to_owned()),
-                    });
+                self.apply_resource_event(ResourceUiEvent::ResourcesLoaded {
+                    request,
+                    result: Err("resource runtime is not available".to_owned()),
+                });
                 return;
             };
             runtime.spawn(async move {
@@ -355,11 +417,10 @@ impl MikuApp {
 
     fn request_resource_action(&mut self, request: ResourceActionRequest) {
         let Some(services) = self.services.clone() else {
-            self.pod_resource_panel
-                .apply_event(ResourceUiEvent::ResourceActionCompleted {
-                    request,
-                    result: Err("resource services are not available".to_owned()),
-                });
+            self.apply_resource_event(ResourceUiEvent::ResourceActionCompleted {
+                request,
+                result: Err("resource services are not available".to_owned()),
+            });
             return;
         };
         let sender = self.resource_event_sender.clone();
@@ -367,11 +428,10 @@ impl MikuApp {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let Some(runtime) = self.runtime.as_ref() else {
-                self.pod_resource_panel
-                    .apply_event(ResourceUiEvent::ResourceActionCompleted {
-                        request,
-                        result: Err("resource runtime is not available".to_owned()),
-                    });
+                self.apply_resource_event(ResourceUiEvent::ResourceActionCompleted {
+                    request,
+                    result: Err("resource runtime is not available".to_owned()),
+                });
                 return;
             };
             runtime.spawn(async move {
@@ -395,11 +455,10 @@ impl MikuApp {
 
     fn request_pod_logs(&mut self, request: PodLogRequest) {
         let Some(services) = self.services.clone() else {
-            self.pod_resource_panel
-                .apply_event(ResourceUiEvent::PodLogsLoaded {
-                    request,
-                    result: Err("resource services are not available".to_owned()),
-                });
+            self.apply_resource_event(ResourceUiEvent::PodLogsLoaded {
+                request,
+                result: Err("resource services are not available".to_owned()),
+            });
             return;
         };
         let sender = self.resource_event_sender.clone();
@@ -408,11 +467,10 @@ impl MikuApp {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let Some(runtime) = self.runtime.as_ref() else {
-                self.pod_resource_panel
-                    .apply_event(ResourceUiEvent::PodLogsLoaded {
-                        request,
-                        result: Err("resource runtime is not available".to_owned()),
-                    });
+                self.apply_resource_event(ResourceUiEvent::PodLogsLoaded {
+                    request,
+                    result: Err("resource runtime is not available".to_owned()),
+                });
                 return;
             };
             runtime.spawn(async move {
@@ -470,4 +528,101 @@ async fn run_resource_action(
     Err(miku_core::MikuError::UnsupportedRuntime(
         "unknown resource action".to_owned(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cluster(id: &str, name: &str) -> ClusterSummary {
+        ClusterSummary {
+            id: miku_core::ClusterId::new(id),
+            name: name.to_owned(),
+            context: id.to_owned(),
+            current: false,
+        }
+    }
+
+    fn pods_resource() -> ResourceNavItem {
+        ResourceNavItem { name: "Pods" }
+    }
+
+    #[test]
+    fn selecting_clusters_creates_separate_workspaces() {
+        let mut app = MikuApp::new(RuntimeMode::Native);
+        let first = cluster("first", "Cluster");
+        let second = cluster("second", "Cluster");
+
+        app.select_cluster(first.clone());
+        app.open_resource_tab(pods_resource());
+        app.select_cluster(second.clone());
+
+        assert!(
+            app.workspaces
+                .get(&first.id)
+                .unwrap()
+                .dock_state
+                .find_tab(&AppTab::Resource(pods_resource()))
+                .is_some()
+        );
+        assert!(
+            app.workspaces
+                .get(&second.id)
+                .unwrap()
+                .dock_state
+                .find_tab(&AppTab::Resource(pods_resource()))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn switching_back_to_cluster_restores_its_workspace_tabs() {
+        let mut app = MikuApp::new(RuntimeMode::Native);
+        let first = cluster("first", "First");
+        let second = cluster("second", "Second");
+
+        app.select_cluster(first.clone());
+        app.open_resource_tab(pods_resource());
+        app.select_cluster(second.clone());
+        app.open_resource_tab(ResourceNavItem { name: "Services" });
+        app.select_cluster(first.clone());
+
+        let first_workspace = app.workspaces.get(&first.id).unwrap();
+        let second_workspace = app.workspaces.get(&second.id).unwrap();
+        assert!(
+            first_workspace
+                .dock_state
+                .find_tab(&AppTab::Resource(pods_resource()))
+                .is_some()
+        );
+        assert!(
+            first_workspace
+                .dock_state
+                .find_tab(&AppTab::Resource(ResourceNavItem { name: "Services" }))
+                .is_none()
+        );
+        assert!(
+            second_workspace
+                .dock_state
+                .find_tab(&AppTab::Resource(ResourceNavItem { name: "Services" }))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn selected_resource_is_scoped_to_the_selected_workspace() {
+        let mut app = MikuApp::new(RuntimeMode::Native);
+        let first = cluster("first", "First");
+        let second = cluster("second", "Second");
+
+        app.select_cluster(first.clone());
+        app.open_resource_tab(pods_resource());
+        app.select_cluster(second);
+
+        assert_eq!(app.selected_workspace_resource(), None);
+
+        app.select_cluster(first);
+
+        assert_eq!(app.selected_workspace_resource(), Some(pods_resource()));
+    }
 }

@@ -187,6 +187,16 @@ pub(crate) enum ResourceUiEvent {
     },
 }
 
+impl ResourceUiEvent {
+    pub(crate) fn cluster_id(&self) -> &ClusterId {
+        match self {
+            Self::ResourcesLoaded { request, .. } => &request.cluster_id,
+            Self::ResourceActionCompleted { request, .. } => &request.cluster_id,
+            Self::PodLogsLoaded { request, .. } => &request.cluster_id,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ResourceActionOutcome {
     Applied(ResourceSummary),

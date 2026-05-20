@@ -27,7 +27,8 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) add_tab: Option<AppTab>,
     pub(crate) add_requested: bool,
     pub(crate) new_cluster_requested: bool,
-    pub(crate) selected_cluster_name: Option<String>,
+    pub(crate) selected_cluster: Option<ClusterSummary>,
+    pub(crate) active_resource: Option<ResourceNavItem>,
     pub(crate) selected_resource: Option<ResourceNavItem>,
     pub(crate) selected_cluster_id: Option<miku_core::ClusterId>,
     pub(crate) pod_resource_panel: Option<&'a mut PodResourcePanel>,
@@ -80,8 +81,17 @@ impl TabViewer for AppTabViewer<'_> {
             }
             AppTab::Resources => self.show_resources(ui),
             AppTab::Workspace(_) => {
-                ui.heading("Kubernetes workspace");
-                ui.label("Select a cluster to inspect namespaces, workloads, services, and logs.");
+                if let Some(cluster_name) = self.state.selected_cluster_name() {
+                    ui.heading(format!("{cluster_name} workspace"));
+                    ui.label(
+                        "Choose a resource to inspect namespaces, workloads, services, and logs.",
+                    );
+                } else {
+                    ui.heading("Kubernetes workspace");
+                    ui.label(
+                        "Select a cluster to inspect namespaces, workloads, services, and logs.",
+                    );
+                }
                 ui.separator();
                 ui.label(self.state.status_message());
             }
@@ -126,20 +136,20 @@ impl TabViewer for AppTabViewer<'_> {
 
 impl AppTabViewer<'_> {
     fn show_cluster_row(&mut self, ui: &mut egui::Ui, cluster: &ClusterSummary) {
-        let selected = self.state.selected_cluster_name() == Some(cluster.name.as_str());
+        let selected = self.state.selected_cluster_id() == Some(&cluster.id);
         let response = ui.selectable_label(selected, &cluster.name);
 
         if response.clicked() || response.double_clicked() {
-            self.selected_cluster_name = Some(cluster.name.clone());
+            self.selected_cluster = Some(cluster.clone());
         }
 
         if response.secondary_clicked() {
-            self.selected_cluster_name = Some(cluster.name.clone());
+            self.selected_cluster = Some(cluster.clone());
         }
 
         response.context_menu(|ui| {
             if ui.button("Select").clicked() {
-                self.selected_cluster_name = Some(cluster.name.clone());
+                self.selected_cluster = Some(cluster.clone());
                 ui.close();
             }
         });
@@ -158,7 +168,7 @@ impl AppTabViewer<'_> {
             });
 
             for resource in category.items {
-                let selected = self.state.selected_resource() == Some(*resource);
+                let selected = self.active_resource == Some(*resource);
                 let response = ui.selectable_label(selected, resource.name);
                 if response.clicked() {
                     self.selected_resource = Some(*resource);
