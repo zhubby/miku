@@ -40,7 +40,7 @@ miku-kube = { path = "crates/miku-kube" }
 miku-server = { path = "crates/miku-server" }
 miku-store = { path = "crates/miku-store" }
 miku-ui = { path = "crates/miku-ui" }
-reqwest = { version = "0.12.24", default-features = false, features = ["json"] }
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "stream"] }
 sea-orm = { version = "1.1.20", default-features = false, features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros", "with-json"] }
 sea-orm-migration = { version = "1.1.20", default-features = false, features = ["sqlx-sqlite", "runtime-tokio-rustls"] }
 serde = { version = "1.0.228", features = ["derive"] }
@@ -48,7 +48,7 @@ serde_json = "1.0.145"
 serde_yaml = "0.9.34"
 tempfile = "3.23.0"
 thiserror = "2.0.17"
-tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tower = "0.5.2"
 tower-http = { version = "0.6.7", features = ["cors", "trace"] }
 tracing = "0.1.43"
@@ -56,4 +56,4 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 url = "2.5.7"
 wasm-bindgen = "0.2.108"
 wasm-bindgen-futures = "0.4.58"
-web-sys = { version = "0.3.85", features = ["HtmlCanvasElement", "Location", "Window"] }
+web-sys = { version = "0.3.85", features = ["Event", "EventSource", "HtmlCanvasElement", "Location", "MessageEvent", "Window"] }

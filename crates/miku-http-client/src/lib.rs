@@ -1,13 +1,17 @@
 use async_trait::async_trait;
+use futures::StreamExt;
 use miku_api::{
     ClusterConnectionInfo, ClusterInitializeRequest, ClusterInitializer, ClusterRegistry,
     ClusterStatusReader, ClusterStatusReport, ClusterStatusRequest, ClusterSummary,
     CreateClusterRequest, KubernetesResourceReader, KubernetesResourceWriter,
     KubernetesWatchService, LocalPreferenceStore, LogLine, MikuServices, PodEvictRequest,
-    PodLogQuery, PodLogService, ResourceApplyRequest, ResourceDeleteRequest, ResourceList,
-    ResourceQuery, ResourceSummary,
+    PodLogQuery, PodLogService, ResourceApplyRequest, ResourceDeleteRequest, ResourceEvent,
+    ResourceList, ResourceQuery, ResourceSummary,
 };
 use url::Url;
+
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::{JsCast, closure::Closure};
 
 #[derive(Clone, Debug)]
 pub struct HttpMikuClient {
@@ -31,6 +35,29 @@ impl HttpMikuClient {
         self.base_url
             .join(path.trim_start_matches('/'))
             .expect("validated base URL should join relative API paths")
+    }
+
+    pub fn resource_watch_endpoint(&self, query: &ResourceQuery) -> Url {
+        let mut endpoint = self.endpoint("/api/resources/watch");
+        {
+            let mut pairs = endpoint.query_pairs_mut();
+            pairs.append_pair("cluster_id", query.cluster_id.as_str());
+            if let Some(group) = &query.resource.group {
+                pairs.append_pair("group", group);
+            }
+            pairs.append_pair("version", &query.resource.version);
+            pairs.append_pair("plural", &query.resource.plural);
+            if let Some(namespace) = &query.namespace {
+                pairs.append_pair("namespace", namespace);
+            }
+            if let Some(label_selector) = &query.label_selector {
+                pairs.append_pair("label_selector", label_selector);
+            }
+            if let Some(limit) = query.limit {
+                pairs.append_pair("limit", &limit.to_string());
+            }
+        }
+        endpoint
     }
 }
 
@@ -194,7 +221,15 @@ impl KubernetesResourceWriter for HttpMikuClient {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-impl KubernetesWatchService for HttpMikuClient {}
+impl KubernetesWatchService for HttpMikuClient {
+    #[tracing::instrument(name = "http_client.watch_resources", skip(self, query), fields(resource = %query.resource.plural))]
+    async fn watch_resources(
+        &self,
+        query: ResourceQuery,
+    ) -> miku_core::Result<miku_api::BoxEventStream<ResourceEvent>> {
+        watch_resources(self, query).await
+    }
+}
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -234,6 +269,150 @@ impl LocalPreferenceStore for HttpMikuClient {
 
 impl MikuServices for HttpMikuClient {}
 
+#[cfg(not(target_arch = "wasm32"))]
+async fn watch_resources(
+    client: &HttpMikuClient,
+    query: ResourceQuery,
+) -> miku_core::Result<miku_api::BoxEventStream<ResourceEvent>> {
+    let endpoint = client.resource_watch_endpoint(&query);
+    let bytes = client
+        .client
+        .get(endpoint)
+        .send()
+        .await
+        .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+        .error_for_status()
+        .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+        .bytes_stream();
+
+    Ok(futures::stream::unfold(
+        (
+            bytes,
+            String::new(),
+            Vec::<miku_core::Result<ResourceEvent>>::new(),
+        ),
+        |(mut bytes, mut buffer, mut pending)| async move {
+            loop {
+                if let Some(event) = pending.pop() {
+                    return Some((event, (bytes, buffer, pending)));
+                }
+
+                match bytes.next().await {
+                    Some(Ok(chunk)) => {
+                        buffer.push_str(&String::from_utf8_lossy(&chunk));
+                        pending = parse_sse_events(&mut buffer);
+                        pending.reverse();
+                    }
+                    Some(Err(error)) => {
+                        return Some((
+                            Err(miku_core::MikuError::Transport(error.to_string())),
+                            (bytes, buffer, pending),
+                        ));
+                    }
+                    None => return None,
+                }
+            }
+        },
+    )
+    .boxed())
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn watch_resources(
+    client: &HttpMikuClient,
+    query: ResourceQuery,
+) -> miku_core::Result<miku_api::BoxEventStream<ResourceEvent>> {
+    let endpoint = client.resource_watch_endpoint(&query);
+    let event_source = web_sys::EventSource::new(endpoint.as_str())
+        .map_err(|error| miku_core::MikuError::Transport(format!("{error:?}")))?;
+    let (sender, receiver) =
+        futures::channel::mpsc::unbounded::<miku_core::Result<ResourceEvent>>();
+
+    let message_sender = sender.clone();
+    let onmessage =
+        Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| {
+            let Some(data) = event.data().as_string() else {
+                let _ = message_sender.unbounded_send(Err(miku_core::MikuError::Transport(
+                    "resource watch event did not contain text data".to_owned(),
+                )));
+                return;
+            };
+            let result = serde_json::from_str::<ResourceEvent>(&data)
+                .map_err(|error| miku_core::MikuError::Transport(error.to_string()));
+            let _ = message_sender.unbounded_send(result);
+        });
+    event_source.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+
+    let error_sender = sender;
+    let onerror = Closure::<dyn FnMut(web_sys::Event)>::new(move |_event: web_sys::Event| {
+        let _ = error_sender.unbounded_send(Err(miku_core::MikuError::Transport(
+            "resource watch stream failed".to_owned(),
+        )));
+    });
+    event_source.set_onerror(Some(onerror.as_ref().unchecked_ref()));
+
+    Ok(Box::pin(EventSourceStream {
+        receiver,
+        _event_source: event_source,
+        _onmessage: onmessage,
+        _onerror: onerror,
+    }))
+}
+
+#[cfg(target_arch = "wasm32")]
+struct EventSourceStream {
+    receiver: futures::channel::mpsc::UnboundedReceiver<miku_core::Result<ResourceEvent>>,
+    _event_source: web_sys::EventSource,
+    _onmessage: Closure<dyn FnMut(web_sys::MessageEvent)>,
+    _onerror: Closure<dyn FnMut(web_sys::Event)>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl futures::Stream for EventSourceStream {
+    type Item = miku_core::Result<ResourceEvent>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.receiver.poll_next_unpin(context)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Drop for EventSourceStream {
+    fn drop(&mut self) {
+        self._event_source.close();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_sse_events(buffer: &mut String) -> Vec<miku_core::Result<ResourceEvent>> {
+    let mut events = Vec::new();
+    while let Some(index) = buffer.find("\n\n") {
+        let frame = buffer[..index].to_owned();
+        buffer.drain(..index + 2);
+        let mut event_name = None;
+        let mut data = Vec::new();
+        for line in frame.lines() {
+            if let Some(value) = line.strip_prefix("event:") {
+                event_name = Some(value.trim().to_owned());
+            } else if let Some(value) = line.strip_prefix("data:") {
+                data.push(value.trim_start().to_owned());
+            }
+        }
+        if event_name.as_deref() == Some("error") {
+            events.push(Err(miku_core::MikuError::Transport(data.join("\n"))));
+        } else if !data.is_empty() {
+            events.push(
+                serde_json::from_str::<ResourceEvent>(&data.join("\n"))
+                    .map_err(|error| miku_core::MikuError::Transport(error.to_string())),
+            );
+        }
+    }
+    events
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,6 +445,40 @@ mod tests {
             client.endpoint("/api/resources/list").as_str(),
             "http://127.0.0.1:5174/api/resources/list"
         );
+    }
+
+    #[test]
+    fn watch_resources_encodes_resource_query() {
+        let client = HttpMikuClient::new("http://127.0.0.1:5174").unwrap();
+        let mut query = ResourceQuery::new(
+            miku_core::ClusterId::new("local"),
+            miku_core::ResourceRef::grouped("apps", "v1", "deployments"),
+        )
+        .namespace("production")
+        .label_selector("app=api");
+        query.limit = Some(50);
+
+        let endpoint = client.resource_watch_endpoint(&query);
+
+        assert_eq!(
+            endpoint.as_str(),
+            "http://127.0.0.1:5174/api/resources/watch?cluster_id=local&group=apps&version=v1&plural=deployments&namespace=production&label_selector=app%3Dapi&limit=50"
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn parses_sse_resource_events() {
+        let mut buffer =
+            "data: {\"Snapshot\":{\"items\":[],\"continue_token\":null}}\n\n".to_owned();
+
+        let events = parse_sse_events(&mut buffer);
+
+        assert!(buffer.is_empty());
+        assert!(matches!(
+            events.as_slice(),
+            [Ok(ResourceEvent::Snapshot(ResourceList { items, .. }))] if items.is_empty()
+        ));
     }
 
     #[test]

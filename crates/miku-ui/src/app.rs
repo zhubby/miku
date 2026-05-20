@@ -5,15 +5,18 @@ use std::sync::{Arc, mpsc as resource_mpsc};
 
 use eframe::egui;
 use egui_dock::{DockArea, DockState, NodePath, Style, SurfaceIndex, TabPath};
+use futures::StreamExt;
 use miku_api::{ClusterSummary, MikuServices};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::cluster_events::ClusterUiEvent;
 use crate::dock::show_dock_region;
 use crate::forms::NewClusterForm;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::resource_panel::ResourceWatchKey;
 use crate::resource_panel::{
     PodLogRequest, PodResourcePanel, ResourceActionKind, ResourceActionOutcome,
-    ResourceActionRequest, ResourceLoadRequest, ResourceUiEvent,
+    ResourceActionRequest, ResourceLoadRequest, ResourceUiEvent, ResourceWatchRequest,
 };
 use crate::resources::ResourceNavItem;
 use crate::state::{AppState, ClusterConnectionState, RuntimeMode};
@@ -33,6 +36,8 @@ pub struct MikuApp {
     pub(crate) services: Option<Arc<dyn MikuServices>>,
     pub(crate) resource_event_sender: resource_mpsc::Sender<ResourceUiEvent>,
     pub(crate) resource_event_receiver: resource_mpsc::Receiver<ResourceUiEvent>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) resource_watch_tasks: HashMap<ResourceWatchKey, tokio::task::JoinHandle<()>>,
     pub(crate) status_event_sender: resource_mpsc::Sender<ClusterStatusUiEvent>,
     pub(crate) status_event_receiver: resource_mpsc::Receiver<ClusterStatusUiEvent>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -96,6 +101,8 @@ impl MikuApp {
             services: None,
             resource_event_sender,
             resource_event_receiver,
+            #[cfg(not(target_arch = "wasm32"))]
+            resource_watch_tasks: HashMap::new(),
             status_event_sender,
             status_event_receiver,
             #[cfg(not(target_arch = "wasm32"))]
@@ -177,7 +184,7 @@ impl eframe::App for MikuApp {
                 ui.horizontal(|ui| {
                     egui_theme_switch::global_theme_switch(ui);
                     ui.separator();
-                    ui.label(self.state.status_message());
+                    self.show_status_bar_connection(ui);
                 });
             });
 
@@ -208,6 +215,7 @@ impl eframe::App for MikuApp {
                     pod_resource_panel: None,
                     status_load_requests: Vec::new(),
                     resource_load_requests: Vec::new(),
+                    resource_watch_requests: Vec::new(),
                     resource_action_requests: Vec::new(),
                     pod_log_requests: Vec::new(),
                 };
@@ -262,6 +270,7 @@ impl eframe::App for MikuApp {
                     pod_resource_panel: None,
                     status_load_requests: Vec::new(),
                     resource_load_requests: Vec::new(),
+                    resource_watch_requests: Vec::new(),
                     resource_action_requests: Vec::new(),
                     pod_log_requests: Vec::new(),
                 };
@@ -324,6 +333,7 @@ impl eframe::App for MikuApp {
                 pod_resource_panel: Some(&mut workspace.pod_resource_panel),
                 status_load_requests: Vec::new(),
                 resource_load_requests: Vec::new(),
+                resource_watch_requests: Vec::new(),
                 resource_action_requests: Vec::new(),
                 pod_log_requests: Vec::new(),
             };
@@ -340,6 +350,7 @@ impl eframe::App for MikuApp {
             });
 
             let resource_load_requests = tab_viewer.resource_load_requests;
+            let resource_watch_requests = tab_viewer.resource_watch_requests;
             let resource_action_requests = tab_viewer.resource_action_requests;
             let pod_log_requests = tab_viewer.pod_log_requests;
             let status_load_requests = tab_viewer.status_load_requests;
@@ -351,6 +362,9 @@ impl eframe::App for MikuApp {
             }
             for request in resource_load_requests {
                 self.request_resource_load(request);
+            }
+            for request in resource_watch_requests {
+                self.request_resource_watch(request, ui.ctx().clone());
             }
             for request in resource_action_requests {
                 self.request_resource_action(request);
@@ -408,6 +422,25 @@ impl MikuApp {
 
     fn selected_cluster_id(&self) -> Option<miku_core::ClusterId> {
         self.state.selected_cluster_id().cloned()
+    }
+
+    fn show_status_bar_connection(&self, ui: &mut egui::Ui) {
+        let summary = status_bar_connection_summary(
+            self.state.selected_cluster_name(),
+            self.state
+                .selected_cluster_id()
+                .and_then(|cluster_id| self.cluster_connection_states.get(cluster_id)),
+        );
+        let color = match summary.tone {
+            StatusBarConnectionTone::Default => ui.visuals().text_color(),
+            StatusBarConnectionTone::Weak => ui.visuals().weak_text_color(),
+            StatusBarConnectionTone::Accent => ui.visuals().hyperlink_color,
+            StatusBarConnectionTone::Error => ui.visuals().error_fg_color,
+        };
+        let response = ui.label(egui::RichText::new(summary.text).color(color));
+        if let Some(hover) = summary.hover {
+            response.on_hover_text(hover);
+        }
     }
 
     fn process_resource_events(&mut self) {
@@ -523,6 +556,82 @@ impl MikuApp {
         }
     }
 
+    fn request_resource_watch(&mut self, request: ResourceWatchRequest, repaint: egui::Context) {
+        let Some(services) = self.services.clone() else {
+            self.apply_resource_event(ResourceUiEvent::ResourceWatchUpdated {
+                request,
+                result: Err("resource services are not available".to_owned()),
+            });
+            return;
+        };
+        let sender = self.resource_event_sender.clone();
+        let query = request.query();
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(runtime) = self.runtime.as_ref() else {
+                self.apply_resource_event(ResourceUiEvent::ResourceWatchUpdated {
+                    request,
+                    result: Err("resource runtime is not available".to_owned()),
+                });
+                return;
+            };
+            if let Some(task) = self.resource_watch_tasks.remove(&request.key()) {
+                task.abort();
+            }
+            let task_request = request.clone();
+            let task = runtime.spawn(async move {
+                let stream = services.watch_resources(query).await;
+                let mut stream = match stream {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        let _ = sender.send(ResourceUiEvent::ResourceWatchUpdated {
+                            request: task_request,
+                            result: Err(error.to_string()),
+                        });
+                        repaint.request_repaint();
+                        return;
+                    }
+                };
+
+                while let Some(result) = stream.next().await {
+                    let _ = sender.send(ResourceUiEvent::ResourceWatchUpdated {
+                        request: task_request.clone(),
+                        result: result.map_err(|error| error.to_string()),
+                    });
+                    repaint.request_repaint();
+                }
+            });
+            self.resource_watch_tasks.insert(request.key(), task);
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            wasm_bindgen_futures::spawn_local(async move {
+                let stream = services.watch_resources(query).await;
+                let mut stream = match stream {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        let _ = sender.send(ResourceUiEvent::ResourceWatchUpdated {
+                            request,
+                            result: Err(error.to_string()),
+                        });
+                        repaint.request_repaint();
+                        return;
+                    }
+                };
+
+                while let Some(result) = stream.next().await {
+                    let _ = sender.send(ResourceUiEvent::ResourceWatchUpdated {
+                        request: request.clone(),
+                        result: result.map_err(|error| error.to_string()),
+                    });
+                    repaint.request_repaint();
+                }
+            });
+        }
+    }
+
     fn request_resource_action(&mut self, request: ResourceActionRequest) {
         let Some(services) = self.services.clone() else {
             self.apply_resource_event(ResourceUiEvent::ResourceActionCompleted {
@@ -600,6 +709,88 @@ impl MikuApp {
                 let _ = sender.send(ResourceUiEvent::PodLogsLoaded { request, result });
             });
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StatusBarConnectionTone {
+    Default,
+    Weak,
+    Accent,
+    Error,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StatusBarConnectionSummary {
+    text: String,
+    hover: Option<String>,
+    tone: StatusBarConnectionTone,
+}
+
+fn status_bar_connection_summary(
+    cluster_name: Option<&str>,
+    connection_state: Option<&ClusterConnectionState>,
+) -> StatusBarConnectionSummary {
+    let Some(cluster_name) = cluster_name else {
+        return StatusBarConnectionSummary {
+            text: format!("{} No cluster selected", egui_phosphor::regular::CIRCLE),
+            hover: None,
+            tone: StatusBarConnectionTone::Weak,
+        };
+    };
+
+    let text = |icon: &str, version: &str, status: &str| {
+        format!("{icon} {cluster_name} | {version} | {status}")
+    };
+
+    match connection_state.unwrap_or(&ClusterConnectionState::Idle) {
+        ClusterConnectionState::Idle => StatusBarConnectionSummary {
+            text: text(
+                egui_phosphor::regular::CIRCLE,
+                "version unknown",
+                "Not connected",
+            ),
+            hover: Some("Cluster has not been initialized yet".to_owned()),
+            tone: StatusBarConnectionTone::Weak,
+        },
+        ClusterConnectionState::Initializing => StatusBarConnectionSummary {
+            text: text(
+                egui_phosphor::regular::CIRCLE_NOTCH,
+                "version unknown",
+                "Connecting",
+            ),
+            hover: Some("Initializing cluster connection".to_owned()),
+            tone: StatusBarConnectionTone::Default,
+        },
+        ClusterConnectionState::Ready { info } => StatusBarConnectionSummary {
+            text: text(
+                egui_phosphor::regular::CHECK_CIRCLE,
+                status_bar_cluster_version(&info.version),
+                "Connected",
+            ),
+            hover: info
+                .platform
+                .as_ref()
+                .map(|platform| format!("Platform: {platform}")),
+            tone: StatusBarConnectionTone::Accent,
+        },
+        ClusterConnectionState::Failed { error } => StatusBarConnectionSummary {
+            text: text(
+                egui_phosphor::regular::WARNING_CIRCLE,
+                "version unknown",
+                "Connection failed",
+            ),
+            hover: Some(error.clone()),
+            tone: StatusBarConnectionTone::Error,
+        },
+    }
+}
+
+fn status_bar_cluster_version(version: &str) -> &str {
+    if version.is_empty() {
+        "version unknown"
+    } else {
+        version
     }
 }
 
@@ -814,5 +1005,48 @@ mod tests {
         app.select_cluster(first.clone());
 
         assert_eq!(app.cluster_connection_states.get(&first.id), Some(&ready));
+    }
+
+    #[test]
+    fn status_bar_connection_summary_includes_selected_cluster_version_and_status() {
+        let summary = status_bar_connection_summary(
+            Some("kind-miku"),
+            Some(&ClusterConnectionState::Ready {
+                info: miku_api::ClusterConnectionInfo {
+                    version: "v1.35.0".to_owned(),
+                    platform: Some("darwin/arm64".to_owned()),
+                },
+            }),
+        );
+
+        assert_eq!(
+            summary.text,
+            format!(
+                "{} kind-miku | v1.35.0 | Connected",
+                egui_phosphor::regular::CHECK_CIRCLE
+            )
+        );
+        assert_eq!(summary.hover.as_deref(), Some("Platform: darwin/arm64"));
+        assert_eq!(summary.tone, StatusBarConnectionTone::Accent);
+    }
+
+    #[test]
+    fn status_bar_connection_summary_reports_failed_connection() {
+        let summary = status_bar_connection_summary(
+            Some("kind-miku"),
+            Some(&ClusterConnectionState::Failed {
+                error: "forbidden".to_owned(),
+            }),
+        );
+
+        assert_eq!(
+            summary.text,
+            format!(
+                "{} kind-miku | version unknown | Connection failed",
+                egui_phosphor::regular::WARNING_CIRCLE
+            )
+        );
+        assert_eq!(summary.hover.as_deref(), Some("forbidden"));
+        assert_eq!(summary.tone, StatusBarConnectionTone::Error);
     }
 }

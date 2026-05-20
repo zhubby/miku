@@ -183,6 +183,7 @@ pub struct PodEvictRequest {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ResourceEvent {
+    Snapshot(ResourceList),
     Applied(ResourceSummary),
     Deleted {
         name: String,

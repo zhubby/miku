@@ -13,6 +13,7 @@ egui-phosphor = { workspace = true }
 egui-theme-switch = { workspace = true }
 egui_extras = { workspace = true }
 egui_dock = { workspace = true }
+futures = { workspace = true }
 miku-api = { workspace = true }
 miku-core = { workspace = true }
 serde_json = { workspace = true }

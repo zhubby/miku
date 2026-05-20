@@ -11,7 +11,7 @@ use kube::runtime::reflector::{Store, store};
 use kube::runtime::{reflector, watcher};
 use miku_api::ResourceQuery;
 use miku_core::{ClusterId, ResourceRef, ResourceScope};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, broadcast};
 use tokio::time::timeout;
 
 use crate::api_resource;
@@ -91,6 +91,7 @@ impl ResourceCacheRegistry {
 #[derive(Debug)]
 pub(crate) struct ResourceCacheEntry {
     store: Store<DynamicObject>,
+    changes: broadcast::Sender<()>,
     _task: ReflectorTask,
 }
 
@@ -100,20 +101,30 @@ impl ResourceCacheEntry {
         let api = api_for_cache_key(client, &api_resource, &key);
         let (store, writer) = dynamic_store(api_resource);
         let config = watcher_config(&key);
+        let (changes, _) = broadcast::channel(64);
+        let change_sender = changes.clone();
 
         let stream = watcher(api, config).default_backoff();
         let reflected = reflector(writer, stream);
         let task = tokio::spawn(async move {
             futures::pin_mut!(reflected);
             while let Some(event) = reflected.next().await {
-                if let Err(error) = event {
-                    tracing::warn!(%error, "resource cache reflector event failed");
+                match event {
+                    Ok(event) => {
+                        if watcher_event_updates_snapshot(&event) {
+                            let _ = change_sender.send(());
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "resource cache reflector event failed");
+                    }
                 }
             }
         });
 
         Ok(Self {
             store,
+            changes,
             _task: ReflectorTask(task),
         })
     }
@@ -149,6 +160,17 @@ impl ResourceCacheEntry {
         }
         objects
     }
+
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<()> {
+        self.changes.subscribe()
+    }
+}
+
+fn watcher_event_updates_snapshot(event: &watcher::Event<DynamicObject>) -> bool {
+    matches!(
+        event,
+        watcher::Event::Apply(_) | watcher::Event::Delete(_) | watcher::Event::InitDone
+    )
 }
 
 fn watcher_config(key: &ResourceCacheKey) -> watcher::Config {
@@ -276,6 +298,19 @@ mod tests {
         assert_eq!(config.label_selector.as_deref(), Some("app=api"));
     }
 
+    #[test]
+    fn watcher_events_identify_snapshot_updates() {
+        let api_resource = api_resource(&ResourceRef::core("v1", "pods"));
+        let pod = pod_object(&api_resource, "default", "api");
+
+        assert!(watcher_event_updates_snapshot(&watcher::Event::Apply(
+            pod.clone()
+        )));
+        assert!(watcher_event_updates_snapshot(&watcher::Event::Delete(pod)));
+        assert!(watcher_event_updates_snapshot(&watcher::Event::InitDone));
+        assert!(!watcher_event_updates_snapshot(&watcher::Event::Init));
+    }
+
     #[tokio::test]
     async fn snapshot_applies_limit_after_reading_store_state() {
         let api_resource = api_resource(&ResourceRef::core("v1", "pods"));
@@ -294,6 +329,7 @@ mod tests {
         writer.apply_watcher_event(&watcher::Event::InitDone);
         let entry = ResourceCacheEntry {
             store: reader,
+            changes: broadcast::channel(1).0,
             _task: ReflectorTask(tokio::spawn(async {})),
         };
 

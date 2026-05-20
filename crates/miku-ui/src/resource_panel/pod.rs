@@ -5,11 +5,13 @@ use egui_extras::{Column, TableBuilder};
 use miku_api::{LogLine, ResourceSummary};
 use miku_core::ClusterId;
 
+#[cfg(test)]
+use super::ResourceLoadRequest;
 use super::components::{ResourceToolbar, ResourceYamlEditDialog, ResourceYamlViewDialog};
 use super::{
     LoadStatus, PodLogRequest, ResourceActionKind, ResourceActionOutcome, ResourceActionRequest,
-    ResourceDeleteTarget, ResourceLoadKind, ResourceLoadRequest, ResourcePanelRequests,
-    ResourceUiEvent, namespaces_from_list,
+    ResourceDeleteTarget, ResourceLoadKind, ResourcePanelRequests, ResourceUiEvent,
+    ResourceWatchRequest, namespaces_from_list,
 };
 use crate::time::human_age_from_rfc3339;
 
@@ -25,6 +27,8 @@ pub(crate) struct PodResourcePanel {
     next_request_id: u64,
     namespace_request_id: Option<u64>,
     row_request_id: Option<u64>,
+    namespace_watch_request_id: Option<u64>,
+    row_watch_request_id: Option<u64>,
     action_request_id: Option<u64>,
     log_request_id: Option<u64>,
     last_cluster_id: Option<ClusterId>,
@@ -56,18 +60,22 @@ impl PodResourcePanel {
         self.reset_for_cluster_change(cluster_id);
         if matches!(self.namespace_status, LoadStatus::Idle) {
             requests
-                .loads
-                .push(self.request_namespaces(cluster_id.clone()));
+                .watches
+                .push(self.request_namespace_watch(cluster_id.clone()));
         }
         if matches!(self.row_status, LoadStatus::Idle) {
-            requests.loads.push(self.request_pods(cluster_id.clone()));
+            requests
+                .watches
+                .push(self.request_pod_watch(cluster_id.clone()));
         }
         if self.refresh_after_action && !matches!(self.row_status, LoadStatus::Loading) {
             self.refresh_after_action = false;
-            requests.loads.push(self.request_pods(cluster_id.clone()));
+            requests
+                .watches
+                .push(self.request_pod_watch(cluster_id.clone()));
         }
 
-        self.show_toolbar(ui, cluster_id, &mut requests.loads);
+        self.show_toolbar(ui, cluster_id, &mut requests);
         ui.separator();
         self.show_body(ui);
         self.show_create_dialog(ui.ctx(), cluster_id, &mut requests.actions);
@@ -171,6 +179,34 @@ impl PodResourcePanel {
                     }
                 }
             }
+            ResourceUiEvent::ResourceWatchUpdated { request, result } => match request.kind {
+                ResourceLoadKind::Namespaces => {
+                    if self.namespace_watch_request_id != Some(request.request_id) {
+                        return;
+                    }
+                    match result {
+                        Ok(miku_api::ResourceEvent::Snapshot(list)) => {
+                            self.namespaces = namespaces_from_list(&list);
+                            self.namespace_status = LoadStatus::Loaded;
+                        }
+                        Ok(_) => {}
+                        Err(error) => self.namespace_status = LoadStatus::Error(error),
+                    }
+                }
+                ResourceLoadKind::Pods { .. } => {
+                    if self.row_watch_request_id != Some(request.request_id) {
+                        return;
+                    }
+                    match result {
+                        Ok(miku_api::ResourceEvent::Snapshot(list)) => {
+                            self.replace_rows(pod_rows_from_list(&list.items));
+                            self.row_status = LoadStatus::Loaded;
+                        }
+                        Ok(_) => {}
+                        Err(error) => self.row_status = LoadStatus::Error(error),
+                    }
+                }
+            },
         }
     }
 
@@ -189,6 +225,8 @@ impl PodResourcePanel {
         self.row_status = LoadStatus::Idle;
         self.namespace_request_id = None;
         self.row_request_id = None;
+        self.namespace_watch_request_id = None;
+        self.row_watch_request_id = None;
         self.action_request_id = None;
         self.log_request_id = None;
         self.create_dialog = None;
@@ -206,7 +244,7 @@ impl PodResourcePanel {
         &mut self,
         ui: &mut egui::Ui,
         cluster_id: &ClusterId,
-        requests: &mut Vec<ResourceLoadRequest>,
+        requests: &mut ResourcePanelRequests,
     ) {
         let filtered_rows = self.filtered_rows();
         let response = ResourceToolbar {
@@ -222,7 +260,9 @@ impl PodResourcePanel {
         .show(ui);
 
         if response.namespace_changed {
-            requests.push(self.request_pods(cluster_id.clone()));
+            requests
+                .watches
+                .push(self.request_pod_watch(cluster_id.clone()));
         }
 
         if response.search_changed {
@@ -235,8 +275,12 @@ impl PodResourcePanel {
         }
 
         if response.refresh_clicked {
-            requests.push(self.request_namespaces(cluster_id.clone()));
-            requests.push(self.request_pods(cluster_id.clone()));
+            requests
+                .watches
+                .push(self.request_namespace_watch(cluster_id.clone()));
+            requests
+                .watches
+                .push(self.request_pod_watch(cluster_id.clone()));
         }
 
         if response.create_clicked {
@@ -778,17 +822,7 @@ impl PodResourcePanel {
         }
     }
 
-    fn request_namespaces(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
-        let request = ResourceLoadRequest {
-            request_id: self.allocate_request_id(),
-            cluster_id,
-            kind: ResourceLoadKind::Namespaces,
-        };
-        self.namespace_request_id = Some(request.request_id);
-        self.namespace_status = LoadStatus::Loading;
-        request
-    }
-
+    #[cfg(test)]
     fn request_pods(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
         let request = ResourceLoadRequest {
             request_id: self.allocate_request_id(),
@@ -798,6 +832,30 @@ impl PodResourcePanel {
             },
         };
         self.row_request_id = Some(request.request_id);
+        self.row_status = LoadStatus::Loading;
+        request
+    }
+
+    fn request_namespace_watch(&mut self, cluster_id: ClusterId) -> ResourceWatchRequest {
+        let request = ResourceWatchRequest {
+            request_id: self.allocate_request_id(),
+            cluster_id,
+            kind: ResourceLoadKind::Namespaces,
+        };
+        self.namespace_watch_request_id = Some(request.request_id);
+        self.namespace_status = LoadStatus::Loading;
+        request
+    }
+
+    fn request_pod_watch(&mut self, cluster_id: ClusterId) -> ResourceWatchRequest {
+        let request = ResourceWatchRequest {
+            request_id: self.allocate_request_id(),
+            cluster_id,
+            kind: ResourceLoadKind::Pods {
+                namespace: self.namespace_filter.clone(),
+            },
+        };
+        self.row_watch_request_id = Some(request.request_id);
         self.row_status = LoadStatus::Loading;
         request
     }
@@ -837,6 +895,15 @@ impl PodResourcePanel {
 
     fn filtered_rows(&self) -> Vec<PodRow> {
         filter_pod_rows(&self.rows, &self.search_text)
+    }
+
+    fn replace_rows(&mut self, rows: Vec<PodRow>) {
+        let visible_keys = rows
+            .iter()
+            .map(|row| row.key.clone())
+            .collect::<BTreeSet<_>>();
+        self.selected_rows.retain(|key| visible_keys.contains(key));
+        self.rows = rows;
     }
 
     fn selected_delete_targets(&self) -> Vec<ResourceDeleteTarget> {
@@ -1678,6 +1745,71 @@ spec:
 
         assert_eq!(panel.rows.len(), 1);
         assert_eq!(panel.rows[0].name, "api-75f");
+    }
+
+    #[test]
+    fn stale_watch_events_do_not_replace_current_rows() {
+        let mut panel = PodResourcePanel::default();
+        let cluster_id = ClusterId::new("local");
+        let first = panel.request_pod_watch(cluster_id.clone());
+        let second = panel.request_pod_watch(cluster_id);
+
+        panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
+            request: first,
+            result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
+                items: vec![ResourceSummary {
+                    name: "stale".to_owned(),
+                    namespace: Some("default".to_owned()),
+                    kind: "Pod".to_owned(),
+                    status: None,
+                    raw: serde_json::json!({"metadata": {"name": "stale"}}),
+                }],
+                continue_token: None,
+            })),
+        });
+        assert!(panel.rows.is_empty());
+
+        panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
+            request: second,
+            result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
+                items: vec![pod_summary()],
+                continue_token: None,
+            })),
+        });
+
+        assert_eq!(panel.rows.len(), 1);
+        assert_eq!(panel.rows[0].name, "api-75f");
+    }
+
+    #[test]
+    fn watch_snapshot_replaces_rows_and_retains_existing_selection() {
+        let mut panel = PodResourcePanel::default();
+        let cluster_id = ClusterId::new("local");
+        let request = panel.request_pod_watch(cluster_id);
+        panel.rows = vec![
+            PodRow::from_summary(&pod_summary()),
+            PodRow::from_summary(&ResourceSummary {
+                name: "worker".to_owned(),
+                namespace: Some("default".to_owned()),
+                kind: "Pod".to_owned(),
+                status: Some("Running".to_owned()),
+                raw: serde_json::json!({"metadata": {"name": "worker", "namespace": "default"}}),
+            }),
+        ];
+        panel.selected_rows.insert("default/api-75f".to_owned());
+        panel.selected_rows.insert("default/worker".to_owned());
+
+        panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
+            request,
+            result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
+                items: vec![pod_summary()],
+                continue_token: None,
+            })),
+        });
+
+        assert_eq!(panel.rows.len(), 1);
+        assert!(panel.selected_rows.contains("default/api-75f"));
+        assert!(!panel.selected_rows.contains("default/worker"));
     }
 
     fn pod_summary() -> ResourceSummary {

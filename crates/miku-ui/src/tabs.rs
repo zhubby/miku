@@ -8,6 +8,7 @@ use miku_api::{
 
 use crate::resource_panel::{
     PodLogRequest, PodResourcePanel, ResourceActionRequest, ResourceLoadRequest,
+    ResourceWatchRequest,
 };
 use crate::resources::{RESOURCE_CATEGORIES, ResourceNavItem};
 use crate::state::{AppState, ClusterConnectionState};
@@ -40,6 +41,7 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) pod_resource_panel: Option<&'a mut PodResourcePanel>,
     pub(crate) status_load_requests: Vec<ClusterStatusLoadRequest>,
     pub(crate) resource_load_requests: Vec<ResourceLoadRequest>,
+    pub(crate) resource_watch_requests: Vec<ResourceWatchRequest>,
     pub(crate) resource_action_requests: Vec<ResourceActionRequest>,
     pub(crate) pod_log_requests: Vec<PodLogRequest>,
 }
@@ -138,6 +140,7 @@ impl TabViewer for AppTabViewer<'_> {
                     if let Some(panel) = self.pod_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
                         self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
                         self.resource_action_requests.extend(requests.actions);
                         self.pod_log_requests.extend(requests.logs);
                     } else {

@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -11,9 +11,10 @@ use futures::{Stream, StreamExt};
 use miku_api::{
     ClusterConnectionInfo, ClusterInitializeRequest, ClusterStatusReport, ClusterStatusRequest,
     ClusterSummary, CreateClusterRequest, MikuServices, PodEvictRequest, PodLogQuery,
-    ResourceApplyRequest, ResourceDeleteRequest, ResourceList, ResourceQuery, ResourceSummary,
+    ResourceApplyRequest, ResourceDeleteRequest, ResourceEvent, ResourceList, ResourceQuery,
+    ResourceSummary,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -59,6 +60,7 @@ pub fn router(services: SharedServices) -> Router {
         .route("/api/clusters/initialize", post(initialize_cluster))
         .route("/api/clusters/status", post(get_cluster_status))
         .route("/api/resources/list", post(list_resources))
+        .route("/api/resources/watch", get(watch_resources))
         .route("/api/resources/apply", post(apply_resource))
         .route("/api/resources/delete", post(delete_resource))
         .route("/api/pods/evict", post(evict_pod))
@@ -136,6 +138,62 @@ async fn list_resources(
     let resources = services.list_resources(query).await?;
     tracing::debug!(count = resources.items.len(), "listed resources");
     Ok(Json(resources))
+}
+
+#[derive(Debug, Deserialize)]
+struct ResourceWatchParams {
+    cluster_id: String,
+    group: Option<String>,
+    version: String,
+    plural: String,
+    namespace: Option<String>,
+    label_selector: Option<String>,
+    limit: Option<u32>,
+}
+
+impl ResourceWatchParams {
+    fn into_query(self) -> ResourceQuery {
+        let resource = match self.group {
+            Some(group) if !group.is_empty() => {
+                miku_core::ResourceRef::grouped(group, self.version, self.plural)
+            }
+            _ => miku_core::ResourceRef::core(self.version, self.plural),
+        };
+        let mut query = ResourceQuery::new(miku_core::ClusterId::new(self.cluster_id), resource);
+        query.namespace = self.namespace.filter(|namespace| !namespace.is_empty());
+        query.label_selector = self
+            .label_selector
+            .filter(|selector| !selector.trim().is_empty());
+        if let Some(limit) = self.limit {
+            query.limit = Some(limit);
+        }
+        query
+    }
+}
+
+#[tracing::instrument(name = "http.watch_resources", skip(services), fields(resource = %params.plural))]
+async fn watch_resources(
+    State(services): State<SharedServices>,
+    Query(params): Query<ResourceWatchParams>,
+) -> ServerResult<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>> {
+    let stream = services
+        .watch_resources(params.into_query())
+        .await?
+        .map(|result| {
+            let event = match result {
+                Ok(event) => resource_sse_event(event),
+                Err(error) => Event::default().event("error").data(error.to_string()),
+            };
+            Ok(event)
+        });
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+fn resource_sse_event(event: ResourceEvent) -> Event {
+    Event::default()
+        .json_data(event)
+        .unwrap_or_else(|error| Event::default().event("error").data(error.to_string()))
 }
 
 #[tracing::instrument(name = "http.apply_resource", skip(services, request), fields(resource = %request.resource.plural, name = %request.name))]
@@ -350,6 +408,27 @@ mod tests {
         let payload = serde_json::from_slice::<serde_json::Value>(&body).unwrap();
         assert_eq!(payload["items"][0]["name"], "api");
         assert_eq!(payload["items"][0]["kind"], "Pod");
+    }
+
+    #[tokio::test]
+    async fn resource_watch_route_serializes_snapshot_events() {
+        let response = router(std::sync::Arc::new(DummyServices))
+            .oneshot(
+                Request::builder()
+                    .uri("/api/resources/watch?cluster_id=local&version=v1&plural=pods&namespace=default&limit=25")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload = String::from_utf8(body.to_vec()).unwrap();
+        assert!(payload.contains("data:"));
+        assert!(payload.contains("\"Snapshot\""));
+        assert!(payload.contains("\"api\""));
     }
 
     #[tokio::test]
@@ -587,7 +666,28 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl KubernetesWatchService for DummyServices {}
+    impl KubernetesWatchService for DummyServices {
+        async fn watch_resources(
+            &self,
+            query: ResourceQuery,
+        ) -> miku_core::Result<BoxEventStream<ResourceEvent>> {
+            assert_eq!(query.resource.plural, "pods");
+            assert_eq!(query.namespace.as_deref(), Some("default"));
+            Ok(futures::stream::once(async {
+                Ok(ResourceEvent::Snapshot(ResourceList {
+                    items: vec![ResourceSummary {
+                        name: "api".to_owned(),
+                        namespace: Some("default".to_owned()),
+                        kind: "Pod".to_owned(),
+                        status: Some("Running".to_owned()),
+                        raw: serde_json::json!({}),
+                    }],
+                    continue_token: None,
+                }))
+            })
+            .boxed())
+        }
+    }
 
     #[async_trait::async_trait]
     impl PodLogService for DummyServices {

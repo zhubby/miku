@@ -11,7 +11,7 @@ use miku_api::{
     ClusterStatusWorkloadSummary, ClusterSummary, CreateClusterRequest, KubernetesResourceReader,
     KubernetesResourceWriter, KubernetesWatchService, LocalPreferenceStore, LogLine, MikuServices,
     PodEvictRequest, PodLogQuery, PodLogService, ResourceApplyRequest, ResourceDeleteRequest,
-    ResourceDetail, ResourceList, ResourceQuery, ResourceSummary,
+    ResourceDetail, ResourceEvent, ResourceList, ResourceQuery, ResourceSummary,
 };
 use miku_core::{ClusterId, ResourceRef, ResourceScope};
 use std::collections::HashMap;
@@ -470,9 +470,60 @@ fn resource_summary(object: DynamicObject) -> ResourceSummary {
 }
 
 #[async_trait]
-impl<S> KubernetesWatchService for KubeServices<S> where
-    S: ClusterConfigStore + ClusterRegistry + LocalPreferenceStore + Clone + Send + Sync
+impl<S> KubernetesWatchService for KubeServices<S>
+where
+    S: ClusterConfigStore + ClusterRegistry + LocalPreferenceStore + Clone + Send + Sync,
 {
+    #[tracing::instrument(name = "kube.watch_resources", skip(self), fields(path = %resource_query_path(&query)))]
+    async fn watch_resources(
+        &self,
+        query: ResourceQuery,
+    ) -> miku_core::Result<miku_api::BoxEventStream<ResourceEvent>> {
+        let client = self.client_for_cluster(&query.cluster_id).await?;
+        let cache = self.resource_cache.get_or_start(client, &query).await?;
+        cache.wait_until_ready().await?;
+
+        let changes = cache.subscribe();
+        let cache = cache.clone();
+        let limit = query.limit;
+        let initial = Some(Ok(ResourceEvent::Snapshot(resource_list_from_snapshot(
+            cache.snapshot(limit),
+        ))));
+
+        Ok(futures::stream::unfold(
+            (initial, cache, limit, changes),
+            |(mut initial, cache, limit, mut changes)| async move {
+                if let Some(event) = initial.take() {
+                    return Some((event, (initial, cache, limit, changes)));
+                }
+
+                match changes.recv().await {
+                    Ok(()) => {
+                        let event = ResourceEvent::Snapshot(resource_list_from_snapshot(
+                            cache.snapshot(limit),
+                        ));
+                        Some((Ok(event), (initial, cache, limit, changes)))
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(skipped, "resource watch receiver lagged");
+                        let event = ResourceEvent::Snapshot(resource_list_from_snapshot(
+                            cache.snapshot(limit),
+                        ));
+                        Some((Ok(event), (initial, cache, limit, changes)))
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
+                }
+            },
+        )
+        .boxed())
+    }
+}
+
+fn resource_list_from_snapshot(objects: Vec<DynamicObject>) -> ResourceList {
+    ResourceList {
+        items: objects.into_iter().map(resource_summary).collect(),
+        continue_token: None,
+    }
 }
 
 #[async_trait]

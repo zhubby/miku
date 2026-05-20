@@ -1,6 +1,6 @@
 use miku_api::{
     LogLine, PodEvictRequest, PodLogQuery, ResourceApplyRequest, ResourceDeleteRequest,
-    ResourceList, ResourceSummary,
+    ResourceEvent, ResourceList, ResourceSummary,
 };
 use miku_core::{ClusterId, ResourceRef};
 
@@ -11,6 +11,20 @@ pub(crate) use pod::PodResourcePanel;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResourceLoadRequest {
+    pub(crate) request_id: u64,
+    pub(crate) cluster_id: ClusterId,
+    pub(crate) kind: ResourceLoadKind,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct ResourceWatchKey {
+    pub(crate) cluster_id: ClusterId,
+    pub(crate) kind: ResourceLoadKind,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResourceWatchRequest {
     pub(crate) request_id: u64,
     pub(crate) cluster_id: ClusterId,
     pub(crate) kind: ResourceLoadKind,
@@ -52,11 +66,12 @@ pub(crate) struct ResourceDeleteTarget {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ResourcePanelRequests {
     pub(crate) loads: Vec<ResourceLoadRequest>,
+    pub(crate) watches: Vec<ResourceWatchRequest>,
     pub(crate) actions: Vec<ResourceActionRequest>,
     pub(crate) logs: Vec<PodLogRequest>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum ResourceLoadKind {
     Namespaces,
     Pods { namespace: Option<String> },
@@ -86,22 +101,25 @@ impl PodLogRequest {
 
 impl ResourceLoadRequest {
     pub(crate) fn query(&self) -> miku_api::ResourceQuery {
-        match &self.kind {
-            ResourceLoadKind::Namespaces => miku_api::ResourceQuery::new(
-                self.cluster_id.clone(),
-                ResourceRef::core("v1", "namespaces").cluster_scoped(),
-            ),
-            ResourceLoadKind::Pods { namespace } => {
-                let mut query = miku_api::ResourceQuery::new(
-                    self.cluster_id.clone(),
-                    ResourceRef::core("v1", "pods"),
-                );
-                if let Some(namespace) = namespace {
-                    query = query.namespace(namespace.clone());
-                }
-                query
-            }
+        resource_query_for_kind(self.cluster_id.clone(), &self.kind)
+    }
+}
+
+impl ResourceWatchRequest {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn key(&self) -> ResourceWatchKey {
+        let kind = match &self.kind {
+            ResourceLoadKind::Namespaces => ResourceLoadKind::Namespaces,
+            ResourceLoadKind::Pods { .. } => ResourceLoadKind::Pods { namespace: None },
+        };
+        ResourceWatchKey {
+            cluster_id: self.cluster_id.clone(),
+            kind,
         }
+    }
+
+    pub(crate) fn query(&self) -> miku_api::ResourceQuery {
+        resource_query_for_kind(self.cluster_id.clone(), &self.kind)
     }
 }
 
@@ -185,6 +203,10 @@ pub(crate) enum ResourceUiEvent {
         request: PodLogRequest,
         result: Result<Vec<LogLine>, String>,
     },
+    ResourceWatchUpdated {
+        request: ResourceWatchRequest,
+        result: Result<ResourceEvent, String>,
+    },
 }
 
 impl ResourceUiEvent {
@@ -193,6 +215,7 @@ impl ResourceUiEvent {
             Self::ResourcesLoaded { request, .. } => &request.cluster_id,
             Self::ResourceActionCompleted { request, .. } => &request.cluster_id,
             Self::PodLogsLoaded { request, .. } => &request.cluster_id,
+            Self::ResourceWatchUpdated { request, .. } => &request.cluster_id,
         }
     }
 }
@@ -223,4 +246,24 @@ fn namespaces_from_list(list: &ResourceList) -> Vec<String> {
     namespaces.sort();
     namespaces.dedup();
     namespaces
+}
+
+fn resource_query_for_kind(
+    cluster_id: ClusterId,
+    kind: &ResourceLoadKind,
+) -> miku_api::ResourceQuery {
+    match kind {
+        ResourceLoadKind::Namespaces => miku_api::ResourceQuery::new(
+            cluster_id,
+            ResourceRef::core("v1", "namespaces").cluster_scoped(),
+        ),
+        ResourceLoadKind::Pods { namespace } => {
+            let mut query =
+                miku_api::ResourceQuery::new(cluster_id, ResourceRef::core("v1", "pods"));
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
+    }
 }
