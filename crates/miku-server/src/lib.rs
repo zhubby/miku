@@ -9,9 +9,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::{Stream, StreamExt};
 use miku_api::{
-    ClusterConnectionInfo, ClusterInitializeRequest, ClusterSummary, CreateClusterRequest,
-    MikuServices, PodEvictRequest, PodLogQuery, ResourceApplyRequest, ResourceDeleteRequest,
-    ResourceList, ResourceQuery, ResourceSummary,
+    ClusterConnectionInfo, ClusterInitializeRequest, ClusterStatusReport, ClusterStatusRequest,
+    ClusterSummary, CreateClusterRequest, MikuServices, PodEvictRequest, PodLogQuery,
+    ResourceApplyRequest, ResourceDeleteRequest, ResourceList, ResourceQuery, ResourceSummary,
 };
 use serde::Serialize;
 use tokio::net::TcpListener;
@@ -57,6 +57,7 @@ pub fn router(services: SharedServices) -> Router {
         .route("/health", get(health))
         .route("/api/clusters", get(list_clusters).post(create_cluster))
         .route("/api/clusters/initialize", post(initialize_cluster))
+        .route("/api/clusters/status", post(get_cluster_status))
         .route("/api/resources/list", post(list_resources))
         .route("/api/resources/apply", post(apply_resource))
         .route("/api/resources/delete", post(delete_resource))
@@ -117,6 +118,14 @@ async fn initialize_cluster(
     Json(request): Json<ClusterInitializeRequest>,
 ) -> ServerResult<Json<ClusterConnectionInfo>> {
     Ok(Json(services.initialize_cluster(request).await?))
+}
+
+#[tracing::instrument(name = "http.get_cluster_status", skip(services), fields(cluster_id = %request.cluster_id))]
+async fn get_cluster_status(
+    State(services): State<SharedServices>,
+    Json(request): Json<ClusterStatusRequest>,
+) -> ServerResult<Json<ClusterStatusReport>> {
+    Ok(Json(services.get_cluster_status(request).await?))
 }
 
 #[tracing::instrument(name = "http.list_resources", skip(services, query), fields(resource = %query.resource.plural))]
@@ -283,6 +292,36 @@ mod tests {
         let payload = serde_json::from_slice::<serde_json::Value>(&body).unwrap();
         assert_eq!(payload["version"], "v1.35.0");
         assert_eq!(payload["platform"], "darwin/arm64");
+    }
+
+    #[tokio::test]
+    async fn cluster_status_route_serializes_trait_result() {
+        let response = router(std::sync::Arc::new(DummyServices))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/clusters/status")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&ClusterStatusRequest {
+                            cluster_id: ClusterId::new("local"),
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload = serde_json::from_slice::<serde_json::Value>(&body).unwrap();
+        assert_eq!(payload["overview"]["version"], "v1.35.0");
+        assert_eq!(payload["overview"]["ready_nodes"], 1);
+        assert_eq!(payload["conditions"][0]["severity"], "Ok");
+        assert_eq!(payload["workloads"]["deployments"], 1);
+        assert_eq!(payload["recent_events"][0]["reason"], "Started");
     }
 
     #[tokio::test]
@@ -478,6 +517,47 @@ mod tests {
             Ok(ClusterConnectionInfo {
                 version: "v1.35.0".to_owned(),
                 platform: Some("darwin/arm64".to_owned()),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ClusterStatusReader for DummyServices {
+        async fn get_cluster_status(
+            &self,
+            request: ClusterStatusRequest,
+        ) -> miku_core::Result<ClusterStatusReport> {
+            assert_eq!(request.cluster_id, ClusterId::new("local"));
+            Ok(ClusterStatusReport {
+                overview: ClusterStatusOverview {
+                    version: "v1.35.0".to_owned(),
+                    platform: Some("darwin/arm64".to_owned()),
+                    namespaces: 2,
+                    nodes: 1,
+                    pods: 3,
+                    ready_nodes: 1,
+                    unhealthy_pods: 0,
+                },
+                conditions: vec![ClusterStatusCondition {
+                    name: "Nodes".to_owned(),
+                    status: "1/1 ready".to_owned(),
+                    severity: ClusterStatusSeverity::Ok,
+                    message: "All nodes are ready".to_owned(),
+                }],
+                workloads: ClusterStatusWorkloadSummary {
+                    pods: 3,
+                    deployments: 1,
+                    services: 2,
+                    config_maps: 4,
+                    secrets: 5,
+                },
+                recent_events: vec![ClusterStatusEventSummary {
+                    namespace: Some("default".to_owned()),
+                    involved_object: "Pod/api".to_owned(),
+                    reason: "Started".to_owned(),
+                    message: "Started container api".to_owned(),
+                    event_type: "Normal".to_owned(),
+                }],
             })
         }
     }

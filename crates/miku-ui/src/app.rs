@@ -17,7 +17,7 @@ use crate::resource_panel::{
 };
 use crate::resources::ResourceNavItem;
 use crate::state::{AppState, ClusterConnectionState, RuntimeMode};
-use crate::tabs::{AppTab, AppTabViewer};
+use crate::tabs::{AppTab, AppTabViewer, ClusterStatusLoadRequest, ClusterStatusPanel};
 
 pub struct MikuApp {
     pub(crate) state: AppState,
@@ -33,6 +33,8 @@ pub struct MikuApp {
     pub(crate) services: Option<Arc<dyn MikuServices>>,
     pub(crate) resource_event_sender: resource_mpsc::Sender<ResourceUiEvent>,
     pub(crate) resource_event_receiver: resource_mpsc::Receiver<ResourceUiEvent>,
+    pub(crate) status_event_sender: resource_mpsc::Sender<ClusterStatusUiEvent>,
+    pub(crate) status_event_receiver: resource_mpsc::Receiver<ClusterStatusUiEvent>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) runtime: Option<tokio::runtime::Handle>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -47,6 +49,7 @@ pub struct MikuApp {
 pub(crate) struct ClusterWorkspace {
     pub(crate) dock_state: DockState<AppTab>,
     pub(crate) selected_resource: Option<ResourceNavItem>,
+    pub(crate) status_panel: ClusterStatusPanel,
     pub(crate) pod_resource_panel: PodResourcePanel,
 }
 
@@ -55,9 +58,18 @@ impl Default for ClusterWorkspace {
         Self {
             dock_state: DockState::new(vec![AppTab::Workspace(1)]),
             selected_resource: None,
+            status_panel: ClusterStatusPanel::default(),
             pod_resource_panel: PodResourcePanel::default(),
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ClusterStatusUiEvent {
+    Loaded {
+        request: ClusterStatusLoadRequest,
+        result: Result<miku_api::ClusterStatusReport, String>,
+    },
 }
 
 impl MikuApp {
@@ -66,6 +78,7 @@ impl MikuApp {
         #[cfg(not(target_arch = "wasm32"))]
         let (cluster_event_sender, cluster_event_receiver) = mpsc::channel();
         let (resource_event_sender, resource_event_receiver) = resource_mpsc::channel();
+        let (status_event_sender, status_event_receiver) = resource_mpsc::channel();
         let left_dock_state = DockState::new(vec![AppTab::Clusters, AppTab::Resources]);
         let right_dock_state = DockState::new(vec![AppTab::Inspector(1)]);
 
@@ -83,6 +96,8 @@ impl MikuApp {
             services: None,
             resource_event_sender,
             resource_event_receiver,
+            status_event_sender,
+            status_event_receiver,
             #[cfg(not(target_arch = "wasm32"))]
             runtime: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -146,6 +161,7 @@ impl eframe::App for MikuApp {
         if ui.ctx().current_pass_index() == 0 {
             self.process_cluster_events();
             self.process_resource_events();
+            self.process_status_events();
         }
         self.update_file_dialog(ui.ctx());
 
@@ -188,7 +204,9 @@ impl eframe::App for MikuApp {
                     active_resource: self.selected_workspace_resource(),
                     selected_resource: None,
                     selected_cluster_id: self.selected_cluster_id(),
+                    cluster_status_panel: None,
                     pod_resource_panel: None,
+                    status_load_requests: Vec::new(),
                     resource_load_requests: Vec::new(),
                     resource_action_requests: Vec::new(),
                     pod_log_requests: Vec::new(),
@@ -240,7 +258,9 @@ impl eframe::App for MikuApp {
                     active_resource: self.selected_workspace_resource(),
                     selected_resource: None,
                     selected_cluster_id: self.selected_cluster_id(),
+                    cluster_status_panel: None,
                     pod_resource_panel: None,
+                    status_load_requests: Vec::new(),
                     resource_load_requests: Vec::new(),
                     resource_action_requests: Vec::new(),
                     pod_log_requests: Vec::new(),
@@ -300,7 +320,9 @@ impl eframe::App for MikuApp {
                 active_resource,
                 selected_resource: None,
                 selected_cluster_id: Some(selected_cluster_id),
+                cluster_status_panel: Some(&mut workspace.status_panel),
                 pod_resource_panel: Some(&mut workspace.pod_resource_panel),
+                status_load_requests: Vec::new(),
                 resource_load_requests: Vec::new(),
                 resource_action_requests: Vec::new(),
                 pod_log_requests: Vec::new(),
@@ -320,8 +342,12 @@ impl eframe::App for MikuApp {
             let resource_load_requests = tab_viewer.resource_load_requests;
             let resource_action_requests = tab_viewer.resource_action_requests;
             let pod_log_requests = tab_viewer.pod_log_requests;
+            let status_load_requests = tab_viewer.status_load_requests;
             if let Some(resource) = tab_viewer.selected_resource {
                 workspace.selected_resource = Some(resource);
+            }
+            for request in status_load_requests {
+                self.request_cluster_status(request);
             }
             for request in resource_load_requests {
                 self.request_resource_load(request);
@@ -387,6 +413,65 @@ impl MikuApp {
     fn process_resource_events(&mut self) {
         while let Ok(event) = self.resource_event_receiver.try_recv() {
             self.apply_resource_event(event);
+        }
+    }
+
+    fn process_status_events(&mut self) {
+        while let Ok(event) = self.status_event_receiver.try_recv() {
+            self.apply_status_event(event);
+        }
+    }
+
+    fn apply_status_event(&mut self, event: ClusterStatusUiEvent) {
+        match event {
+            ClusterStatusUiEvent::Loaded { request, result } => {
+                self.ensure_workspace(request.cluster_id.clone())
+                    .status_panel
+                    .apply_result(&request, result);
+            }
+        }
+    }
+
+    fn request_cluster_status(&mut self, request: ClusterStatusLoadRequest) {
+        let Some(services) = self.services.clone() else {
+            self.apply_status_event(ClusterStatusUiEvent::Loaded {
+                request,
+                result: Err("cluster status services are not available".to_owned()),
+            });
+            return;
+        };
+        let sender = self.status_event_sender.clone();
+        let api_request = miku_api::ClusterStatusRequest {
+            cluster_id: request.cluster_id.clone(),
+        };
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(runtime) = self.runtime.as_ref() else {
+                self.apply_status_event(ClusterStatusUiEvent::Loaded {
+                    request,
+                    result: Err("cluster status runtime is not available".to_owned()),
+                });
+                return;
+            };
+            runtime.spawn(async move {
+                let result = services
+                    .get_cluster_status(api_request)
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(ClusterStatusUiEvent::Loaded { request, result });
+            });
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            wasm_bindgen_futures::spawn_local(async move {
+                let result = services
+                    .get_cluster_status(api_request)
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(ClusterStatusUiEvent::Loaded { request, result });
+            });
         }
     }
 

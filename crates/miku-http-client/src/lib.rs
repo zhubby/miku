@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use miku_api::{
     ClusterConnectionInfo, ClusterInitializeRequest, ClusterInitializer, ClusterRegistry,
-    ClusterSummary, CreateClusterRequest, KubernetesResourceReader, KubernetesResourceWriter,
+    ClusterStatusReader, ClusterStatusReport, ClusterStatusRequest, ClusterSummary,
+    CreateClusterRequest, KubernetesResourceReader, KubernetesResourceWriter,
     KubernetesWatchService, LocalPreferenceStore, LogLine, MikuServices, PodEvictRequest,
     PodLogQuery, PodLogService, ResourceApplyRequest, ResourceDeleteRequest, ResourceList,
     ResourceQuery, ResourceSummary,
@@ -81,6 +82,29 @@ impl ClusterInitializer for HttpMikuClient {
         request: ClusterInitializeRequest,
     ) -> miku_core::Result<ClusterConnectionInfo> {
         let endpoint = self.endpoint("/api/clusters/initialize");
+        self.client
+            .post(endpoint)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .json()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl ClusterStatusReader for HttpMikuClient {
+    #[tracing::instrument(name = "http_client.get_cluster_status", skip(self), fields(cluster_id = %request.cluster_id))]
+    async fn get_cluster_status(
+        &self,
+        request: ClusterStatusRequest,
+    ) -> miku_core::Result<ClusterStatusReport> {
+        let endpoint = self.endpoint("/api/clusters/status");
         self.client
             .post(endpoint)
             .json(&request)
@@ -251,6 +275,16 @@ mod tests {
         assert_eq!(
             client.endpoint("/api/clusters/initialize").as_str(),
             "http://127.0.0.1:5174/api/clusters/initialize"
+        );
+    }
+
+    #[test]
+    fn cluster_status_uses_cluster_status_endpoint() {
+        let client = HttpMikuClient::new("http://127.0.0.1:5174").unwrap();
+
+        assert_eq!(
+            client.endpoint("/api/clusters/status").as_str(),
+            "http://127.0.0.1:5174/api/clusters/status"
         );
     }
 

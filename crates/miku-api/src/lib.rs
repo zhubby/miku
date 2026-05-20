@@ -49,6 +49,63 @@ pub struct ClusterConnectionInfo {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ClusterStatusRequest {
+    pub cluster_id: ClusterId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ClusterStatusOverview {
+    pub version: String,
+    pub platform: Option<String>,
+    pub namespaces: usize,
+    pub nodes: usize,
+    pub pods: usize,
+    pub ready_nodes: usize,
+    pub unhealthy_pods: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ClusterStatusSeverity {
+    Ok,
+    Warning,
+    Critical,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ClusterStatusCondition {
+    pub name: String,
+    pub status: String,
+    pub severity: ClusterStatusSeverity,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ClusterStatusWorkloadSummary {
+    pub pods: usize,
+    pub deployments: usize,
+    pub services: usize,
+    pub config_maps: usize,
+    pub secrets: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ClusterStatusEventSummary {
+    pub namespace: Option<String>,
+    pub involved_object: String,
+    pub reason: String,
+    pub message: String,
+    pub event_type: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ClusterStatusReport {
+    pub overview: ClusterStatusOverview,
+    pub conditions: Vec<ClusterStatusCondition>,
+    pub workloads: ClusterStatusWorkloadSummary,
+    pub recent_events: Vec<ClusterStatusEventSummary>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ResourceQuery {
     pub cluster_id: ClusterId,
     pub resource: ResourceRef,
@@ -177,6 +234,15 @@ pub trait ClusterInitializer: ServiceBounds {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait ClusterStatusReader: ServiceBounds {
+    async fn get_cluster_status(
+        &self,
+        request: ClusterStatusRequest,
+    ) -> miku_core::Result<ClusterStatusReport>;
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait KubernetesResourceReader: ServiceBounds {
     async fn list_resources(&self, query: ResourceQuery) -> miku_core::Result<ResourceList>;
 
@@ -261,6 +327,7 @@ pub trait LocalPreferenceStore: ServiceBounds {
 pub trait MikuServices:
     ClusterRegistry
     + ClusterInitializer
+    + ClusterStatusReader
     + KubernetesResourceReader
     + KubernetesResourceWriter
     + KubernetesWatchService
@@ -311,6 +378,46 @@ mod tests {
         let deserialized = serde_json::from_str::<ClusterConnectionInfo>(&serialized).unwrap();
 
         assert_eq!(deserialized, info);
+    }
+
+    #[test]
+    fn cluster_status_report_round_trips_as_json() {
+        let report = ClusterStatusReport {
+            overview: ClusterStatusOverview {
+                version: "v1.35.0".to_owned(),
+                platform: Some("darwin/arm64".to_owned()),
+                namespaces: 4,
+                nodes: 3,
+                pods: 12,
+                ready_nodes: 2,
+                unhealthy_pods: 1,
+            },
+            conditions: vec![ClusterStatusCondition {
+                name: "Nodes".to_owned(),
+                status: "2/3 ready".to_owned(),
+                severity: ClusterStatusSeverity::Warning,
+                message: "1 node is not ready".to_owned(),
+            }],
+            workloads: ClusterStatusWorkloadSummary {
+                pods: 12,
+                deployments: 3,
+                services: 5,
+                config_maps: 7,
+                secrets: 2,
+            },
+            recent_events: vec![ClusterStatusEventSummary {
+                namespace: Some("default".to_owned()),
+                involved_object: "Pod/api".to_owned(),
+                reason: "Started".to_owned(),
+                message: "Started container api".to_owned(),
+                event_type: "Normal".to_owned(),
+            }],
+        };
+
+        let serialized = serde_json::to_string(&report).unwrap();
+        let deserialized = serde_json::from_str::<ClusterStatusReport>(&serialized).unwrap();
+
+        assert_eq!(deserialized, report);
     }
 
     #[test]
@@ -367,6 +474,35 @@ mod tests {
                 Ok(ClusterConnectionInfo {
                     version: format!("{}-ready", request.cluster_id.as_str()),
                     platform: None,
+                })
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl ClusterStatusReader for Dummy {
+            async fn get_cluster_status(
+                &self,
+                request: ClusterStatusRequest,
+            ) -> miku_core::Result<ClusterStatusReport> {
+                Ok(ClusterStatusReport {
+                    overview: ClusterStatusOverview {
+                        version: format!("{}-ready", request.cluster_id.as_str()),
+                        platform: None,
+                        namespaces: 0,
+                        nodes: 0,
+                        pods: 0,
+                        ready_nodes: 0,
+                        unhealthy_pods: 0,
+                    },
+                    conditions: Vec::new(),
+                    workloads: ClusterStatusWorkloadSummary {
+                        pods: 0,
+                        deployments: 0,
+                        services: 0,
+                        config_maps: 0,
+                        secrets: 0,
+                    },
+                    recent_events: Vec::new(),
                 })
             }
         }

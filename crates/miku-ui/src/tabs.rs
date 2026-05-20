@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use eframe::egui;
 use egui_dock::TabViewer;
-use miku_api::ClusterSummary;
+use miku_api::{
+    ClusterStatusReport, ClusterStatusSeverity, ClusterStatusWorkloadSummary, ClusterSummary,
+};
 
 use crate::resource_panel::{
     PodLogRequest, PodResourcePanel, ResourceActionRequest, ResourceLoadRequest,
@@ -34,10 +36,41 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) active_resource: Option<ResourceNavItem>,
     pub(crate) selected_resource: Option<ResourceNavItem>,
     pub(crate) selected_cluster_id: Option<miku_core::ClusterId>,
+    pub(crate) cluster_status_panel: Option<&'a mut ClusterStatusPanel>,
     pub(crate) pod_resource_panel: Option<&'a mut PodResourcePanel>,
+    pub(crate) status_load_requests: Vec<ClusterStatusLoadRequest>,
     pub(crate) resource_load_requests: Vec<ResourceLoadRequest>,
     pub(crate) resource_action_requests: Vec<ResourceActionRequest>,
     pub(crate) pod_log_requests: Vec<PodLogRequest>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ClusterStatusLoadRequest {
+    pub(crate) request_id: u64,
+    pub(crate) cluster_id: miku_core::ClusterId,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ClusterStatusPanel {
+    state: ClusterStatusPanelState,
+    next_request_id: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+enum ClusterStatusPanelState {
+    #[default]
+    Idle,
+    Loading {
+        request_id: u64,
+    },
+    Ready {
+        request_id: u64,
+        report: ClusterStatusReport,
+    },
+    Failed {
+        request_id: u64,
+        error: String,
+    },
 }
 
 impl TabViewer for AppTabViewer<'_> {
@@ -84,19 +117,21 @@ impl TabViewer for AppTabViewer<'_> {
             }
             AppTab::Resources => self.show_resources(ui),
             AppTab::Workspace(_) => {
-                if let Some(cluster_name) = self.state.selected_cluster_name() {
-                    ui.heading(format!("{cluster_name} workspace"));
-                    ui.label(
-                        "Choose a resource to inspect namespaces, workloads, services, and logs.",
-                    );
-                } else {
-                    ui.heading("Kubernetes workspace");
-                    ui.label(
-                        "Select a cluster to inspect namespaces, workloads, services, and logs.",
-                    );
+                match (
+                    self.selected_cluster_id.as_ref(),
+                    self.state.selected_cluster_name(),
+                    self.cluster_status_panel.as_deref_mut(),
+                ) {
+                    (Some(cluster_id), Some(cluster_name), Some(panel)) => {
+                        self.status_load_requests
+                            .extend(panel.show(ui, cluster_id, cluster_name));
+                    }
+                    _ => {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("Select a cluster to open its workspace.");
+                        });
+                    }
                 }
-                ui.separator();
-                ui.label(self.state.status_message());
             }
             AppTab::Resource(resource) => {
                 if resource.name == "Pods" {
@@ -134,6 +169,132 @@ impl TabViewer for AppTabViewer<'_> {
 
     fn allowed_in_windows(&self, _tab: &mut Self::Tab) -> bool {
         self.allow_windows
+    }
+}
+
+impl ClusterStatusPanel {
+    pub(crate) fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        cluster_id: &miku_core::ClusterId,
+        cluster_name: &str,
+    ) -> Vec<ClusterStatusLoadRequest> {
+        let mut requests = Vec::new();
+        if let Some(request) = self.request_status_if_idle(cluster_id.clone()) {
+            requests.push(request);
+        }
+
+        ui.horizontal(|ui| {
+            ui.heading(cluster_name);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button(format!(
+                        "{} Refresh",
+                        egui_phosphor::regular::ARROW_CLOCKWISE
+                    ))
+                    .clicked()
+                {
+                    requests.push(self.request_status(cluster_id.clone()));
+                }
+                match &self.state {
+                    ClusterStatusPanelState::Loading { .. } => {
+                        ui.add(egui::Spinner::new().size(16.0));
+                        ui.label("Loading status");
+                    }
+                    ClusterStatusPanelState::Ready { .. } => {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} Current",
+                                egui_phosphor::regular::CHECK_CIRCLE
+                            ))
+                            .color(ui.visuals().hyperlink_color),
+                        );
+                    }
+                    ClusterStatusPanelState::Failed { .. } => {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} Status unavailable",
+                                egui_phosphor::regular::WARNING_CIRCLE
+                            ))
+                            .color(ui.visuals().error_fg_color),
+                        );
+                    }
+                    ClusterStatusPanelState::Idle => {}
+                }
+            });
+        });
+        ui.separator();
+
+        match &self.state {
+            ClusterStatusPanelState::Idle => {
+                ui.centered_and_justified(|ui| {
+                    ui.label("Preparing cluster status.");
+                });
+            }
+            ClusterStatusPanelState::Loading { .. } => {
+                ui.centered_and_justified(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new().size(18.0));
+                        ui.label("Loading cluster status...");
+                    });
+                });
+            }
+            ClusterStatusPanelState::Ready { report, .. } => show_status_report(ui, report),
+            ClusterStatusPanelState::Failed { error, .. } => {
+                let error = error.clone();
+                ui.vertical_centered(|ui| {
+                    ui.colored_label(ui.visuals().error_fg_color, &error);
+                    if ui.button("Retry").clicked() {
+                        requests.push(self.request_status(cluster_id.clone()));
+                    }
+                });
+            }
+        }
+
+        requests
+    }
+
+    pub(crate) fn apply_result(
+        &mut self,
+        request: &ClusterStatusLoadRequest,
+        result: Result<ClusterStatusReport, String>,
+    ) {
+        if !matches!(
+            self.state,
+            ClusterStatusPanelState::Loading { request_id } if request_id == request.request_id
+        ) {
+            return;
+        }
+
+        self.state = match result {
+            Ok(report) => ClusterStatusPanelState::Ready {
+                request_id: request.request_id,
+                report,
+            },
+            Err(error) => ClusterStatusPanelState::Failed {
+                request_id: request.request_id,
+                error,
+            },
+        };
+    }
+
+    fn request_status(&mut self, cluster_id: miku_core::ClusterId) -> ClusterStatusLoadRequest {
+        self.next_request_id += 1;
+        let request = ClusterStatusLoadRequest {
+            request_id: self.next_request_id,
+            cluster_id,
+        };
+        self.state = ClusterStatusPanelState::Loading {
+            request_id: request.request_id,
+        };
+        request
+    }
+
+    fn request_status_if_idle(
+        &mut self,
+        cluster_id: miku_core::ClusterId,
+    ) -> Option<ClusterStatusLoadRequest> {
+        matches!(self.state, ClusterStatusPanelState::Idle).then(|| self.request_status(cluster_id))
     }
 }
 
@@ -249,6 +410,225 @@ fn show_connection_state(ui: &mut egui::Ui, state: &ClusterConnectionState) {
                     .color(ui.visuals().error_fg_color),
             )
             .on_hover_text(error);
+        }
+    }
+}
+
+fn show_status_report(ui: &mut egui::Ui, report: &ClusterStatusReport) {
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            metric(ui, "Version", &report.overview.version);
+            metric(
+                ui,
+                "Platform",
+                report.overview.platform.as_deref().unwrap_or("unknown"),
+            );
+            metric(ui, "Namespaces", &report.overview.namespaces.to_string());
+            metric(
+                ui,
+                "Nodes",
+                &format!("{}/{}", report.overview.ready_nodes, report.overview.nodes),
+            );
+            metric(ui, "Pods", &report.overview.pods.to_string());
+            metric(
+                ui,
+                "Unhealthy Pods",
+                &report.overview.unhealthy_pods.to_string(),
+            );
+        });
+
+        ui.add_space(12.0);
+        ui.columns(2, |columns| {
+            show_health_conditions(&mut columns[0], &report.conditions);
+            show_workloads(&mut columns[1], &report.workloads);
+        });
+
+        ui.add_space(12.0);
+        show_recent_events(ui, &report.recent_events);
+    });
+}
+
+fn metric(ui: &mut egui::Ui, label: &str, value: &str) {
+    egui::Frame::new()
+        .fill(ui.visuals().widgets.inactive.bg_fill)
+        .stroke(ui.visuals().widgets.inactive.bg_stroke)
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_min_width(110.0);
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new(label).color(ui.visuals().weak_text_color()));
+                ui.label(egui::RichText::new(value).strong());
+            });
+        });
+}
+
+fn show_health_conditions(ui: &mut egui::Ui, conditions: &[miku_api::ClusterStatusCondition]) {
+    ui.heading("Cluster Health");
+    ui.separator();
+    for condition in conditions {
+        ui.horizontal(|ui| {
+            let (icon, color) = severity_icon(ui, &condition.severity);
+            ui.label(egui::RichText::new(icon).color(color));
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new(&condition.name).strong());
+                ui.label(&condition.status);
+                ui.label(
+                    egui::RichText::new(&condition.message).color(ui.visuals().weak_text_color()),
+                );
+            });
+        });
+        ui.add_space(8.0);
+    }
+}
+
+fn show_workloads(ui: &mut egui::Ui, workloads: &ClusterStatusWorkloadSummary) {
+    ui.heading("Workloads");
+    ui.separator();
+    workload_row(ui, "Pods", workloads.pods);
+    workload_row(ui, "Deployments", workloads.deployments);
+    workload_row(ui, "Services", workloads.services);
+    workload_row(ui, "Config Maps", workloads.config_maps);
+    workload_row(ui, "Secrets", workloads.secrets);
+}
+
+fn workload_row(ui: &mut egui::Ui, label: &str, value: usize) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(egui::RichText::new(value.to_string()).strong());
+        });
+    });
+}
+
+fn show_recent_events(ui: &mut egui::Ui, events: &[miku_api::ClusterStatusEventSummary]) {
+    ui.heading("Recent Events");
+    ui.separator();
+    if events.is_empty() {
+        ui.label(egui::RichText::new("No recent events.").color(ui.visuals().weak_text_color()));
+        return;
+    }
+
+    egui::Grid::new("cluster_status_recent_events")
+        .num_columns(5)
+        .striped(true)
+        .show(ui, |ui| {
+            ui.strong("Namespace");
+            ui.strong("Object");
+            ui.strong("Reason");
+            ui.strong("Type");
+            ui.strong("Message");
+            ui.end_row();
+
+            for event in events {
+                ui.label(event.namespace.as_deref().unwrap_or("-"));
+                ui.label(&event.involved_object);
+                ui.label(&event.reason);
+                ui.label(&event.event_type);
+                ui.label(&event.message);
+                ui.end_row();
+            }
+        });
+}
+
+fn severity_icon(ui: &egui::Ui, severity: &ClusterStatusSeverity) -> (&'static str, egui::Color32) {
+    match severity {
+        ClusterStatusSeverity::Ok => (
+            egui_phosphor::regular::CHECK_CIRCLE,
+            ui.visuals().hyperlink_color,
+        ),
+        ClusterStatusSeverity::Warning => (
+            egui_phosphor::regular::WARNING_CIRCLE,
+            ui.visuals().warn_fg_color,
+        ),
+        ClusterStatusSeverity::Critical => (
+            egui_phosphor::regular::X_CIRCLE,
+            ui.visuals().error_fg_color,
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_panel_requests_status_once_when_idle() {
+        let mut panel = ClusterStatusPanel::default();
+        let cluster_id = miku_core::ClusterId::new("local");
+
+        let first = panel.request_status_if_idle(cluster_id.clone());
+        let second = panel.request_status_if_idle(cluster_id);
+
+        assert!(first.is_some());
+        assert!(second.is_none());
+        assert!(matches!(
+            panel.state,
+            ClusterStatusPanelState::Loading { request_id: 1 }
+        ));
+    }
+
+    #[test]
+    fn status_panel_applies_ready_result_for_matching_request() {
+        let mut panel = ClusterStatusPanel::default();
+        let request = panel.request_status(miku_core::ClusterId::new("local"));
+
+        panel.apply_result(&request, Ok(status_report()));
+
+        assert!(matches!(
+            &panel.state,
+            ClusterStatusPanelState::Ready { report, .. }
+                if report.overview.version == "v1.35.0"
+        ));
+    }
+
+    #[test]
+    fn status_panel_applies_failed_result_for_matching_request() {
+        let mut panel = ClusterStatusPanel::default();
+        let request = panel.request_status(miku_core::ClusterId::new("local"));
+
+        panel.apply_result(&request, Err("forbidden".to_owned()));
+
+        assert!(matches!(
+            &panel.state,
+            ClusterStatusPanelState::Failed { error, .. } if error == "forbidden"
+        ));
+    }
+
+    #[test]
+    fn status_panel_ignores_stale_results() {
+        let mut panel = ClusterStatusPanel::default();
+        let stale = panel.request_status(miku_core::ClusterId::new("local"));
+        let current = panel.request_status(miku_core::ClusterId::new("local"));
+
+        panel.apply_result(&stale, Ok(status_report()));
+
+        assert!(matches!(
+            panel.state,
+            ClusterStatusPanelState::Loading { request_id } if request_id == current.request_id
+        ));
+    }
+
+    fn status_report() -> ClusterStatusReport {
+        ClusterStatusReport {
+            overview: miku_api::ClusterStatusOverview {
+                version: "v1.35.0".to_owned(),
+                platform: Some("darwin/arm64".to_owned()),
+                namespaces: 1,
+                nodes: 1,
+                pods: 1,
+                ready_nodes: 1,
+                unhealthy_pods: 0,
+            },
+            conditions: Vec::new(),
+            workloads: ClusterStatusWorkloadSummary {
+                pods: 1,
+                deployments: 1,
+                services: 1,
+                config_maps: 1,
+                secrets: 1,
+            },
+            recent_events: Vec::new(),
         }
     }
 }
