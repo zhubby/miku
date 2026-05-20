@@ -1,6 +1,6 @@
 use std::fs;
 
-use miku_api::{ClusterRegistry, CreateClusterRequest, LocalPreferenceStore};
+use miku_api::{ClusterConfigStore, ClusterRegistry, CreateClusterRequest, LocalPreferenceStore};
 use sea_orm::{ColumnTrait, ConnectionTrait, Database, EntityTrait, QueryFilter, Set, Statement};
 
 use crate::clusters;
@@ -154,6 +154,14 @@ async fn create_cluster_stores_config_but_list_only_returns_summary() {
         .unwrap()
         .unwrap();
     assert_eq!(stored.config, "apiVersion: v1\nclusters: []");
+    assert_eq!(
+        store
+            .get_cluster_config(&miku_core::ClusterId::new("kind-miku"))
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("apiVersion: v1\nclusters: []")
+    );
 }
 
 #[tokio::test]

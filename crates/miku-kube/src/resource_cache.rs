@@ -9,13 +9,14 @@ use kube::runtime::WatchStreamExt;
 use kube::runtime::reflector::{Store, store};
 use kube::runtime::{reflector, watcher};
 use miku_api::ResourceQuery;
-use miku_core::{ResourceRef, ResourceScope};
+use miku_core::{ClusterId, ResourceRef, ResourceScope};
 use tokio::sync::Mutex;
 
 use crate::api_resource;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct ResourceCacheKey {
+    cluster_id: ClusterId,
     group: Option<String>,
     version: String,
     plural: String,
@@ -33,6 +34,7 @@ impl ResourceCacheKey {
     pub(crate) fn from_query(query: &ResourceQuery) -> Self {
         let scope = resolved_scope(query);
         Self {
+            cluster_id: query.cluster_id.clone(),
             group: query.resource.group.clone(),
             version: query.resource.version.clone(),
             plural: query.resource.plural.clone(),
@@ -215,6 +217,8 @@ mod tests {
 
         let mut different_resource = first.clone();
         different_resource.resource = ResourceRef::core("v1", "services");
+        let mut different_cluster = first.clone();
+        different_cluster.cluster_id = miku_core::ClusterId::new("remote");
 
         assert_eq!(
             ResourceCacheKey::from_query(&first),
@@ -227,6 +231,10 @@ mod tests {
         assert_ne!(
             ResourceCacheKey::from_query(&first),
             ResourceCacheKey::from_query(&different_resource)
+        );
+        assert_ne!(
+            ResourceCacheKey::from_query(&first),
+            ResourceCacheKey::from_query(&different_cluster)
         );
     }
 

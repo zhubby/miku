@@ -1,15 +1,19 @@
 use async_trait::async_trait;
 use futures::{AsyncBufReadExt, StreamExt, TryStreamExt};
 use kube::api::{ApiResource, DeleteParams, EvictParams, LogParams, Patch, PatchParams};
+use kube::config::{KubeConfigOptions, Kubeconfig};
 use kube::core::{DynamicObject, GroupVersionKind};
-use kube::{Api, ResourceExt};
+use kube::{Api, Config, ResourceExt};
 use miku_api::{
-    ClusterRegistry, ClusterSummary, CreateClusterRequest, KubernetesResourceReader,
-    KubernetesResourceWriter, KubernetesWatchService, LocalPreferenceStore, LogLine, MikuServices,
-    PodEvictRequest, PodLogQuery, PodLogService, ResourceApplyRequest, ResourceDeleteRequest,
-    ResourceDetail, ResourceList, ResourceQuery, ResourceSummary,
+    ClusterConfigStore, ClusterRegistry, ClusterSummary, CreateClusterRequest,
+    KubernetesResourceReader, KubernetesResourceWriter, KubernetesWatchService,
+    LocalPreferenceStore, LogLine, MikuServices, PodEvictRequest, PodLogQuery, PodLogService,
+    ResourceApplyRequest, ResourceDeleteRequest, ResourceDetail, ResourceList, ResourceQuery,
+    ResourceSummary,
 };
-use miku_core::{ResourceRef, ResourceScope};
+use miku_core::{ClusterId, ResourceRef, ResourceScope};
+use std::collections::HashMap;
+use tokio::sync::Mutex;
 
 mod resource_cache;
 
@@ -18,7 +22,8 @@ use resource_cache::ResourceCacheRegistry;
 #[derive(Clone)]
 pub struct KubeServices<S> {
     store: S,
-    client: Option<kube::Client>,
+    default_client: Option<kube::Client>,
+    clients: std::sync::Arc<Mutex<HashMap<ClusterId, kube::Client>>>,
     resource_cache: ResourceCacheRegistry,
 }
 
@@ -27,7 +32,8 @@ impl<S> KubeServices<S> {
         tracing::info!("created offline Kubernetes services");
         Self {
             store,
-            client: None,
+            default_client: None,
+            clients: std::sync::Arc::new(Mutex::new(HashMap::new())),
             resource_cache: ResourceCacheRegistry::new(),
         }
     }
@@ -40,20 +46,66 @@ impl<S> KubeServices<S> {
         tracing::info!("configured default Kubernetes client");
         Ok(Self {
             store,
-            client: Some(client),
+            default_client: Some(client),
+            clients: std::sync::Arc::new(Mutex::new(HashMap::new())),
             resource_cache: ResourceCacheRegistry::new(),
         })
     }
 
     pub fn has_live_client(&self) -> bool {
-        self.client.is_some()
+        self.default_client.is_some()
     }
 
-    fn live_client(&self) -> miku_core::Result<kube::Client> {
-        self.client.clone().ok_or_else(|| {
-            miku_core::MikuError::Kubernetes("no live Kubernetes client is configured".to_owned())
-        })
+    async fn client_for_cluster(&self, cluster_id: &ClusterId) -> miku_core::Result<kube::Client>
+    where
+        S: ClusterConfigStore + ClusterRegistry + Send + Sync,
+    {
+        if let Some(client) = self.clients.lock().await.get(cluster_id).cloned() {
+            return Ok(client);
+        }
+
+        let cluster = self
+            .store
+            .list_clusters()
+            .await?
+            .into_iter()
+            .find(|cluster| &cluster.id == cluster_id)
+            .ok_or_else(|| {
+                miku_core::MikuError::Kubernetes(format!("cluster {cluster_id} is not configured"))
+            })?;
+        let config = self.store.get_cluster_config(cluster_id).await?;
+        let client = client_for_cluster_config(&cluster.context, config.as_deref()).await?;
+
+        self.clients
+            .lock()
+            .await
+            .insert(cluster_id.clone(), client.clone());
+        Ok(client)
     }
+}
+
+async fn client_for_cluster_config(
+    context: &str,
+    kubeconfig_yaml: Option<&str>,
+) -> miku_core::Result<kube::Client> {
+    let options = KubeConfigOptions {
+        context: Some(context.to_owned()),
+        ..KubeConfigOptions::default()
+    };
+    let config = match kubeconfig_yaml.filter(|config| !config.trim().is_empty()) {
+        Some(config) => {
+            let kubeconfig = Kubeconfig::from_yaml(config)
+                .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?;
+            Config::from_custom_kubeconfig(kubeconfig, &options)
+                .await
+                .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?
+        }
+        None => Config::from_kubeconfig(&options)
+            .await
+            .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?,
+    };
+    kube::Client::try_from(config)
+        .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))
 }
 
 pub fn resource_query_path(query: &ResourceQuery) -> String {
@@ -110,7 +162,7 @@ fn dynamic_api(
 #[async_trait]
 impl<S> ClusterRegistry for KubeServices<S>
 where
-    S: ClusterRegistry + LocalPreferenceStore + Clone + Send + Sync,
+    S: ClusterConfigStore + ClusterRegistry + LocalPreferenceStore + Clone + Send + Sync,
 {
     #[tracing::instrument(name = "kube.list_clusters", skip(self))]
     async fn list_clusters(&self) -> miku_core::Result<Vec<ClusterSummary>> {
@@ -131,17 +183,11 @@ where
 #[async_trait]
 impl<S> KubernetesResourceReader for KubeServices<S>
 where
-    S: LocalPreferenceStore + Clone + Send + Sync,
+    S: ClusterConfigStore + ClusterRegistry + LocalPreferenceStore + Clone + Send + Sync,
 {
     #[tracing::instrument(name = "kube.list_resources", skip(self), fields(path = %resource_query_path(&query)))]
     async fn list_resources(&self, query: ResourceQuery) -> miku_core::Result<ResourceList> {
-        let Some(client) = self.client.clone() else {
-            return Err(miku_core::MikuError::Kubernetes(format!(
-                "no live Kubernetes client is configured for {}",
-                resource_query_path(&query)
-            )));
-        };
-
+        let client = self.client_for_cluster(&query.cluster_id).await?;
         let cache = self.resource_cache.get_or_start(client, &query).await?;
         cache.wait_until_ready().await?;
 
@@ -161,7 +207,7 @@ where
         query: ResourceQuery,
         name: &str,
     ) -> miku_core::Result<ResourceDetail> {
-        let client = self.live_client()?;
+        let client = self.client_for_cluster(&query.cluster_id).await?;
         let api = dynamic_api(client, &query.resource, query.namespace.as_deref());
         let object = api
             .get(name)
@@ -178,14 +224,14 @@ where
 #[async_trait]
 impl<S> KubernetesResourceWriter for KubeServices<S>
 where
-    S: LocalPreferenceStore + Clone + Send + Sync,
+    S: ClusterConfigStore + ClusterRegistry + LocalPreferenceStore + Clone + Send + Sync,
 {
     #[tracing::instrument(name = "kube.apply_resource", skip(self, request), fields(name = %request.name))]
     async fn apply_resource(
         &self,
         request: ResourceApplyRequest,
     ) -> miku_core::Result<ResourceSummary> {
-        let client = self.live_client()?;
+        let client = self.client_for_cluster(&request.cluster_id).await?;
         let api = dynamic_api(client, &request.resource, request.namespace.as_deref());
         let params = PatchParams::apply("miku").force();
         let object = api
@@ -198,7 +244,7 @@ where
 
     #[tracing::instrument(name = "kube.delete_resource", skip(self, request), fields(name = %request.name))]
     async fn delete_resource(&self, request: ResourceDeleteRequest) -> miku_core::Result<()> {
-        let client = self.live_client()?;
+        let client = self.client_for_cluster(&request.cluster_id).await?;
         let api = dynamic_api(client, &request.resource, request.namespace.as_deref());
         api.delete(&request.name, &DeleteParams::default())
             .await
@@ -209,7 +255,7 @@ where
 
     #[tracing::instrument(name = "kube.evict_pod", skip(self, request), fields(namespace = %request.namespace, pod = %request.pod))]
     async fn evict_pod(&self, request: PodEvictRequest) -> miku_core::Result<()> {
-        let client = self.live_client()?;
+        let client = self.client_for_cluster(&request.cluster_id).await?;
         let pods: Api<k8s_openapi::api::core::v1::Pod> =
             Api::namespaced(client, &request.namespace);
         pods.evict(&request.pod, &EvictParams::default())
@@ -245,18 +291,18 @@ fn resource_summary(object: DynamicObject) -> ResourceSummary {
 
 #[async_trait]
 impl<S> KubernetesWatchService for KubeServices<S> where
-    S: LocalPreferenceStore + Clone + Send + Sync
+    S: ClusterConfigStore + ClusterRegistry + LocalPreferenceStore + Clone + Send + Sync
 {
 }
 
 #[async_trait]
 impl<S> PodLogService for KubeServices<S>
 where
-    S: LocalPreferenceStore + Clone + Send + Sync,
+    S: ClusterConfigStore + ClusterRegistry + LocalPreferenceStore + Clone + Send + Sync,
 {
     #[tracing::instrument(name = "kube.read_logs", skip(self), fields(namespace = %query.namespace, pod = %query.pod))]
     async fn read_logs(&self, query: PodLogQuery) -> miku_core::Result<Vec<LogLine>> {
-        let client = self.live_client()?;
+        let client = self.client_for_cluster(&query.cluster_id).await?;
         let pods: Api<k8s_openapi::api::core::v1::Pod> = Api::namespaced(client, &query.namespace);
         let params = log_params(&query);
         let logs = pods
@@ -277,7 +323,7 @@ where
         &self,
         query: PodLogQuery,
     ) -> miku_core::Result<miku_api::BoxEventStream<LogLine>> {
-        let client = self.live_client()?;
+        let client = self.client_for_cluster(&query.cluster_id).await?;
         let pods: Api<k8s_openapi::api::core::v1::Pod> = Api::namespaced(client, &query.namespace);
         let mut params = log_params(&query);
         params.follow = true;
@@ -321,7 +367,7 @@ where
 }
 
 impl<S> MikuServices for KubeServices<S> where
-    S: ClusterRegistry + LocalPreferenceStore + Clone + Send + Sync
+    S: ClusterConfigStore + ClusterRegistry + LocalPreferenceStore + Clone + Send + Sync
 {
 }
 
@@ -385,7 +431,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn offline_list_resources_returns_no_client_error() {
+    async fn list_resources_rejects_unknown_cluster() {
         let temp = tempfile::tempdir().unwrap();
         let store = miku_store::SqliteStore::initialize(miku_store::StorePaths::from_root(
             temp.path().join(".miku"),
@@ -402,7 +448,11 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("no live Kubernetes client"));
+        assert!(
+            error
+                .to_string()
+                .contains("cluster local is not configured")
+        );
     }
 
     #[test]

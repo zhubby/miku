@@ -150,6 +150,13 @@ pub trait ClusterRegistry: ServiceBounds {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait ClusterConfigStore: ServiceBounds {
+    async fn get_cluster_config(&self, cluster_id: &ClusterId)
+    -> miku_core::Result<Option<String>>;
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait KubernetesResourceReader: ServiceBounds {
     async fn list_resources(&self, query: ResourceQuery) -> miku_core::Result<ResourceList>;
 

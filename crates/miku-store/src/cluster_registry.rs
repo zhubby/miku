@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use miku_api::{ClusterRegistry, ClusterSummary, CreateClusterRequest};
+use miku_api::{ClusterConfigStore, ClusterRegistry, ClusterSummary, CreateClusterRequest};
 use miku_core::MikuError;
 use sea_orm::{EntityTrait, QueryOrder, Set};
 
@@ -65,5 +65,21 @@ impl ClusterRegistry for SqliteStore {
             context: context.to_owned(),
             current: false,
         })
+    }
+}
+
+#[async_trait]
+impl ClusterConfigStore for SqliteStore {
+    #[tracing::instrument(name = "clusters.get_config", skip(self))]
+    async fn get_cluster_config(
+        &self,
+        cluster_id: &miku_core::ClusterId,
+    ) -> miku_core::Result<Option<String>> {
+        let cluster = clusters::Entity::find_by_id(cluster_id.as_str().to_owned())
+            .one(&self.database)
+            .await
+            .map_err(to_storage_error)?;
+
+        Ok(cluster.map(|cluster| cluster.config))
     }
 }
