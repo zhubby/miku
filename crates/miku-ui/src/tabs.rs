@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use eframe::egui;
 use egui_dock::TabViewer;
 use miku_api::ClusterSummary;
@@ -6,7 +8,7 @@ use crate::resource_panel::{
     PodLogRequest, PodResourcePanel, ResourceActionRequest, ResourceLoadRequest,
 };
 use crate::resources::{RESOURCE_CATEGORIES, ResourceNavItem};
-use crate::state::AppState;
+use crate::state::{AppState, ClusterConnectionState};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum AppTab {
@@ -20,6 +22,7 @@ pub(crate) enum AppTab {
 pub(crate) struct AppTabViewer<'a> {
     pub(crate) state: &'a AppState,
     pub(crate) clusters: &'a [ClusterSummary],
+    pub(crate) cluster_connection_states: &'a HashMap<miku_core::ClusterId, ClusterConnectionState>,
     pub(crate) cluster_load_in_flight: bool,
     pub(crate) cluster_load_error: Option<&'a str>,
     pub(crate) closeable: bool,
@@ -75,7 +78,7 @@ impl TabViewer for AppTabViewer<'_> {
                     ui.label("No clusters loaded yet.");
                 } else {
                     for cluster in self.clusters {
-                        self.show_cluster_row(ui, cluster);
+                        self.show_cluster_card(ui, cluster);
                     }
                 }
             }
@@ -135,9 +138,41 @@ impl TabViewer for AppTabViewer<'_> {
 }
 
 impl AppTabViewer<'_> {
-    fn show_cluster_row(&mut self, ui: &mut egui::Ui, cluster: &ClusterSummary) {
+    fn show_cluster_card(&mut self, ui: &mut egui::Ui, cluster: &ClusterSummary) {
         let selected = self.state.selected_cluster_id() == Some(&cluster.id);
-        let response = ui.selectable_label(selected, &cluster.name);
+        let connection_state = self
+            .cluster_connection_states
+            .get(&cluster.id)
+            .unwrap_or(&ClusterConnectionState::Idle);
+        let visuals = ui.visuals();
+        let fill = if selected {
+            visuals.selection.bg_fill
+        } else {
+            visuals.widgets.inactive.bg_fill
+        };
+        let stroke = if selected {
+            visuals.selection.stroke
+        } else {
+            visuals.widgets.inactive.bg_stroke
+        };
+
+        let frame = egui::Frame::new()
+            .fill(fill)
+            .stroke(stroke)
+            .corner_radius(egui::CornerRadius::same(6))
+            .inner_margin(egui::Margin::symmetric(10, 8));
+        let response = frame
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(&cluster.name).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        show_connection_state(ui, connection_state);
+                    });
+                });
+            })
+            .response
+            .interact(egui::Sense::click());
 
         if response.clicked() || response.double_clicked() {
             self.selected_cluster = Some(cluster.clone());
@@ -153,6 +188,8 @@ impl AppTabViewer<'_> {
                 ui.close();
             }
         });
+
+        ui.add_space(6.0);
     }
 
     fn show_resources(&mut self, ui: &mut egui::Ui) {
@@ -174,6 +211,44 @@ impl AppTabViewer<'_> {
                     self.selected_resource = Some(*resource);
                 }
             }
+        }
+    }
+}
+
+fn show_connection_state(ui: &mut egui::Ui, state: &ClusterConnectionState) {
+    match state {
+        ClusterConnectionState::Idle => {
+            ui.label(
+                egui::RichText::new(egui_phosphor::regular::CIRCLE)
+                    .color(ui.visuals().weak_text_color()),
+            )
+            .on_hover_text("Not initialized");
+        }
+        ClusterConnectionState::Initializing => {
+            ui.add(egui::Spinner::new().size(16.0))
+                .on_hover_text("Initializing cluster");
+        }
+        ClusterConnectionState::Ready { info } => {
+            let color = ui.visuals().hyperlink_color;
+            let label = if info.version.is_empty() {
+                egui_phosphor::regular::CHECK_CIRCLE.to_owned()
+            } else {
+                format!("{} {}", egui_phosphor::regular::CHECK_CIRCLE, info.version)
+            };
+            let hover = info
+                .platform
+                .as_ref()
+                .map(|platform| format!("Connected\nPlatform: {platform}"))
+                .unwrap_or_else(|| "Connected".to_owned());
+            ui.label(egui::RichText::new(label).color(color))
+                .on_hover_text(hover);
+        }
+        ClusterConnectionState::Failed { error } => {
+            ui.label(
+                egui::RichText::new(egui_phosphor::regular::WARNING_CIRCLE)
+                    .color(ui.visuals().error_fg_color),
+            )
+            .on_hover_text(error);
         }
     }
 }

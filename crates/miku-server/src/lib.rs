@@ -9,8 +9,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::{Stream, StreamExt};
 use miku_api::{
-    ClusterSummary, CreateClusterRequest, MikuServices, PodEvictRequest, PodLogQuery,
-    ResourceApplyRequest, ResourceDeleteRequest, ResourceList, ResourceQuery, ResourceSummary,
+    ClusterConnectionInfo, ClusterInitializeRequest, ClusterSummary, CreateClusterRequest,
+    MikuServices, PodEvictRequest, PodLogQuery, ResourceApplyRequest, ResourceDeleteRequest,
+    ResourceList, ResourceQuery, ResourceSummary,
 };
 use serde::Serialize;
 use tokio::net::TcpListener;
@@ -55,6 +56,7 @@ pub fn router(services: SharedServices) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/clusters", get(list_clusters).post(create_cluster))
+        .route("/api/clusters/initialize", post(initialize_cluster))
         .route("/api/resources/list", post(list_resources))
         .route("/api/resources/apply", post(apply_resource))
         .route("/api/resources/delete", post(delete_resource))
@@ -107,6 +109,14 @@ async fn create_cluster(
     Json(request): Json<CreateClusterRequest>,
 ) -> ServerResult<Json<ClusterSummary>> {
     Ok(Json(services.create_cluster(request).await?))
+}
+
+#[tracing::instrument(name = "http.initialize_cluster", skip(services), fields(cluster_id = %request.cluster_id))]
+async fn initialize_cluster(
+    State(services): State<SharedServices>,
+    Json(request): Json<ClusterInitializeRequest>,
+) -> ServerResult<Json<ClusterConnectionInfo>> {
+    Ok(Json(services.initialize_cluster(request).await?))
 }
 
 #[tracing::instrument(name = "http.list_resources", skip(services, query), fields(resource = %query.resource.plural))]
@@ -246,6 +256,33 @@ mod tests {
         let payload = serde_json::from_slice::<serde_json::Value>(&body).unwrap();
         assert_eq!(payload["context"], "kind-miku");
         assert!(payload.get("config").is_none());
+    }
+
+    #[tokio::test]
+    async fn initialize_cluster_route_serializes_trait_result() {
+        let response = router(std::sync::Arc::new(DummyServices))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/clusters/initialize")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&ClusterInitializeRequest {
+                            cluster_id: ClusterId::new("local"),
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload = serde_json::from_slice::<serde_json::Value>(&body).unwrap();
+        assert_eq!(payload["version"], "v1.35.0");
+        assert_eq!(payload["platform"], "darwin/arm64");
     }
 
     #[tokio::test]
@@ -427,6 +464,20 @@ mod tests {
                     raw: serde_json::json!({}),
                 }],
                 continue_token: None,
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ClusterInitializer for DummyServices {
+        async fn initialize_cluster(
+            &self,
+            request: ClusterInitializeRequest,
+        ) -> miku_core::Result<ClusterConnectionInfo> {
+            assert_eq!(request.cluster_id, ClusterId::new("local"));
+            Ok(ClusterConnectionInfo {
+                version: "v1.35.0".to_owned(),
+                platform: Some("darwin/arm64".to_owned()),
             })
         }
     }

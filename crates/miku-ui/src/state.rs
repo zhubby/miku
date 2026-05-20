@@ -1,5 +1,26 @@
 use miku_core::ClusterId;
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) enum ClusterConnectionState {
+    #[default]
+    Idle,
+    Initializing,
+    Ready {
+        info: miku_api::ClusterConnectionInfo,
+    },
+    Failed {
+        error: String,
+    },
+}
+
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+impl ClusterConnectionState {
+    pub(crate) fn should_initialize(&self) -> bool {
+        matches!(self, Self::Idle | Self::Failed { .. })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeMode {
     Native,
@@ -94,5 +115,26 @@ mod tests {
     fn app_title_names_runtime_mode() {
         assert_eq!(app_title(RuntimeMode::Native), "Miku - Native");
         assert_eq!(app_title(RuntimeMode::Web), "Miku - Web");
+    }
+
+    #[test]
+    fn only_idle_and_failed_cluster_states_should_initialize() {
+        assert!(ClusterConnectionState::Idle.should_initialize());
+        assert!(
+            ClusterConnectionState::Failed {
+                error: "timeout".to_owned()
+            }
+            .should_initialize()
+        );
+        assert!(!ClusterConnectionState::Initializing.should_initialize());
+        assert!(
+            !ClusterConnectionState::Ready {
+                info: miku_api::ClusterConnectionInfo {
+                    version: "v1.35.0".to_owned(),
+                    platform: None,
+                }
+            }
+            .should_initialize()
+        );
     }
 }

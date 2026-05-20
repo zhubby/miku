@@ -16,12 +16,13 @@ use crate::resource_panel::{
     ResourceActionRequest, ResourceLoadRequest, ResourceUiEvent,
 };
 use crate::resources::ResourceNavItem;
-use crate::state::{AppState, RuntimeMode};
+use crate::state::{AppState, ClusterConnectionState, RuntimeMode};
 use crate::tabs::{AppTab, AppTabViewer};
 
 pub struct MikuApp {
     pub(crate) state: AppState,
     pub(crate) clusters: Vec<ClusterSummary>,
+    pub(crate) cluster_connection_states: HashMap<miku_core::ClusterId, ClusterConnectionState>,
     pub(crate) cluster_load_in_flight: bool,
     pub(crate) cluster_load_error: Option<String>,
     pub(crate) new_cluster_form: NewClusterForm,
@@ -71,6 +72,7 @@ impl MikuApp {
         Self {
             state: AppState::new(runtime_mode),
             clusters: Vec::new(),
+            cluster_connection_states: HashMap::new(),
             cluster_load_in_flight: false,
             cluster_load_error: None,
             new_cluster_form: NewClusterForm::default(),
@@ -116,6 +118,15 @@ impl MikuApp {
         };
         app.state
             .select_cluster(cluster.id.clone(), cluster.name.clone());
+        app.cluster_connection_states.insert(
+            cluster.id.clone(),
+            ClusterConnectionState::Ready {
+                info: miku_api::ClusterConnectionInfo {
+                    version: "server".to_owned(),
+                    platform: None,
+                },
+            },
+        );
         app.ensure_workspace(cluster.id.clone());
         app.clusters.push(cluster);
         app
@@ -165,6 +176,7 @@ impl eframe::App for MikuApp {
                 let mut tab_viewer = AppTabViewer {
                     state: &self.state,
                     clusters: &self.clusters,
+                    cluster_connection_states: &self.cluster_connection_states,
                     cluster_load_in_flight: self.cluster_load_in_flight,
                     cluster_load_error: self.cluster_load_error.as_deref(),
                     closeable: false,
@@ -216,6 +228,7 @@ impl eframe::App for MikuApp {
                 let mut tab_viewer = AppTabViewer {
                     state: &self.state,
                     clusters: &self.clusters,
+                    cluster_connection_states: &self.cluster_connection_states,
                     cluster_load_in_flight: self.cluster_load_in_flight,
                     cluster_load_error: self.cluster_load_error.as_deref(),
                     closeable: true,
@@ -268,12 +281,14 @@ impl eframe::App for MikuApp {
                 .and_then(|workspace| workspace.selected_resource);
             let state_snapshot = self.state.clone();
             let clusters_snapshot = self.clusters.clone();
+            let cluster_connection_states_snapshot = self.cluster_connection_states.clone();
             let cluster_load_in_flight = self.cluster_load_in_flight;
             let cluster_load_error = self.cluster_load_error.clone();
             let workspace = self.ensure_workspace(selected_cluster_id.clone());
             let mut tab_viewer = AppTabViewer {
                 state: &state_snapshot,
                 clusters: &clusters_snapshot,
+                cluster_connection_states: &cluster_connection_states_snapshot,
                 cluster_load_in_flight,
                 cluster_load_error: cluster_load_error.as_deref(),
                 closeable: true,
@@ -327,7 +342,9 @@ impl MikuApp {
     fn select_cluster(&mut self, cluster: ClusterSummary) {
         self.state
             .select_cluster(cluster.id.clone(), cluster.name.clone());
-        self.ensure_workspace(cluster.id);
+        self.ensure_workspace(cluster.id.clone());
+        #[cfg(not(target_arch = "wasm32"))]
+        self.request_cluster_initialization(cluster.id);
     }
 
     fn ensure_workspace(&mut self, cluster_id: miku_core::ClusterId) -> &mut ClusterWorkspace {
@@ -539,6 +556,8 @@ async fn run_resource_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(target_arch = "wasm32"))]
+    use crate::cluster_events::ClusterUiEvent;
 
     fn cluster(id: &str, name: &str) -> ClusterSummary {
         ClusterSummary {
@@ -630,5 +649,85 @@ mod tests {
         app.select_cluster(first);
 
         assert_eq!(app.selected_workspace_resource(), Some(pods_resource()));
+    }
+
+    #[test]
+    fn selecting_cluster_marks_initialization_failed_without_services() {
+        let mut app = MikuApp::new(RuntimeMode::Native);
+        let first = cluster("first", "First");
+
+        app.select_cluster(first.clone());
+
+        assert_eq!(app.state.selected_cluster_id(), Some(&first.id));
+        assert!(app.workspaces.contains_key(&first.id));
+        assert!(matches!(
+            app.cluster_connection_states.get(&first.id),
+            Some(ClusterConnectionState::Failed { error }) if error == "cluster services are not available"
+        ));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn cluster_initialized_event_updates_matching_cluster_state() {
+        let mut app = MikuApp::new(RuntimeMode::Native);
+        let cluster_id = miku_core::ClusterId::new("local");
+
+        app.cluster_connection_states
+            .insert(cluster_id.clone(), ClusterConnectionState::Initializing);
+        app.cluster_event_sender
+            .send(ClusterUiEvent::ClusterInitialized {
+                cluster_id: cluster_id.clone(),
+                result: Ok(miku_api::ClusterConnectionInfo {
+                    version: "v1.35.0".to_owned(),
+                    platform: Some("darwin/arm64".to_owned()),
+                }),
+            })
+            .unwrap();
+        app.process_cluster_events();
+
+        assert!(matches!(
+            app.cluster_connection_states.get(&cluster_id),
+            Some(ClusterConnectionState::Ready { info })
+                if info.version == "v1.35.0"
+                    && info.platform.as_deref() == Some("darwin/arm64")
+        ));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn cluster_initialized_failure_updates_matching_cluster_state() {
+        let mut app = MikuApp::new(RuntimeMode::Native);
+        let cluster_id = miku_core::ClusterId::new("local");
+
+        app.cluster_event_sender
+            .send(ClusterUiEvent::ClusterInitialized {
+                cluster_id: cluster_id.clone(),
+                result: Err("forbidden".to_owned()),
+            })
+            .unwrap();
+        app.process_cluster_events();
+
+        assert!(matches!(
+            app.cluster_connection_states.get(&cluster_id),
+            Some(ClusterConnectionState::Failed { error }) if error == "forbidden"
+        ));
+    }
+
+    #[test]
+    fn ready_cluster_state_prevents_duplicate_initialization() {
+        let mut app = MikuApp::new(RuntimeMode::Native);
+        let first = cluster("first", "First");
+        let ready = ClusterConnectionState::Ready {
+            info: miku_api::ClusterConnectionInfo {
+                version: "v1.35.0".to_owned(),
+                platform: None,
+            },
+        };
+        app.cluster_connection_states
+            .insert(first.id.clone(), ready.clone());
+
+        app.select_cluster(first.clone());
+
+        assert_eq!(app.cluster_connection_states.get(&first.id), Some(&ready));
     }
 }

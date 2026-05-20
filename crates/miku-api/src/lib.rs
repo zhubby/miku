@@ -38,6 +38,17 @@ pub struct CreateClusterRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ClusterInitializeRequest {
+    pub cluster_id: ClusterId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ClusterConnectionInfo {
+    pub version: String,
+    pub platform: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ResourceQuery {
     pub cluster_id: ClusterId,
     pub resource: ResourceRef,
@@ -157,6 +168,15 @@ pub trait ClusterConfigStore: ServiceBounds {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait ClusterInitializer: ServiceBounds {
+    async fn initialize_cluster(
+        &self,
+        request: ClusterInitializeRequest,
+    ) -> miku_core::Result<ClusterConnectionInfo>;
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait KubernetesResourceReader: ServiceBounds {
     async fn list_resources(&self, query: ResourceQuery) -> miku_core::Result<ResourceList>;
 
@@ -240,6 +260,7 @@ pub trait LocalPreferenceStore: ServiceBounds {
 
 pub trait MikuServices:
     ClusterRegistry
+    + ClusterInitializer
     + KubernetesResourceReader
     + KubernetesResourceWriter
     + KubernetesWatchService
@@ -265,6 +286,31 @@ mod tests {
         let deserialized = serde_json::from_str::<CreateClusterRequest>(&serialized).unwrap();
 
         assert_eq!(deserialized, request);
+    }
+
+    #[test]
+    fn cluster_initialize_request_round_trips_as_json() {
+        let request = ClusterInitializeRequest {
+            cluster_id: ClusterId::new("kind-miku"),
+        };
+
+        let serialized = serde_json::to_string(&request).unwrap();
+        let deserialized = serde_json::from_str::<ClusterInitializeRequest>(&serialized).unwrap();
+
+        assert_eq!(deserialized, request);
+    }
+
+    #[test]
+    fn cluster_connection_info_round_trips_as_json() {
+        let info = ClusterConnectionInfo {
+            version: "v1.35.0".to_owned(),
+            platform: Some("darwin/arm64".to_owned()),
+        };
+
+        let serialized = serde_json::to_string(&info).unwrap();
+        let deserialized = serde_json::from_str::<ClusterConnectionInfo>(&serialized).unwrap();
+
+        assert_eq!(deserialized, info);
     }
 
     #[test]
@@ -309,6 +355,19 @@ mod tests {
                 _query: ResourceQuery,
             ) -> miku_core::Result<ResourceList> {
                 Ok(ResourceList::default())
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl ClusterInitializer for Dummy {
+            async fn initialize_cluster(
+                &self,
+                request: ClusterInitializeRequest,
+            ) -> miku_core::Result<ClusterConnectionInfo> {
+                Ok(ClusterConnectionInfo {
+                    version: format!("{}-ready", request.cluster_id.as_str()),
+                    platform: None,
+                })
             }
         }
 

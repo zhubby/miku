@@ -5,11 +5,11 @@ use kube::config::{KubeConfigOptions, Kubeconfig};
 use kube::core::{DynamicObject, GroupVersionKind};
 use kube::{Api, Config, ResourceExt};
 use miku_api::{
-    ClusterConfigStore, ClusterRegistry, ClusterSummary, CreateClusterRequest,
-    KubernetesResourceReader, KubernetesResourceWriter, KubernetesWatchService,
-    LocalPreferenceStore, LogLine, MikuServices, PodEvictRequest, PodLogQuery, PodLogService,
-    ResourceApplyRequest, ResourceDeleteRequest, ResourceDetail, ResourceList, ResourceQuery,
-    ResourceSummary,
+    ClusterConfigStore, ClusterConnectionInfo, ClusterInitializeRequest, ClusterInitializer,
+    ClusterRegistry, ClusterSummary, CreateClusterRequest, KubernetesResourceReader,
+    KubernetesResourceWriter, KubernetesWatchService, LocalPreferenceStore, LogLine, MikuServices,
+    PodEvictRequest, PodLogQuery, PodLogService, ResourceApplyRequest, ResourceDeleteRequest,
+    ResourceDetail, ResourceList, ResourceQuery, ResourceSummary,
 };
 use miku_core::{ClusterId, ResourceRef, ResourceScope};
 use std::collections::HashMap;
@@ -268,6 +268,37 @@ where
         Ok(ResourceDetail {
             summary: resource_summary(object.clone()),
             raw: serde_json::to_value(&object).unwrap_or(serde_json::Value::Null),
+        })
+    }
+}
+
+#[async_trait]
+impl<S> ClusterInitializer for KubeServices<S>
+where
+    S: ClusterConfigStore + ClusterRegistry + LocalPreferenceStore + Clone + Send + Sync,
+{
+    #[tracing::instrument(name = "kube.initialize_cluster", skip(self), fields(cluster_id = %request.cluster_id))]
+    async fn initialize_cluster(
+        &self,
+        request: ClusterInitializeRequest,
+    ) -> miku_core::Result<ClusterConnectionInfo> {
+        let cluster_id = request.cluster_id;
+        let client = self.client_for_cluster(&cluster_id).await?;
+        let version = client
+            .apiserver_version()
+            .await
+            .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?;
+        let namespaces =
+            ResourceQuery::new(cluster_id.clone(), ResourceRef::core("v1", "namespaces"));
+        let cache = self
+            .resource_cache
+            .get_or_start(client, &namespaces)
+            .await?;
+        cache.wait_until_ready().await?;
+
+        Ok(ClusterConnectionInfo {
+            version: version.git_version,
+            platform: (!version.platform.is_empty()).then_some(version.platform),
         })
     }
 }

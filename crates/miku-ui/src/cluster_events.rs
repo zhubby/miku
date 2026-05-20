@@ -1,12 +1,19 @@
 use eframe::egui;
-use miku_api::{ClusterSummary, CreateClusterRequest};
+use miku_api::{
+    ClusterConnectionInfo, ClusterInitializeRequest, ClusterSummary, CreateClusterRequest,
+};
 
 use crate::app::MikuApp;
 use crate::native::read_config_file;
+use crate::state::ClusterConnectionState;
 
 pub(crate) enum ClusterUiEvent {
     ClustersLoaded(Result<Vec<ClusterSummary>, String>),
     ClusterCreated(Result<ClusterSummary, String>),
+    ClusterInitialized {
+        cluster_id: miku_core::ClusterId,
+        result: Result<ClusterConnectionInfo, String>,
+    },
     ConfigFileLoaded(Result<String, String>),
 }
 
@@ -64,6 +71,47 @@ impl MikuApp {
         });
     }
 
+    pub(crate) fn request_cluster_initialization(&mut self, cluster_id: miku_core::ClusterId) {
+        let current_state = self
+            .cluster_connection_states
+            .entry(cluster_id.clone())
+            .or_default();
+        if !current_state.should_initialize() {
+            return;
+        }
+        *current_state = ClusterConnectionState::Initializing;
+
+        let Some(services) = self.services.clone() else {
+            self.cluster_connection_states.insert(
+                cluster_id,
+                ClusterConnectionState::Failed {
+                    error: "cluster services are not available".to_owned(),
+                },
+            );
+            return;
+        };
+        let Some(runtime) = self.runtime.as_ref() else {
+            self.cluster_connection_states.insert(
+                cluster_id,
+                ClusterConnectionState::Failed {
+                    error: "cluster runtime is not available".to_owned(),
+                },
+            );
+            return;
+        };
+
+        let sender = self.cluster_event_sender.clone();
+        runtime.spawn(async move {
+            let result = services
+                .initialize_cluster(ClusterInitializeRequest {
+                    cluster_id: cluster_id.clone(),
+                })
+                .await
+                .map_err(|error| error.to_string());
+            let _ = sender.send(ClusterUiEvent::ClusterInitialized { cluster_id, result });
+        });
+    }
+
     pub(crate) fn process_cluster_events(&mut self) {
         while let Ok(event) = self.cluster_event_receiver.try_recv() {
             match event {
@@ -88,6 +136,13 @@ impl MikuApp {
                         self.new_cluster_form.save_failed(error);
                     }
                 },
+                ClusterUiEvent::ClusterInitialized { cluster_id, result } => {
+                    let state = match result {
+                        Ok(info) => ClusterConnectionState::Ready { info },
+                        Err(error) => ClusterConnectionState::Failed { error },
+                    };
+                    self.cluster_connection_states.insert(cluster_id, state);
+                }
                 ClusterUiEvent::ConfigFileLoaded(result) => match result {
                     Ok(config) => {
                         self.new_cluster_form.config = config;
