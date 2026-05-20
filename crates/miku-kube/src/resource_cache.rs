@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use kube::Api;
@@ -17,6 +17,9 @@ use tokio::time::timeout;
 use crate::api_resource;
 
 const CACHE_READY_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_CACHE_IDLE_TTL: Duration = Duration::from_secs(5 * 60);
+const DEFAULT_CACHE_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+const DEFAULT_CACHE_MAX_ENTRIES: usize = 128;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct ResourceCacheKey {
@@ -59,13 +62,13 @@ impl ResourceCacheKey {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ResourceCacheRegistry {
-    caches: Arc<Mutex<HashMap<ResourceCacheKey, Arc<ResourceCacheEntry>>>>,
+    inner: Arc<Mutex<ResourceCacheInner>>,
 }
 
 impl ResourceCacheRegistry {
     pub(crate) fn new() -> Self {
         Self {
-            caches: Arc::new(Mutex::new(HashMap::new())),
+            inner: Arc::new(Mutex::new(ResourceCacheInner::new(CachePolicy::default()))),
         }
     }
 
@@ -75,17 +78,186 @@ impl ResourceCacheRegistry {
         query: &ResourceQuery,
     ) -> miku_core::Result<Arc<ResourceCacheEntry>> {
         let key = ResourceCacheKey::from_query(query);
-        let mut caches = self.caches.lock().await;
-        if let Some(cache) = caches.get(&key) {
-            tracing::debug!(?key, "reusing resource cache");
-            return Ok(cache.clone());
+        self.get_or_start_with(key.clone(), || ResourceCacheEntry::start(client, key))
+            .await
+    }
+
+    async fn get_or_start_with(
+        &self,
+        key: ResourceCacheKey,
+        start: impl FnOnce() -> miku_core::Result<ResourceCacheEntry>,
+    ) -> miku_core::Result<Arc<ResourceCacheEntry>> {
+        let mut inner = self.inner.lock().await;
+        let now = Instant::now();
+        if let Some(slot) = inner.caches.get_mut(&key) {
+            if slot.entry.is_finished() {
+                tracing::debug!(?key, "discarding finished resource cache reflector");
+                inner.caches.remove(&key);
+            } else {
+                slot.last_used = now;
+                let cache = slot.entry.clone();
+                inner.sweep_after_access(now);
+                tracing::debug!(?key, "reusing resource cache");
+                return Ok(cache);
+            }
         }
 
         tracing::debug!(?key, "starting resource cache reflector");
-        let cache = Arc::new(ResourceCacheEntry::start(client, key.clone())?);
-        caches.insert(key, cache.clone());
+        let cache = Arc::new(start()?);
+        inner.caches.insert(
+            key,
+            CacheSlot {
+                entry: cache.clone(),
+                last_used: now,
+            },
+        );
+        inner.sweep_after_access(now);
         Ok(cache)
     }
+
+    pub(crate) async fn invalidate_cluster(&self, cluster_id: &ClusterId) {
+        let mut inner = self.inner.lock().await;
+        inner
+            .caches
+            .retain(|key, _slot| &key.cluster_id != cluster_id);
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) async fn invalidate_all(&self) {
+        self.inner.lock().await.caches.clear();
+    }
+
+    #[cfg(test)]
+    fn with_policy(policy: CachePolicy) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(ResourceCacheInner::new(policy))),
+        }
+    }
+
+    #[cfg(test)]
+    async fn insert_test_entry(
+        &self,
+        key: ResourceCacheKey,
+        entry: Arc<ResourceCacheEntry>,
+        last_used: Instant,
+    ) {
+        self.inner
+            .lock()
+            .await
+            .caches
+            .insert(key, CacheSlot { entry, last_used });
+    }
+
+    #[cfg(test)]
+    async fn sweep_idle_for_tests(&self, now: Instant) {
+        self.inner.lock().await.sweep_idle(now);
+    }
+
+    #[cfg(test)]
+    async fn cache_count(&self) -> usize {
+        self.inner.lock().await.caches.len()
+    }
+
+    #[cfg(test)]
+    async fn contains_key(&self, key: &ResourceCacheKey) -> bool {
+        self.inner.lock().await.caches.contains_key(key)
+    }
+
+    #[cfg(test)]
+    async fn entry_for_key(&self, key: &ResourceCacheKey) -> Option<Arc<ResourceCacheEntry>> {
+        self.inner
+            .lock()
+            .await
+            .caches
+            .get(key)
+            .map(|slot| slot.entry.clone())
+    }
+
+    #[cfg(test)]
+    async fn last_used_for_key(&self, key: &ResourceCacheKey) -> Option<Instant> {
+        self.inner
+            .lock()
+            .await
+            .caches
+            .get(key)
+            .map(|slot| slot.last_used)
+    }
+}
+
+#[derive(Debug)]
+struct ResourceCacheInner {
+    caches: HashMap<ResourceCacheKey, CacheSlot>,
+    policy: CachePolicy,
+    last_sweep: Instant,
+}
+
+impl ResourceCacheInner {
+    fn new(policy: CachePolicy) -> Self {
+        Self {
+            caches: HashMap::new(),
+            policy,
+            last_sweep: Instant::now(),
+        }
+    }
+
+    fn sweep_after_access(&mut self, now: Instant) {
+        if now.duration_since(self.last_sweep) >= self.policy.sweep_interval {
+            self.sweep_idle(now);
+            self.last_sweep = now;
+        } else {
+            self.enforce_max_entries();
+        }
+    }
+
+    fn sweep_idle(&mut self, now: Instant) {
+        let idle_ttl = self.policy.idle_ttl;
+        self.caches.retain(|_key, slot| {
+            Arc::strong_count(&slot.entry) > 1 || now.duration_since(slot.last_used) < idle_ttl
+        });
+        self.enforce_max_entries();
+    }
+
+    fn enforce_max_entries(&mut self) {
+        if self.caches.len() <= self.policy.max_entries {
+            return;
+        }
+
+        let mut idle_keys = self
+            .caches
+            .iter()
+            .filter(|(_key, slot)| Arc::strong_count(&slot.entry) == 1)
+            .map(|(key, slot)| (key.clone(), slot.last_used))
+            .collect::<Vec<_>>();
+        idle_keys.sort_by_key(|(_key, last_used)| *last_used);
+
+        let excess = self.caches.len().saturating_sub(self.policy.max_entries);
+        for (key, _last_used) in idle_keys.into_iter().take(excess) {
+            self.caches.remove(&key);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CachePolicy {
+    idle_ttl: Duration,
+    sweep_interval: Duration,
+    max_entries: usize,
+}
+
+impl Default for CachePolicy {
+    fn default() -> Self {
+        Self {
+            idle_ttl: DEFAULT_CACHE_IDLE_TTL,
+            sweep_interval: DEFAULT_CACHE_SWEEP_INTERVAL,
+            max_entries: DEFAULT_CACHE_MAX_ENTRIES,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CacheSlot {
+    entry: Arc<ResourceCacheEntry>,
+    last_used: Instant,
 }
 
 #[derive(Debug)]
@@ -164,6 +336,10 @@ impl ResourceCacheEntry {
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<()> {
         self.changes.subscribe()
     }
+
+    fn is_finished(&self) -> bool {
+        self._task.is_finished()
+    }
 }
 
 fn watcher_event_updates_snapshot(event: &watcher::Event<DynamicObject>) -> bool {
@@ -186,6 +362,12 @@ fn watcher_config(key: &ResourceCacheKey) -> watcher::Config {
 
 #[derive(Debug)]
 struct ReflectorTask(tokio::task::JoinHandle<()>);
+
+impl ReflectorTask {
+    fn is_finished(&self) -> bool {
+        self.0.is_finished()
+    }
+}
 
 impl Drop for ReflectorTask {
     fn drop(&mut self) {
@@ -229,6 +411,7 @@ fn resolved_scope(query: &ResourceQuery) -> ResourceCacheScope {
 mod tests {
     use super::*;
     use kube::ResourceExt;
+    use tokio::sync::oneshot;
 
     #[test]
     fn cache_key_distinguishes_resource_scope_and_label_selector_but_not_limit() {
@@ -337,6 +520,223 @@ mod tests {
 
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].name_any(), "api");
+    }
+
+    #[tokio::test]
+    async fn get_or_start_reuses_live_cache_and_updates_last_used() {
+        let registry = ResourceCacheRegistry::with_policy(test_policy(10, 60, 128));
+        let key = cache_key("local", "default");
+        let old_last_used = Instant::now() - Duration::from_secs(30);
+        let (entry, _abort_rx) = test_entry();
+        registry
+            .insert_test_entry(key.clone(), entry.clone(), old_last_used)
+            .await;
+
+        let reused = registry
+            .get_or_start_with(key.clone(), || {
+                panic!("live cache should be reused instead of restarted")
+            })
+            .await
+            .unwrap();
+
+        assert!(Arc::ptr_eq(&entry, &reused));
+        assert!(registry.last_used_for_key(&key).await.unwrap() > old_last_used);
+    }
+
+    #[tokio::test]
+    async fn sweep_idle_removes_unreferenced_entries_and_aborts_task() {
+        let registry = ResourceCacheRegistry::with_policy(test_policy(5, 60, 128));
+        let key = cache_key("local", "default");
+        let (entry, abort_rx) = test_entry();
+        registry
+            .insert_test_entry(key.clone(), entry, Instant::now() - Duration::from_secs(10))
+            .await;
+        tokio::task::yield_now().await;
+
+        registry.sweep_idle_for_tests(Instant::now()).await;
+
+        assert!(!registry.contains_key(&key).await);
+        abort_rx.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sweep_does_not_remove_entry_with_external_arc() {
+        let registry = ResourceCacheRegistry::with_policy(test_policy(5, 60, 128));
+        let key = cache_key("local", "default");
+        let (entry, _abort_rx) = test_entry();
+        let active = entry.clone();
+        registry
+            .insert_test_entry(key.clone(), entry, Instant::now() - Duration::from_secs(10))
+            .await;
+
+        registry.sweep_idle_for_tests(Instant::now()).await;
+
+        assert!(registry.contains_key(&key).await);
+        drop(active);
+        registry.sweep_idle_for_tests(Instant::now()).await;
+        assert!(!registry.contains_key(&key).await);
+    }
+
+    #[tokio::test]
+    async fn finished_reflector_is_restarted_on_next_get_or_start() {
+        let registry = ResourceCacheRegistry::with_policy(test_policy(10, 60, 128));
+        let key = cache_key("local", "default");
+        let finished = Arc::new(finished_entry().await);
+        registry
+            .insert_test_entry(key.clone(), finished.clone(), Instant::now())
+            .await;
+
+        let (replacement_entry, _abort_rx) = test_entry_value();
+        let restarted = registry
+            .get_or_start_with(key.clone(), || Ok(replacement_entry))
+            .await
+            .unwrap();
+
+        assert!(!Arc::ptr_eq(&finished, &restarted));
+        assert!(Arc::ptr_eq(
+            &restarted,
+            &registry.entry_for_key(&key).await.unwrap()
+        ));
+    }
+
+    #[tokio::test]
+    async fn invalidate_cluster_removes_only_matching_cluster_entries() {
+        let registry = ResourceCacheRegistry::with_policy(test_policy(10, 60, 128));
+        let local = cache_key("local", "default");
+        let remote = cache_key("remote", "default");
+        registry
+            .insert_test_entry(local.clone(), test_entry().0, Instant::now())
+            .await;
+        registry
+            .insert_test_entry(remote.clone(), test_entry().0, Instant::now())
+            .await;
+
+        registry.invalidate_cluster(&ClusterId::new("local")).await;
+
+        assert!(!registry.contains_key(&local).await);
+        assert!(registry.contains_key(&remote).await);
+    }
+
+    #[tokio::test]
+    async fn max_entries_evicts_oldest_idle_entries_first() {
+        let registry = ResourceCacheRegistry::with_policy(test_policy(60, 60, 2));
+        let oldest = cache_key("local", "oldest");
+        let middle = cache_key("local", "middle");
+        let newest = cache_key("local", "newest");
+        let now = Instant::now();
+        registry
+            .insert_test_entry(
+                oldest.clone(),
+                test_entry().0,
+                now - Duration::from_secs(30),
+            )
+            .await;
+        registry
+            .insert_test_entry(
+                middle.clone(),
+                test_entry().0,
+                now - Duration::from_secs(20),
+            )
+            .await;
+
+        registry
+            .get_or_start_with(newest.clone(), || Ok(test_entry_value().0))
+            .await
+            .unwrap();
+
+        assert_eq!(registry.cache_count().await, 2);
+        assert!(!registry.contains_key(&oldest).await);
+        assert!(registry.contains_key(&middle).await);
+        assert!(registry.contains_key(&newest).await);
+    }
+
+    #[tokio::test]
+    async fn invalidate_all_removes_every_cache_entry() {
+        let registry = ResourceCacheRegistry::with_policy(test_policy(10, 60, 128));
+        registry
+            .insert_test_entry(
+                cache_key("local", "default"),
+                test_entry().0,
+                Instant::now(),
+            )
+            .await;
+        registry
+            .insert_test_entry(
+                cache_key("remote", "default"),
+                test_entry().0,
+                Instant::now(),
+            )
+            .await;
+
+        registry.invalidate_all().await;
+
+        assert_eq!(registry.cache_count().await, 0);
+    }
+
+    fn test_policy(
+        idle_ttl_secs: u64,
+        sweep_interval_secs: u64,
+        max_entries: usize,
+    ) -> CachePolicy {
+        CachePolicy {
+            idle_ttl: Duration::from_secs(idle_ttl_secs),
+            sweep_interval: Duration::from_secs(sweep_interval_secs),
+            max_entries,
+        }
+    }
+
+    fn cache_key(cluster_id: &str, namespace: &str) -> ResourceCacheKey {
+        let mut query =
+            ResourceQuery::new(ClusterId::new(cluster_id), ResourceRef::core("v1", "pods"));
+        query.namespace = Some(namespace.to_owned());
+        ResourceCacheKey::from_query(&query)
+    }
+
+    fn test_entry() -> (Arc<ResourceCacheEntry>, oneshot::Receiver<()>) {
+        let (entry, abort_rx) = test_entry_value();
+        (Arc::new(entry), abort_rx)
+    }
+
+    fn test_entry_value() -> (ResourceCacheEntry, oneshot::Receiver<()>) {
+        let api_resource = api_resource(&ResourceRef::core("v1", "pods"));
+        let (reader, _writer) = dynamic_store(api_resource);
+        let (abort_tx, abort_rx) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _signal = AbortSignal(Some(abort_tx));
+            futures::future::pending::<()>().await;
+        });
+        (
+            ResourceCacheEntry {
+                store: reader,
+                changes: broadcast::channel(1).0,
+                _task: ReflectorTask(task),
+            },
+            abort_rx,
+        )
+    }
+
+    async fn finished_entry() -> ResourceCacheEntry {
+        let api_resource = api_resource(&ResourceRef::core("v1", "pods"));
+        let (reader, _writer) = dynamic_store(api_resource);
+        let task = tokio::spawn(async {});
+        while !task.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        ResourceCacheEntry {
+            store: reader,
+            changes: broadcast::channel(1).0,
+            _task: ReflectorTask(task),
+        }
+    }
+
+    struct AbortSignal(Option<oneshot::Sender<()>>);
+
+    impl Drop for AbortSignal {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
     }
 
     fn pod_object(api_resource: &ApiResource, namespace: &str, name: &str) -> DynamicObject {

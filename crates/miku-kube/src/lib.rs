@@ -64,6 +64,10 @@ impl<S> KubeServices<S> {
         self.default_client.is_some()
     }
 
+    async fn invalidate_cluster_cache(&self, cluster_id: &ClusterId) {
+        self.resource_cache.invalidate_cluster(cluster_id).await;
+    }
+
     async fn client_for_cluster(&self, cluster_id: &ClusterId) -> miku_core::Result<kube::Client>
     where
         S: ClusterConfigStore + ClusterRegistry + Send + Sync,
@@ -240,12 +244,15 @@ where
         request: CreateClusterRequest,
     ) -> miku_core::Result<ClusterSummary> {
         let context = resolve_kubeconfig_context(&request.context, &request.config)?;
-        self.store
+        let cluster = self
+            .store
             .create_cluster(CreateClusterRequest {
                 context,
                 config: request.config,
             })
-            .await
+            .await?;
+        self.invalidate_cluster_cache(&cluster.id).await;
+        Ok(cluster)
     }
 }
 
