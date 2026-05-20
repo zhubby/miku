@@ -1,3 +1,4 @@
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) fn human_age_from_rfc3339(timestamp: &str) -> Option<String> {
@@ -6,11 +7,22 @@ pub(crate) fn human_age_from_rfc3339(timestamp: &str) -> Option<String> {
     Some(human_duration_since_seconds(created_at, now))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn unix_now_seconds() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
         .unwrap_or(0)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn unix_now_seconds() -> i64 {
+    let seconds = js_sys::Date::now() / 1_000.0;
+    if seconds.is_finite() && seconds >= 0.0 {
+        seconds.min(i64::MAX as f64) as i64
+    } else {
+        0
+    }
 }
 
 fn human_duration_since_seconds(created_at: i64, now: i64) -> String {

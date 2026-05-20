@@ -3065,6 +3065,7 @@ dependencies = [
  "egui_dock",
  "egui_extras",
  "futures",
+ "js-sys",
  "miku-api",
  "miku-core",
  "serde_json",

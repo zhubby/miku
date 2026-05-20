@@ -31,6 +31,7 @@ egui-file-dialog = "0.13.0"
 egui-theme-switch = "0.7.0"
 egui_dock = "0.19.1"
 futures = "0.3.31"
+js-sys = "0.3.85"
 k8s-openapi = { version = "0.27.0", features = ["latest"] }
 kube = { version = "3.1.0", features = ["client", "config", "runtime", "ws"] }
 miku-api = { path = "crates/miku-api" }
