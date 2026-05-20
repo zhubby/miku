@@ -88,24 +88,69 @@ async fn client_for_cluster_config(
     context: &str,
     kubeconfig_yaml: Option<&str>,
 ) -> miku_core::Result<kube::Client> {
-    let options = KubeConfigOptions {
-        context: Some(context.to_owned()),
-        ..KubeConfigOptions::default()
-    };
     let config = match kubeconfig_yaml.filter(|config| !config.trim().is_empty()) {
         Some(config) => {
             let kubeconfig = Kubeconfig::from_yaml(config)
                 .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?;
+            let options = kubeconfig_options_for_context(&kubeconfig, context);
             Config::from_custom_kubeconfig(kubeconfig, &options)
                 .await
                 .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?
         }
-        None => Config::from_kubeconfig(&options)
-            .await
-            .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?,
+        None => {
+            let options = KubeConfigOptions {
+                context: Some(context.to_owned()),
+                ..KubeConfigOptions::default()
+            };
+            Config::from_kubeconfig(&options)
+                .await
+                .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?
+        }
     };
     kube::Client::try_from(config)
         .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))
+}
+
+fn kubeconfig_options_for_context(kubeconfig: &Kubeconfig, context: &str) -> KubeConfigOptions {
+    let requested_context = context.trim();
+    if kubeconfig
+        .contexts
+        .iter()
+        .any(|named_context| named_context.name == requested_context)
+    {
+        return KubeConfigOptions {
+            context: Some(requested_context.to_owned()),
+            ..KubeConfigOptions::default()
+        };
+    }
+
+    KubeConfigOptions {
+        context: kubeconfig.current_context.clone(),
+        ..KubeConfigOptions::default()
+    }
+}
+
+fn resolve_kubeconfig_context(
+    requested_context: &str,
+    kubeconfig_yaml: &str,
+) -> miku_core::Result<String> {
+    let requested_context = requested_context.trim();
+    let kubeconfig = Kubeconfig::from_yaml(kubeconfig_yaml)
+        .map_err(|error| miku_core::MikuError::Config(error.to_string()))?;
+
+    if kubeconfig
+        .contexts
+        .iter()
+        .any(|named_context| named_context.name == requested_context)
+    {
+        return Ok(requested_context.to_owned());
+    }
+
+    kubeconfig.current_context.ok_or_else(|| {
+        miku_core::MikuError::Config(format!(
+            "context {requested_context} was not found and kubeconfig has no current-context"
+        ))
+    })
 }
 
 pub fn resource_query_path(query: &ResourceQuery) -> String {
@@ -176,7 +221,13 @@ where
         &self,
         request: CreateClusterRequest,
     ) -> miku_core::Result<ClusterSummary> {
-        self.store.create_cluster(request).await
+        let context = resolve_kubeconfig_context(&request.context, &request.config)?;
+        self.store
+            .create_cluster(CreateClusterRequest {
+                context,
+                config: request.config,
+            })
+            .await
     }
 }
 
@@ -428,6 +479,134 @@ mod tests {
 
         assert_eq!(params.container.as_deref(), Some("server"));
         assert_eq!(params.tail_lines, Some(100));
+    }
+
+    #[test]
+    fn saved_kubeconfig_uses_current_context_when_record_context_is_alias() {
+        let kubeconfig = Kubeconfig::from_yaml(
+            r#"
+apiVersion: v1
+kind: Config
+current-context: real-context
+contexts:
+  - name: real-context
+    context:
+      cluster: real-cluster
+      user: real-user
+clusters:
+  - name: real-cluster
+    cluster:
+      server: https://127.0.0.1:6443
+users:
+  - name: real-user
+    user: {}
+"#,
+        )
+        .unwrap();
+
+        let options = kubeconfig_options_for_context(&kubeconfig, "local");
+
+        assert_eq!(options.context.as_deref(), Some("real-context"));
+    }
+
+    #[test]
+    fn saved_kubeconfig_uses_record_context_when_it_exists() {
+        let kubeconfig = Kubeconfig::from_yaml(
+            r#"
+apiVersion: v1
+kind: Config
+current-context: first-context
+contexts:
+  - name: first-context
+    context:
+      cluster: first-cluster
+      user: first-user
+  - name: second-context
+    context:
+      cluster: second-cluster
+      user: second-user
+clusters:
+  - name: first-cluster
+    cluster:
+      server: https://127.0.0.1:6443
+  - name: second-cluster
+    cluster:
+      server: https://127.0.0.2:6443
+users:
+  - name: first-user
+    user: {}
+  - name: second-user
+    user: {}
+"#,
+        )
+        .unwrap();
+
+        let options = kubeconfig_options_for_context(&kubeconfig, "second-context");
+
+        assert_eq!(options.context.as_deref(), Some("second-context"));
+    }
+
+    #[test]
+    fn imported_cluster_stores_requested_context_when_it_exists() {
+        let context = resolve_kubeconfig_context(
+            "second-context",
+            r#"
+apiVersion: v1
+kind: Config
+current-context: first-context
+contexts:
+  - name: first-context
+    context:
+      cluster: first-cluster
+      user: first-user
+  - name: second-context
+    context:
+      cluster: second-cluster
+      user: second-user
+clusters:
+  - name: first-cluster
+    cluster:
+      server: https://127.0.0.1:6443
+  - name: second-cluster
+    cluster:
+      server: https://127.0.0.2:6443
+users:
+  - name: first-user
+    user: {}
+  - name: second-user
+    user: {}
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(context, "second-context");
+    }
+
+    #[test]
+    fn imported_cluster_stores_current_context_when_requested_context_is_alias() {
+        let context = resolve_kubeconfig_context(
+            "local",
+            r#"
+apiVersion: v1
+kind: Config
+current-context: real-context
+contexts:
+  - name: real-context
+    context:
+      cluster: real-cluster
+      user: real-user
+clusters:
+  - name: real-cluster
+    cluster:
+      server: https://127.0.0.1:6443
+users:
+  - name: real-user
+    user: {}
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(context, "real-context");
     }
 
     #[tokio::test]
