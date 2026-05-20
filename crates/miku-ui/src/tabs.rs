@@ -509,25 +509,31 @@ fn show_recent_events(ui: &mut egui::Ui, events: &[miku_api::ClusterStatusEventS
         return;
     }
 
-    egui::Grid::new("cluster_status_recent_events")
-        .num_columns(5)
-        .striped(true)
+    egui::ScrollArea::horizontal()
+        .id_salt("cluster_status_recent_events_scroll")
+        .auto_shrink([false, true])
         .show(ui, |ui| {
-            ui.strong("Namespace");
-            ui.strong("Object");
-            ui.strong("Reason");
-            ui.strong("Type");
-            ui.strong("Message");
-            ui.end_row();
+            ui.set_min_width(860.0);
+            egui::Grid::new("cluster_status_recent_events")
+                .num_columns(5)
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.strong("Namespace");
+                    ui.strong("Object");
+                    ui.strong("Reason");
+                    ui.strong("Type");
+                    ui.strong("Message");
+                    ui.end_row();
 
-            for event in events {
-                ui.label(event.namespace.as_deref().unwrap_or("-"));
-                ui.label(&event.involved_object);
-                ui.label(&event.reason);
-                ui.label(&event.event_type);
-                ui.label(&event.message);
-                ui.end_row();
-            }
+                    for event in events {
+                        ui.label(event.namespace.as_deref().unwrap_or("-"));
+                        ui.label(&event.involved_object);
+                        ui.label(&event.reason);
+                        ui.label(&event.event_type);
+                        ui.label(&event.message);
+                        ui.end_row();
+                    }
+                });
         });
 }
 

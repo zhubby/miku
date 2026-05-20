@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::StreamExt;
 use kube::Api;
@@ -11,8 +12,11 @@ use kube::runtime::{reflector, watcher};
 use miku_api::ResourceQuery;
 use miku_core::{ClusterId, ResourceRef, ResourceScope};
 use tokio::sync::Mutex;
+use tokio::time::timeout;
 
 use crate::api_resource;
+
+const CACHE_READY_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct ResourceCacheKey {
@@ -115,9 +119,14 @@ impl ResourceCacheEntry {
     }
 
     pub(crate) async fn wait_until_ready(&self) -> miku_core::Result<()> {
-        self.store
-            .wait_until_ready()
+        timeout(CACHE_READY_TIMEOUT, self.store.wait_until_ready())
             .await
+            .map_err(|_| {
+                miku_core::MikuError::Kubernetes(format!(
+                    "resource cache did not become ready within {} seconds",
+                    CACHE_READY_TIMEOUT.as_secs()
+                ))
+            })?
             .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))
     }
 
