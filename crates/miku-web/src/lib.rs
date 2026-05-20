@@ -1,4 +1,6 @@
 #[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
 #[cfg(target_arch = "wasm32")]
@@ -48,6 +50,28 @@ impl WebHandle {
     pub fn has_panicked(&self) -> bool {
         self.runner.has_panicked()
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(start)]
+pub fn start() -> Result<(), JsValue> {
+    let window = web_sys::window().ok_or_else(|| JsValue::from_str("window is not available"))?;
+    let document = window
+        .document()
+        .ok_or_else(|| JsValue::from_str("document is not available"))?;
+    let canvas = document
+        .get_element_by_id("miku-canvas")
+        .ok_or_else(|| JsValue::from_str("miku-canvas element is not available"))?
+        .dyn_into::<web_sys::HtmlCanvasElement>()?;
+
+    let handle = WebHandle::new();
+    wasm_bindgen_futures::spawn_local(async move {
+        if let Err(error) = handle.start(canvas).await {
+            tracing::error!(?error, "failed to start web app");
+        }
+    });
+
+    Ok(())
 }
 
 #[cfg(target_arch = "wasm32")]

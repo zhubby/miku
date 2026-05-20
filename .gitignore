@@ -1,6 +1,8 @@
 /target/
 /dist/
 /.trunk/
+crates/miku-server/web-dist/*
+!crates/miku-server/web-dist/.gitkeep
 **/*.db
 **/*.db-shm
 **/*.db-wal

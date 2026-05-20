@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Miku</title>
+    <style>
+      html,
+      body,
+      canvas {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        overflow: hidden;
+        background: #0f1115;
+      }
+
+      canvas {
+        display: block;
+      }
+    </style>
+    <script type="module">
+      import init from "./miku_web.js";
+
+      await init();
+    </script>
+  </head>
+  <body>
+    <canvas id="miku-canvas"></canvas>
+  </body>
+</html>

@@ -13,6 +13,7 @@ mod error;
 mod health;
 mod pods;
 mod resources;
+mod static_assets;
 
 #[cfg(test)]
 mod test_support;
@@ -39,6 +40,7 @@ pub fn router(services: SharedServices) -> Router {
         .route("/api/pods/attach", get(pods::attach_pod))
         .route("/api/pods/logs", post(pods::read_pod_logs))
         .route("/api/pods/logs/stream", post(pods::stream_pod_logs))
+        .fallback(static_assets::serve)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(services)

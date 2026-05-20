@@ -41,6 +41,8 @@ miku-server = { path = "crates/miku-server" }
 miku-store = { path = "crates/miku-store" }
 miku-ui = { path = "crates/miku-ui" }
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "stream"] }
+mime_guess = "2.0.5"
+rust-embed = "8.11.0"
 sea-orm = { version = "1.1.20", default-features = false, features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros", "with-json"] }
 sea-orm-migration = { version = "1.1.20", default-features = false, features = ["sqlx-sqlite", "runtime-tokio-rustls"] }
 serde = { version = "1.0.228", features = ["derive"] }

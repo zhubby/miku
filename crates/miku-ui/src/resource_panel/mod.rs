@@ -238,6 +238,7 @@ pub(crate) enum ResourceUiEvent {
         request: PodAttachRequest,
         result: Result<futures::channel::mpsc::UnboundedSender<PodAttachInput>, String>,
     },
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     PodAttachOutput {
         request: PodAttachRequest,
         result: Result<PodAttachOutput, String>,

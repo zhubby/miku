@@ -12,6 +12,8 @@ axum = { workspace = true }
 futures = { workspace = true }
 miku-api = { workspace = true }
 miku-core = { workspace = true }
+mime_guess = { workspace = true }
+rust-embed = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

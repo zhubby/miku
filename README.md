@@ -44,16 +44,29 @@ Server mode:
 cargo run -p miku-cli -- server --bind 127.0.0.1:5174
 ```
 
-Web UI build target:
+Web UI static assets:
 
 ```sh
-cargo build -p miku-web --target wasm32-unknown-unknown
+make build-web-assets
+```
+
+The Makefile target builds `miku-web` for `wasm32-unknown-unknown`, runs `wasm-bindgen`
+with `--target web`, and writes generated assets into
+`crates/miku-server/web-dist`. Those generated files are embedded into
+`miku-server` at compile time and are intentionally ignored by git. The
+installed `wasm-bindgen-cli` version must match the resolved `wasm-bindgen`
+crate version in `Cargo.lock`.
+
+Web UI check target:
+
+```sh
+make check-web
 ```
 
 Quality checks:
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+make fmt
+make clippy
+make test
 ```

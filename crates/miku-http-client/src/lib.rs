@@ -1,15 +1,20 @@
 use async_trait::async_trait;
+#[cfg(not(target_arch = "wasm32"))]
+use futures::SinkExt;
+use futures::StreamExt;
+#[cfg(not(target_arch = "wasm32"))]
 use futures::channel::mpsc;
-use futures::{SinkExt, StreamExt};
 use miku_api::{
     ClusterConnectionInfo, ClusterInitializeRequest, ClusterInitializer, ClusterRegistry,
     ClusterStatusReader, ClusterStatusReport, ClusterStatusRequest, ClusterSummary,
     CreateClusterRequest, KubernetesResourceReader, KubernetesResourceWriter,
-    KubernetesWatchService, LocalPreferenceStore, LogLine, MikuServices, PodAttachInput,
-    PodAttachOutput, PodAttachRequest, PodAttachService, PodAttachSession, PodEvictRequest,
-    PodLogQuery, PodLogService, ResourceApplyRequest, ResourceDeleteRequest, ResourceEvent,
-    ResourceList, ResourceQuery, ResourceSummary,
+    KubernetesWatchService, LocalPreferenceStore, LogLine, MikuServices, PodAttachRequest,
+    PodAttachService, PodAttachSession, PodEvictRequest, PodLogQuery, PodLogService,
+    ResourceApplyRequest, ResourceDeleteRequest, ResourceEvent, ResourceList, ResourceQuery,
+    ResourceSummary,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use miku_api::{PodAttachInput, PodAttachOutput};
 use url::Url;
 
 #[cfg(target_arch = "wasm32")]
