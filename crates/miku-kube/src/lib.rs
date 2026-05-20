@@ -114,17 +114,7 @@ where
 {
     #[tracing::instrument(name = "kube.list_clusters", skip(self))]
     async fn list_clusters(&self) -> miku_core::Result<Vec<ClusterSummary>> {
-        let mut clusters = self.store.list_clusters().await?;
-        if self.client.is_some() {
-            tracing::debug!("returning default live kubeconfig context");
-            clusters.push(ClusterSummary {
-                id: miku_core::ClusterId::new("default"),
-                name: "Default kubeconfig context".to_owned(),
-                context: "default".to_owned(),
-                current: true,
-            });
-        }
-
+        let clusters = self.store.list_clusters().await?;
         tracing::debug!(count = clusters.len(), "listed clusters");
         Ok(clusters)
     }

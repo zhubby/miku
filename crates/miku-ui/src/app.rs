@@ -11,8 +11,8 @@ use crate::cluster_events::ClusterUiEvent;
 use crate::dock::show_dock_region;
 use crate::forms::NewClusterForm;
 use crate::resource_panel::{
-    PodLogRequest, PodResourcePanel, ResourceActionOutcome, ResourceActionRequest,
-    ResourceLoadRequest, ResourceUiEvent,
+    PodLogRequest, PodResourcePanel, ResourceActionKind, ResourceActionOutcome,
+    ResourceActionRequest, ResourceLoadRequest, ResourceUiEvent,
 };
 use crate::resources::ResourceNavItem;
 use crate::state::{AppState, RuntimeMode};
@@ -451,6 +451,15 @@ async fn run_resource_action(
     if let Some(delete_request) = request.delete_request() {
         services.delete_resource(delete_request).await?;
         return Ok(ResourceActionOutcome::Deleted);
+    }
+
+    if let Some(delete_requests) = request.batch_delete_requests() {
+        for delete_request in delete_requests {
+            services.delete_resource(delete_request).await?;
+        }
+        if let ResourceActionKind::BatchDeletePods { targets } = &request.kind {
+            return Ok(ResourceActionOutcome::BatchDeleted(targets.clone()));
+        }
     }
 
     if let Some(evict_request) = request.evict_request() {

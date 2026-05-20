@@ -8,8 +8,8 @@ use miku_core::ClusterId;
 use super::components::{ResourceToolbar, ResourceYamlEditDialog, ResourceYamlViewDialog};
 use super::{
     LoadStatus, PodLogRequest, ResourceActionKind, ResourceActionOutcome, ResourceActionRequest,
-    ResourceLoadKind, ResourceLoadRequest, ResourcePanelRequests, ResourceUiEvent,
-    namespaces_from_list,
+    ResourceDeleteTarget, ResourceLoadKind, ResourceLoadRequest, ResourcePanelRequests,
+    ResourceUiEvent, namespaces_from_list,
 };
 use crate::time::human_age_from_rfc3339;
 
@@ -28,9 +28,11 @@ pub(crate) struct PodResourcePanel {
     action_request_id: Option<u64>,
     log_request_id: Option<u64>,
     last_cluster_id: Option<ClusterId>,
+    create_dialog: Option<PodCreateDialog>,
     view_dialog: Option<PodViewDialog>,
     edit_dialog: Option<PodEditDialog>,
     delete_dialog: Option<PodDeleteDialog>,
+    batch_delete_dialog: Option<PodBatchDeleteDialog>,
     evict_dialog: Option<PodEvictDialog>,
     log_dialog: Option<PodLogDialog>,
     action_error: Option<String>,
@@ -68,9 +70,11 @@ impl PodResourcePanel {
         self.show_toolbar(ui, cluster_id, &mut requests.loads);
         ui.separator();
         self.show_body(ui);
+        self.show_create_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_view_dialog(ui.ctx());
         self.show_edit_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
+        self.show_batch_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_evict_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_log_dialog(ui.ctx(), cluster_id, &mut requests.logs);
 
@@ -114,6 +118,7 @@ impl PodResourcePanel {
                 self.action_request_id = None;
                 match result {
                     Ok(ResourceActionOutcome::Applied(_)) => {
+                        self.create_dialog = None;
                         self.edit_dialog = None;
                         self.action_error = None;
                         self.refresh_after_action = true;
@@ -125,6 +130,17 @@ impl PodResourcePanel {
                             self.selected_rows.remove(&key);
                         }
                         self.delete_dialog = None;
+                        self.action_error = None;
+                        self.refresh_after_action = true;
+                    }
+                    Ok(ResourceActionOutcome::BatchDeleted(targets)) => {
+                        for target in targets {
+                            let key =
+                                pod_key(target.namespace.as_deref().unwrap_or(""), &target.name);
+                            self.rows.retain(|row| row.key != key);
+                            self.selected_rows.remove(&key);
+                        }
+                        self.batch_delete_dialog = None;
                         self.action_error = None;
                         self.refresh_after_action = true;
                     }
@@ -175,9 +191,11 @@ impl PodResourcePanel {
         self.row_request_id = None;
         self.action_request_id = None;
         self.log_request_id = None;
+        self.create_dialog = None;
         self.view_dialog = None;
         self.edit_dialog = None;
         self.delete_dialog = None;
+        self.batch_delete_dialog = None;
         self.evict_dialog = None;
         self.log_dialog = None;
         self.action_error = None;
@@ -198,6 +216,7 @@ impl PodResourcePanel {
             search_text: &mut self.search_text,
             search_hint: "Search Pods...",
             item_count: filtered_rows.len(),
+            selected_count: self.selected_rows.len(),
             loading: matches!(self.row_status, LoadStatus::Loading),
         }
         .show(ui);
@@ -218,6 +237,22 @@ impl PodResourcePanel {
         if response.refresh_clicked {
             requests.push(self.request_namespaces(cluster_id.clone()));
             requests.push(self.request_pods(cluster_id.clone()));
+        }
+
+        if response.create_clicked {
+            self.create_dialog = Some(PodCreateDialog {
+                yaml: default_pod_yaml(self.namespace_filter.as_deref()),
+                parse_error: None,
+            });
+            self.action_error = None;
+        }
+
+        if response.batch_delete_clicked {
+            let targets = self.selected_delete_targets();
+            if !targets.is_empty() {
+                self.batch_delete_dialog = Some(PodBatchDeleteDialog { targets });
+                self.action_error = None;
+            }
         }
     }
 
@@ -320,6 +355,58 @@ impl PodResourcePanel {
         }
     }
 
+    fn show_create_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.create_dialog.as_mut() else {
+            return;
+        };
+
+        let response = ResourceYamlEditDialog {
+            id: egui::Id::new("pod-create-dialog"),
+            title: "Create Pod".to_owned(),
+            yaml: &mut dialog.yaml,
+            error: self
+                .action_error
+                .as_deref()
+                .or(dialog.parse_error.as_deref()),
+            save_enabled: self.action_request_id.is_none(),
+            save_label: "Confirm",
+        }
+        .show(ctx);
+
+        if response.cancel_clicked {
+            self.create_dialog = None;
+            self.action_error = None;
+            return;
+        }
+
+        if !response.save_clicked {
+            return;
+        }
+
+        match pod_apply_parts_from_yaml(&dialog.yaml) {
+            Ok((namespace, name, manifest)) => {
+                dialog.parse_error = None;
+                let request = ResourceActionRequest {
+                    request_id: self.allocate_request_id(),
+                    cluster_id: cluster_id.clone(),
+                    kind: ResourceActionKind::ApplyPod {
+                        namespace,
+                        name,
+                        manifest,
+                    },
+                };
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+            Err(error) => dialog.parse_error = Some(error),
+        }
+    }
+
     fn show_edit_dialog(
         &mut self,
         ctx: &egui::Context,
@@ -339,6 +426,7 @@ impl PodResourcePanel {
                 .as_deref()
                 .or(dialog.parse_error.as_deref()),
             save_enabled: self.action_request_id.is_none(),
+            save_label: "Save",
         }
         .show(ctx);
 
@@ -432,6 +520,79 @@ impl PodResourcePanel {
                 kind: ResourceActionKind::DeletePod {
                     namespace: dialog.namespace,
                     name: dialog.name,
+                },
+            };
+            self.action_request_id = Some(request.request_id);
+            requests.push(request);
+        }
+    }
+
+    fn show_batch_delete_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.batch_delete_dialog.clone() else {
+            return;
+        };
+
+        let mut cancel_clicked = false;
+        let mut delete_clicked = false;
+        egui::Window::new("Delete selected Pods")
+            .id(egui::Id::new("pod-batch-delete-dialog"))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                if let Some(error) = self.action_error.as_deref() {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                    ui.separator();
+                }
+                ui.label(format!("Delete {} selected Pods?", dialog.targets.len()));
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt("pod-batch-delete-targets")
+                    .max_height(160.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for target in &dialog.targets {
+                            let namespace = target.namespace.as_deref().unwrap_or("default");
+                            ui.label(format!("{namespace}/{}", target.name));
+                        }
+                    });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        cancel_clicked = true;
+                    }
+                    let delete_text =
+                        egui::RichText::new(format!("{} Delete", egui_phosphor::regular::TRASH))
+                            .color(ui.visuals().error_fg_color);
+                    if ui
+                        .add_enabled(
+                            self.action_request_id.is_none(),
+                            egui::Button::new(delete_text),
+                        )
+                        .clicked()
+                    {
+                        delete_clicked = true;
+                    }
+                });
+            });
+
+        if cancel_clicked {
+            self.batch_delete_dialog = None;
+            self.action_error = None;
+            return;
+        }
+
+        if delete_clicked {
+            let request = ResourceActionRequest {
+                request_id: self.allocate_request_id(),
+                cluster_id: cluster_id.clone(),
+                kind: ResourceActionKind::BatchDeletePods {
+                    targets: dialog.targets,
                 },
             };
             self.action_request_id = Some(request.request_id);
@@ -676,6 +837,17 @@ impl PodResourcePanel {
 
     fn filtered_rows(&self) -> Vec<PodRow> {
         filter_pod_rows(&self.rows, &self.search_text)
+    }
+
+    fn selected_delete_targets(&self) -> Vec<ResourceDeleteTarget> {
+        self.rows
+            .iter()
+            .filter(|row| self.selected_rows.contains(&row.key))
+            .map(|row| ResourceDeleteTarget {
+                namespace: empty_to_none(row.namespace.clone()),
+                name: row.name.clone(),
+            })
+            .collect()
     }
 }
 
@@ -965,6 +1137,12 @@ enum PodTableAction {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+struct PodCreateDialog {
+    yaml: String,
+    parse_error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct PodViewDialog {
     key: String,
     name: String,
@@ -988,6 +1166,11 @@ struct PodDeleteDialog {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+struct PodBatchDeleteDialog {
+    targets: Vec<ResourceDeleteTarget>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct PodEvictDialog {
     key: String,
     namespace: String,
@@ -1008,6 +1191,38 @@ struct PodLogDialog {
 
 fn pod_key(namespace: &str, name: &str) -> String {
     format!("{namespace}/{name}")
+}
+
+fn default_pod_yaml(namespace: Option<&str>) -> String {
+    let namespace = namespace.unwrap_or("default");
+    format!(
+        r#"apiVersion: v1
+kind: Pod
+metadata:
+  name: example-pod
+  namespace: {namespace}
+spec:
+  containers:
+    - name: app
+      image: nginx:latest
+"#
+    )
+}
+
+fn pod_apply_parts_from_yaml(
+    yaml: &str,
+) -> Result<(Option<String>, String, serde_json::Value), String> {
+    let manifest =
+        serde_yaml::from_str::<serde_json::Value>(yaml).map_err(|error| error.to_string())?;
+    let name = value_str(&manifest, &["metadata", "name"])
+        .filter(|name| !name.trim().is_empty())
+        .ok_or_else(|| "metadata.name is required".to_owned())?
+        .to_owned();
+    let namespace = value_str(&manifest, &["metadata", "namespace"])
+        .filter(|namespace| !namespace.trim().is_empty())
+        .map(ToOwned::to_owned);
+
+    Ok((namespace, name, manifest))
 }
 
 fn empty_to_none(value: String) -> Option<String> {
@@ -1279,6 +1494,56 @@ mod tests {
 
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].name, "api-75f");
+    }
+
+    #[test]
+    fn pod_create_yaml_extracts_apply_parts() {
+        let (namespace, name, manifest) = pod_apply_parts_from_yaml(
+            r#"
+apiVersion: v1
+kind: Pod
+metadata:
+  name: worker
+  namespace: production
+spec:
+  containers: []
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(namespace.as_deref(), Some("production"));
+        assert_eq!(name, "worker");
+        assert_eq!(
+            manifest
+                .pointer("/metadata/name")
+                .and_then(serde_json::Value::as_str),
+            Some("worker")
+        );
+    }
+
+    #[test]
+    fn selected_delete_targets_follow_checked_rows() {
+        let mut panel = PodResourcePanel::default();
+        let row = PodRow::from_summary(&pod_summary());
+        panel.selected_rows.insert(row.key.clone());
+        panel.rows.push(row);
+        panel.rows.push(PodRow::from_summary(&ResourceSummary {
+            name: "worker".to_owned(),
+            namespace: Some("default".to_owned()),
+            kind: "Pod".to_owned(),
+            status: Some("Running".to_owned()),
+            raw: serde_json::json!({"metadata": {"name": "worker", "namespace": "default"}}),
+        }));
+
+        let targets = panel.selected_delete_targets();
+
+        assert_eq!(
+            targets,
+            vec![ResourceDeleteTarget {
+                namespace: Some("default".to_owned()),
+                name: "api-75f".to_owned(),
+            }]
+        );
     }
 
     #[test]

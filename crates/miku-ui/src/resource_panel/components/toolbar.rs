@@ -7,6 +7,7 @@ pub(in crate::resource_panel) struct ResourceToolbar<'a> {
     pub(in crate::resource_panel) search_text: &'a mut String,
     pub(in crate::resource_panel) search_hint: &'static str,
     pub(in crate::resource_panel) item_count: usize,
+    pub(in crate::resource_panel) selected_count: usize,
     pub(in crate::resource_panel) loading: bool,
 }
 
@@ -15,6 +16,8 @@ pub(in crate::resource_panel) struct ResourceToolbarResponse {
     pub(in crate::resource_panel) namespace_changed: bool,
     pub(in crate::resource_panel) search_changed: bool,
     pub(in crate::resource_panel) refresh_clicked: bool,
+    pub(in crate::resource_panel) create_clicked: bool,
+    pub(in crate::resource_panel) batch_delete_clicked: bool,
 }
 
 impl ResourceToolbar<'_> {
@@ -65,6 +68,20 @@ impl ResourceToolbar<'_> {
             if self.loading {
                 ui.label("Loading...");
             }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                response.create_clicked = ui
+                    .button(egui_phosphor::regular::PLUS)
+                    .on_hover_text("Create")
+                    .clicked();
+
+                let delete_text = egui::RichText::new(egui_phosphor::regular::TRASH)
+                    .color(ui.visuals().error_fg_color);
+                response.batch_delete_clicked = ui
+                    .add_enabled(self.selected_count > 0, egui::Button::new(delete_text))
+                    .on_hover_text("Delete selected")
+                    .clicked();
+            });
         });
 
         response

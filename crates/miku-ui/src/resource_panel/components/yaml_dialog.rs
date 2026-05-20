@@ -23,6 +23,7 @@ pub(in crate::resource_panel) struct ResourceYamlEditDialog<'a> {
     pub(in crate::resource_panel) yaml: &'a mut String,
     pub(in crate::resource_panel) error: Option<&'a str>,
     pub(in crate::resource_panel) save_enabled: bool,
+    pub(in crate::resource_panel) save_label: &'a str,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -78,7 +79,7 @@ impl ResourceYamlEditDialog<'_> {
                         response.cancel_clicked = true;
                     }
                     if ui
-                        .add_enabled(self.save_enabled, egui::Button::new("Save"))
+                        .add_enabled(self.save_enabled, egui::Button::new(self.save_label))
                         .clicked()
                     {
                         response.save_clicked = true;

@@ -34,10 +34,19 @@ pub(crate) enum ResourceActionKind {
         namespace: Option<String>,
         name: String,
     },
+    BatchDeletePods {
+        targets: Vec<ResourceDeleteTarget>,
+    },
     EvictPod {
         namespace: String,
         name: String,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResourceDeleteTarget {
+    pub(crate) namespace: Option<String>,
+    pub(crate) name: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -110,13 +119,17 @@ impl ResourceActionRequest {
                 name: name.clone(),
                 manifest: manifest.clone(),
             }),
-            ResourceActionKind::DeletePod { .. } | ResourceActionKind::EvictPod { .. } => None,
+            ResourceActionKind::DeletePod { .. }
+            | ResourceActionKind::BatchDeletePods { .. }
+            | ResourceActionKind::EvictPod { .. } => None,
         }
     }
 
     pub(crate) fn delete_request(&self) -> Option<ResourceDeleteRequest> {
         match &self.kind {
-            ResourceActionKind::ApplyPod { .. } | ResourceActionKind::EvictPod { .. } => None,
+            ResourceActionKind::ApplyPod { .. }
+            | ResourceActionKind::BatchDeletePods { .. }
+            | ResourceActionKind::EvictPod { .. } => None,
             ResourceActionKind::DeletePod { namespace, name } => Some(ResourceDeleteRequest {
                 cluster_id: self.cluster_id.clone(),
                 resource: ResourceRef::core("v1", "pods"),
@@ -126,6 +139,24 @@ impl ResourceActionRequest {
         }
     }
 
+    pub(crate) fn batch_delete_requests(&self) -> Option<Vec<ResourceDeleteRequest>> {
+        let ResourceActionKind::BatchDeletePods { targets } = &self.kind else {
+            return None;
+        };
+
+        Some(
+            targets
+                .iter()
+                .map(|target| ResourceDeleteRequest {
+                    cluster_id: self.cluster_id.clone(),
+                    resource: ResourceRef::core("v1", "pods"),
+                    namespace: target.namespace.clone(),
+                    name: target.name.clone(),
+                })
+                .collect(),
+        )
+    }
+
     pub(crate) fn evict_request(&self) -> Option<PodEvictRequest> {
         match &self.kind {
             ResourceActionKind::EvictPod { namespace, name } => Some(PodEvictRequest {
@@ -133,7 +164,9 @@ impl ResourceActionRequest {
                 namespace: namespace.clone(),
                 pod: name.clone(),
             }),
-            ResourceActionKind::ApplyPod { .. } | ResourceActionKind::DeletePod { .. } => None,
+            ResourceActionKind::ApplyPod { .. }
+            | ResourceActionKind::DeletePod { .. }
+            | ResourceActionKind::BatchDeletePods { .. } => None,
         }
     }
 }
@@ -158,6 +191,7 @@ pub(crate) enum ResourceUiEvent {
 pub(crate) enum ResourceActionOutcome {
     Applied(ResourceSummary),
     Deleted,
+    BatchDeleted(Vec<ResourceDeleteTarget>),
     Evicted,
 }
 
