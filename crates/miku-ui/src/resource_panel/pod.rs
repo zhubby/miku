@@ -97,10 +97,9 @@ impl PodResourcePanel {
         match event {
             ResourceUiEvent::ResourcesLoaded { request, result } => match request.kind {
                 ResourceLoadKind::Namespaces => {
-                    if self.namespace_request_id != Some(request.request_id) {
-                        return;
+                    if self.namespace_request_id == Some(request.request_id) {
+                        self.namespace_request_id = None;
                     }
-                    self.namespace_request_id = None;
                     match result {
                         Ok(list) => {
                             self.namespaces = namespaces_from_list(&list);
@@ -122,7 +121,7 @@ impl PodResourcePanel {
                         Err(error) => self.row_status = LoadStatus::Error(error),
                     }
                 }
-                ResourceLoadKind::CustomResourceDefinitions => {}
+                ResourceLoadKind::Nodes | ResourceLoadKind::CustomResourceDefinitions => {}
             },
             ResourceUiEvent::ResourceActionCompleted { request, result } => {
                 if self.action_request_id != Some(request.request_id) {
@@ -225,8 +224,8 @@ impl PodResourcePanel {
             }
             ResourceUiEvent::ResourceWatchUpdated { request, result } => match request.kind {
                 ResourceLoadKind::Namespaces => {
-                    if self.namespace_watch_request_id != Some(request.request_id) {
-                        return;
+                    if self.namespace_watch_request_id == Some(request.request_id) {
+                        self.namespace_watch_request_id = None;
                     }
                     match result {
                         Ok(miku_api::ResourceEvent::Snapshot(list)) => {
@@ -250,7 +249,7 @@ impl PodResourcePanel {
                         Err(error) => self.row_status = LoadStatus::Error(error),
                     }
                 }
-                ResourceLoadKind::CustomResourceDefinitions => {}
+                ResourceLoadKind::Nodes | ResourceLoadKind::CustomResourceDefinitions => {}
             },
         }
     }
@@ -2813,6 +2812,27 @@ spec:
             namespaces_from_list(&list),
             vec!["default".to_owned(), "kube-system".to_owned()]
         );
+    }
+
+    #[test]
+    fn namespace_watch_events_from_shared_request_update_selector() {
+        let mut panel = PodResourcePanel::default();
+        let request = ResourceWatchRequest {
+            request_id: 42,
+            cluster_id: ClusterId::new("local"),
+            kind: ResourceLoadKind::Namespaces,
+        };
+
+        panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
+            request,
+            result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
+                items: vec![namespace_summary("production")],
+                continue_token: None,
+            })),
+        });
+
+        assert_eq!(panel.namespaces, vec!["production".to_owned()]);
+        assert_eq!(panel.namespace_status, LoadStatus::Loaded);
     }
 
     #[test]

@@ -7,9 +7,13 @@ use miku_core::{ClusterId, ResourceRef};
 
 mod components;
 mod custom_resources;
+mod namespace;
+mod node;
 mod pod;
 
 pub(crate) use custom_resources::CustomResourcesPanel;
+pub(crate) use namespace::NamespaceResourcePanel;
+pub(crate) use node::NodeResourcePanel;
 pub(crate) use pod::PodResourcePanel;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -79,6 +83,7 @@ pub(crate) struct ResourcePanelRequests {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum ResourceLoadKind {
     Namespaces,
+    Nodes,
     Pods { namespace: Option<String> },
     CustomResourceDefinitions,
 }
@@ -144,6 +149,7 @@ impl ResourceWatchRequest {
     pub(crate) fn key(&self) -> ResourceWatchKey {
         let kind = match &self.kind {
             ResourceLoadKind::Namespaces => ResourceLoadKind::Namespaces,
+            ResourceLoadKind::Nodes => ResourceLoadKind::Nodes,
             ResourceLoadKind::Pods { .. } => ResourceLoadKind::Pods { namespace: None },
             ResourceLoadKind::CustomResourceDefinitions => {
                 ResourceLoadKind::CustomResourceDefinitions
@@ -305,6 +311,10 @@ fn resource_query_for_kind(
             cluster_id,
             ResourceRef::core("v1", "namespaces").cluster_scoped(),
         ),
+        ResourceLoadKind::Nodes => miku_api::ResourceQuery::new(
+            cluster_id,
+            ResourceRef::core("v1", "nodes").cluster_scoped(),
+        ),
         ResourceLoadKind::Pods { namespace } => {
             let mut query =
                 miku_api::ResourceQuery::new(cluster_id, ResourceRef::core("v1", "pods"));
@@ -336,6 +346,17 @@ mod tests {
             query.resource,
             ResourceRef::grouped("apiextensions.k8s.io", "v1", "customresourcedefinitions")
                 .cluster_scoped()
+        );
+        assert_eq!(query.namespace, None);
+    }
+
+    #[test]
+    fn nodes_query_uses_cluster_scoped_core_api() {
+        let query = resource_query_for_kind(ClusterId::new("local"), &ResourceLoadKind::Nodes);
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::core("v1", "nodes").cluster_scoped()
         );
         assert_eq!(query.namespace, None);
     }
