@@ -94,12 +94,14 @@ impl StatefulSetResourcePanel {
                     }
                 }
                 ResourceLoadKind::Nodes
+                | ResourceLoadKind::ConfigMaps { .. }
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::Jobs { .. }
                 | ResourceLoadKind::ReplicaSets { .. }
+                | ResourceLoadKind::Secrets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
@@ -131,12 +133,14 @@ impl StatefulSetResourcePanel {
                     }
                 }
                 ResourceLoadKind::Nodes
+                | ResourceLoadKind::ConfigMaps { .. }
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::Jobs { .. }
                 | ResourceLoadKind::ReplicaSets { .. }
+                | ResourceLoadKind::Secrets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },

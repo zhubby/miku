@@ -94,11 +94,13 @@ impl ReplicaSetResourcePanel {
                     }
                 }
                 ResourceLoadKind::Nodes
+                | ResourceLoadKind::ConfigMaps { .. }
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::Jobs { .. }
+                | ResourceLoadKind::Secrets { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
@@ -131,11 +133,13 @@ impl ReplicaSetResourcePanel {
                     }
                 }
                 ResourceLoadKind::Nodes
+                | ResourceLoadKind::ConfigMaps { .. }
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::Jobs { .. }
+                | ResourceLoadKind::Secrets { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}

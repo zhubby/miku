@@ -12,12 +12,12 @@ use crate::forms::NewClusterForm;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::resource_panel::ResourceWatchKey;
 use crate::resource_panel::{
-    CronJobResourcePanel, CustomResourcesPanel, DaemonSetResourcePanel, DeploymentResourcePanel,
-    EventResourcePanel, JobResourcePanel, NamespaceResourcePanel, NodeResourcePanel,
-    PodAttachInputRequest, PodAttachRequest, PodLogRequest, PodResourcePanel,
+    ConfigMapResourcePanel, CronJobResourcePanel, CustomResourcesPanel, DaemonSetResourcePanel,
+    DeploymentResourcePanel, EventResourcePanel, JobResourcePanel, NamespaceResourcePanel,
+    NodeResourcePanel, PodAttachInputRequest, PodAttachRequest, PodLogRequest, PodResourcePanel,
     ReplicaSetResourcePanel, ResourceActionKind, ResourceActionOutcome, ResourceActionRequest,
     ResourceLoadKind, ResourceLoadRequest, ResourceUiEvent, ResourceWatchRequest,
-    StatefulSetResourcePanel,
+    SecretResourcePanel, StatefulSetResourcePanel,
 };
 use crate::resources::ResourceNavItem;
 use crate::state::{AppState, ClusterConnectionState, RuntimeMode};
@@ -58,6 +58,7 @@ pub(crate) struct ClusterWorkspace {
     pub(crate) dock_state: DockState<AppTab>,
     pub(crate) selected_resource: Option<ResourceNavItem>,
     pub(crate) status_panel: ClusterStatusPanel,
+    pub(crate) config_map_resource_panel: ConfigMapResourcePanel,
     pub(crate) daemon_set_resource_panel: DaemonSetResourcePanel,
     pub(crate) deployment_resource_panel: DeploymentResourcePanel,
     pub(crate) event_resource_panel: EventResourcePanel,
@@ -67,6 +68,7 @@ pub(crate) struct ClusterWorkspace {
     pub(crate) node_resource_panel: NodeResourcePanel,
     pub(crate) pod_resource_panel: PodResourcePanel,
     pub(crate) replica_set_resource_panel: ReplicaSetResourcePanel,
+    pub(crate) secret_resource_panel: SecretResourcePanel,
     pub(crate) stateful_set_resource_panel: StatefulSetResourcePanel,
     pub(crate) custom_resources_panel: CustomResourcesPanel,
 }
@@ -77,6 +79,7 @@ impl Default for ClusterWorkspace {
             dock_state: DockState::new(vec![AppTab::Workspace(1)]),
             selected_resource: None,
             status_panel: ClusterStatusPanel::default(),
+            config_map_resource_panel: ConfigMapResourcePanel::default(),
             daemon_set_resource_panel: DaemonSetResourcePanel::default(),
             deployment_resource_panel: DeploymentResourcePanel::default(),
             event_resource_panel: EventResourcePanel::default(),
@@ -86,6 +89,7 @@ impl Default for ClusterWorkspace {
             node_resource_panel: NodeResourcePanel::default(),
             pod_resource_panel: PodResourcePanel::default(),
             replica_set_resource_panel: ReplicaSetResourcePanel::default(),
+            secret_resource_panel: SecretResourcePanel::default(),
             stateful_set_resource_panel: StatefulSetResourcePanel::default(),
             custom_resources_panel: CustomResourcesPanel::default(),
         }
@@ -218,6 +222,7 @@ impl eframe::App for MikuApp {
                     selected_resource: None,
                     selected_cluster_id: self.selected_cluster_id(),
                     cluster_status_panel: None,
+                    config_map_resource_panel: None,
                     cron_job_resource_panel: None,
                     daemon_set_resource_panel: None,
                     deployment_resource_panel: None,
@@ -227,6 +232,7 @@ impl eframe::App for MikuApp {
                     node_resource_panel: None,
                     pod_resource_panel: None,
                     replica_set_resource_panel: None,
+                    secret_resource_panel: None,
                     stateful_set_resource_panel: None,
                     custom_resources_panel: None,
                     status_load_requests: Vec::new(),
@@ -285,6 +291,7 @@ impl eframe::App for MikuApp {
                     selected_resource: None,
                     selected_cluster_id: self.selected_cluster_id(),
                     cluster_status_panel: None,
+                    config_map_resource_panel: None,
                     cron_job_resource_panel: None,
                     daemon_set_resource_panel: None,
                     deployment_resource_panel: None,
@@ -294,6 +301,7 @@ impl eframe::App for MikuApp {
                     node_resource_panel: None,
                     pod_resource_panel: None,
                     replica_set_resource_panel: None,
+                    secret_resource_panel: None,
                     stateful_set_resource_panel: None,
                     custom_resources_panel: None,
                     status_load_requests: Vec::new(),
@@ -360,6 +368,7 @@ impl eframe::App for MikuApp {
                 selected_resource: None,
                 selected_cluster_id: Some(selected_cluster_id),
                 cluster_status_panel: Some(&mut workspace.status_panel),
+                config_map_resource_panel: Some(&mut workspace.config_map_resource_panel),
                 cron_job_resource_panel: Some(&mut workspace.cron_job_resource_panel),
                 daemon_set_resource_panel: Some(&mut workspace.daemon_set_resource_panel),
                 deployment_resource_panel: Some(&mut workspace.deployment_resource_panel),
@@ -369,6 +378,7 @@ impl eframe::App for MikuApp {
                 node_resource_panel: Some(&mut workspace.node_resource_panel),
                 pod_resource_panel: Some(&mut workspace.pod_resource_panel),
                 replica_set_resource_panel: Some(&mut workspace.replica_set_resource_panel),
+                secret_resource_panel: Some(&mut workspace.secret_resource_panel),
                 stateful_set_resource_panel: Some(&mut workspace.stateful_set_resource_panel),
                 custom_resources_panel: Some(&mut workspace.custom_resources_panel),
                 status_load_requests: Vec::new(),
@@ -588,6 +598,9 @@ impl MikuApp {
                     workspace.custom_resources_panel.apply_event(event);
                 }
                 ResourceLoadKind::Namespaces => {
+                    workspace
+                        .config_map_resource_panel
+                        .apply_event(event.clone());
                     workspace.cron_job_resource_panel.apply_event(event.clone());
                     workspace
                         .daemon_set_resource_panel
@@ -603,6 +616,7 @@ impl MikuApp {
                     workspace
                         .replica_set_resource_panel
                         .apply_event(event.clone());
+                    workspace.secret_resource_panel.apply_event(event.clone());
                     workspace
                         .stateful_set_resource_panel
                         .apply_event(event.clone());
@@ -613,6 +627,9 @@ impl MikuApp {
                 }
                 ResourceLoadKind::Events { .. } => {
                     workspace.event_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::ConfigMaps { .. } => {
+                    workspace.config_map_resource_panel.apply_event(event);
                 }
                 ResourceLoadKind::CronJobs { .. } => {
                     workspace.cron_job_resource_panel.apply_event(event);
@@ -631,6 +648,9 @@ impl MikuApp {
                 }
                 ResourceLoadKind::ReplicaSets { .. } => {
                     workspace.replica_set_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::Secrets { .. } => {
+                    workspace.secret_resource_panel.apply_event(event);
                 }
                 ResourceLoadKind::Pods { .. } => {
                     workspace.pod_resource_panel.apply_event(event);
@@ -641,6 +661,9 @@ impl MikuApp {
                     workspace.custom_resources_panel.apply_event(event);
                 }
                 ResourceLoadKind::Namespaces => {
+                    workspace
+                        .config_map_resource_panel
+                        .apply_event(event.clone());
                     workspace.cron_job_resource_panel.apply_event(event.clone());
                     workspace
                         .daemon_set_resource_panel
@@ -656,6 +679,7 @@ impl MikuApp {
                     workspace
                         .replica_set_resource_panel
                         .apply_event(event.clone());
+                    workspace.secret_resource_panel.apply_event(event.clone());
                     workspace
                         .stateful_set_resource_panel
                         .apply_event(event.clone());
@@ -666,6 +690,9 @@ impl MikuApp {
                 }
                 ResourceLoadKind::Events { .. } => {
                     workspace.event_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::ConfigMaps { .. } => {
+                    workspace.config_map_resource_panel.apply_event(event);
                 }
                 ResourceLoadKind::CronJobs { .. } => {
                     workspace.cron_job_resource_panel.apply_event(event);
@@ -684,6 +711,9 @@ impl MikuApp {
                 }
                 ResourceLoadKind::ReplicaSets { .. } => {
                     workspace.replica_set_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::Secrets { .. } => {
+                    workspace.secret_resource_panel.apply_event(event);
                 }
                 ResourceLoadKind::Pods { .. } => {
                     workspace.pod_resource_panel.apply_event(event);

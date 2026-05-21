@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use eframe::egui::{self, TextWrapMode};
 use egui_extras::{Column, TableBuilder};
 use miku_api::ResourceSummary;
@@ -12,25 +14,27 @@ use super::{
 };
 use crate::time::human_age_from_rfc3339;
 
+const REDACTED_SECRET_VALUE: &str = "REDACTED";
+
 #[derive(Clone, Debug, Default)]
-pub(crate) struct CronJobResourcePanel {
+pub(crate) struct SecretResourcePanel {
     namespace_filter: Option<String>,
     search_text: String,
     namespaces: Vec<String>,
     namespace_status: LoadStatus,
     row_status: LoadStatus,
-    rows: Vec<CronJobRow>,
+    rows: Vec<SecretRow>,
     next_request_id: u64,
     namespace_request_id: Option<u64>,
     row_request_id: Option<u64>,
     namespace_watch_request_id: Option<u64>,
     row_watch_request_id: Option<u64>,
     last_cluster_id: Option<ClusterId>,
-    describe_dialog: Option<CronJobDescribeDialog>,
-    view_dialog: Option<CronJobViewDialog>,
+    describe_dialog: Option<SecretDescribeDialog>,
+    view_dialog: Option<SecretViewDialog>,
 }
 
-impl CronJobResourcePanel {
+impl SecretResourcePanel {
     pub(crate) fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -39,7 +43,7 @@ impl CronJobResourcePanel {
         let mut requests = ResourcePanelRequests::default();
         let Some(cluster_id) = cluster_id else {
             ui.centered_and_justified(|ui| {
-                ui.label("Select a cluster to load cronjobs.");
+                ui.label("Select a cluster to load secrets.");
             });
             return requests;
         };
@@ -53,7 +57,7 @@ impl CronJobResourcePanel {
         if matches!(self.row_status, LoadStatus::Idle) {
             requests
                 .watches
-                .push(self.request_cron_job_watch(cluster_id.clone()));
+                .push(self.request_secret_watch(cluster_id.clone()));
         }
 
         self.show_toolbar(ui, cluster_id, &mut requests);
@@ -80,14 +84,14 @@ impl CronJobResourcePanel {
                         Err(error) => self.namespace_status = LoadStatus::Error(error),
                     }
                 }
-                ResourceLoadKind::CronJobs { .. } => {
+                ResourceLoadKind::Secrets { .. } => {
                     if self.row_request_id != Some(request.request_id) {
                         return;
                     }
                     self.row_request_id = None;
                     match result {
                         Ok(list) => {
-                            self.rows = cron_job_rows_from_list(&list.items);
+                            self.rows = secret_rows_from_list(&list.items);
                             self.row_status = LoadStatus::Loaded;
                         }
                         Err(error) => self.row_status = LoadStatus::Error(error),
@@ -95,13 +99,13 @@ impl CronJobResourcePanel {
                 }
                 ResourceLoadKind::Nodes
                 | ResourceLoadKind::ConfigMaps { .. }
-                | ResourceLoadKind::Jobs { .. }
+                | ResourceLoadKind::CronJobs { .. }
+                | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::Events { .. }
-                | ResourceLoadKind::DaemonSets { .. }
-                | ResourceLoadKind::StatefulSets { .. }
+                | ResourceLoadKind::Jobs { .. }
                 | ResourceLoadKind::ReplicaSets { .. }
-                | ResourceLoadKind::Secrets { .. }
+                | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
@@ -119,13 +123,13 @@ impl CronJobResourcePanel {
                         Err(error) => self.namespace_status = LoadStatus::Error(error),
                     }
                 }
-                ResourceLoadKind::CronJobs { .. } => {
+                ResourceLoadKind::Secrets { .. } => {
                     if self.row_watch_request_id != Some(request.request_id) {
                         return;
                     }
                     match result {
                         Ok(miku_api::ResourceEvent::Snapshot(list)) => {
-                            self.rows = cron_job_rows_from_list(&list.items);
+                            self.rows = secret_rows_from_list(&list.items);
                             self.row_status = LoadStatus::Loaded;
                         }
                         Ok(_) => {}
@@ -134,13 +138,13 @@ impl CronJobResourcePanel {
                 }
                 ResourceLoadKind::Nodes
                 | ResourceLoadKind::ConfigMaps { .. }
-                | ResourceLoadKind::Jobs { .. }
+                | ResourceLoadKind::CronJobs { .. }
+                | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::Events { .. }
-                | ResourceLoadKind::DaemonSets { .. }
-                | ResourceLoadKind::StatefulSets { .. }
+                | ResourceLoadKind::Jobs { .. }
                 | ResourceLoadKind::ReplicaSets { .. }
-                | ResourceLoadKind::Secrets { .. }
+                | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
@@ -183,9 +187,9 @@ impl CronJobResourcePanel {
                 .as_deref()
                 .unwrap_or("All namespaces")
                 .to_owned();
-
             let mut namespace_changed = false;
-            egui::ComboBox::from_id_salt("cron_job_resource_namespace_filter")
+
+            egui::ComboBox::from_id_salt("secret_resource_namespace_filter")
                 .selected_text(selected_label)
                 .width(220.0)
                 .show_ui(ui, |ui| {
@@ -205,7 +209,7 @@ impl CronJobResourcePanel {
 
             ui.add(
                 egui::TextEdit::singleline(&mut self.search_text)
-                    .hint_text("Search CronJobs...")
+                    .hint_text("Search Secrets...")
                     .desired_width(280.0),
             );
 
@@ -219,7 +223,7 @@ impl CronJobResourcePanel {
                     .push(self.request_namespace_watch(cluster_id.clone()));
                 requests
                     .watches
-                    .push(self.request_cron_job_watch(cluster_id.clone()));
+                    .push(self.request_secret_watch(cluster_id.clone()));
             }
 
             ui.separator();
@@ -228,15 +232,13 @@ impl CronJobResourcePanel {
             if matches!(self.row_status, LoadStatus::Loading) {
                 ui.label("Loading...");
             }
-
             if matches!(self.namespace_status, LoadStatus::Error(_)) {
                 ui.colored_label(ui.visuals().error_fg_color, "Namespaces unavailable");
             }
-
             if namespace_changed {
                 requests
                     .watches
-                    .push(self.request_cron_job_watch(cluster_id.clone()));
+                    .push(self.request_secret_watch(cluster_id.clone()));
             }
         });
     }
@@ -245,7 +247,7 @@ impl CronJobResourcePanel {
         match &self.row_status {
             LoadStatus::Idle | LoadStatus::Loading if self.rows.is_empty() => {
                 ui.centered_and_justified(|ui| {
-                    ui.label("Loading cronjobs...");
+                    ui.label("Loading secrets...");
                 });
             }
             LoadStatus::Error(error) => {
@@ -257,40 +259,42 @@ impl CronJobResourcePanel {
                 let row_indices = self.filtered_row_indices();
                 if row_indices.is_empty() {
                     ui.centered_and_justified(|ui| {
-                        ui.label("No cronjobs match the current filters.");
+                        ui.label("No secrets match the current filters.");
                     });
                     return;
                 }
 
-                let action = show_cron_job_table(ui, &self.rows, row_indices);
+                let action = show_secret_table(ui, &self.rows, row_indices);
                 self.apply_table_action(action);
             }
         }
     }
 
-    fn apply_table_action(&mut self, action: Option<CronJobTableAction>) {
+    fn apply_table_action(&mut self, action: Option<SecretTableAction>) {
         match action {
-            Some(CronJobTableAction::Describe { key }) => {
+            Some(SecretTableAction::Describe { key }) => {
                 let Some((name, describe)) = self
                     .row_by_key(&key)
-                    .map(|row| (row.name.clone(), cron_job_describe_from_row(row)))
+                    .map(|row| (row.name.clone(), secret_describe_from_row(row)))
                 else {
                     return;
                 };
-                self.describe_dialog = Some(CronJobDescribeDialog {
+                self.describe_dialog = Some(SecretDescribeDialog {
                     key,
                     name,
                     describe,
                 });
             }
-            Some(CronJobTableAction::View { key }) => {
-                let Some((name, yaml)) = self
-                    .row_by_key(&key)
-                    .map(|row| (row.name.clone(), full_manifest_yaml(&row.raw)))
-                else {
+            Some(SecretTableAction::View { key }) => {
+                let Some((name, yaml)) = self.row_by_key(&key).map(|row| {
+                    (
+                        row.name.clone(),
+                        full_manifest_yaml(&redacted_secret_manifest(&row.raw)),
+                    )
+                }) else {
                     return;
                 };
-                self.view_dialog = Some(CronJobViewDialog { key, name, yaml });
+                self.view_dialog = Some(SecretViewDialog { key, name, yaml });
             }
             None => {}
         }
@@ -303,26 +307,23 @@ impl CronJobResourcePanel {
 
         let mut open = true;
         egui::Window::new(format!("Describe {}", dialog.name))
-            .id(egui::Id::new(("cron_job-describe-dialog", &dialog.key)))
+            .id(egui::Id::new(("secret-describe-dialog", &dialog.key)))
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .open(&mut open)
             .collapsible(false)
-            .fixed_size([
-                CRON_JOB_DESCRIBE_DIALOG_WIDTH,
-                CRON_JOB_DESCRIBE_DIALOG_HEIGHT,
-            ])
+            .fixed_size([DESCRIBE_DIALOG_WIDTH, DESCRIBE_DIALOG_HEIGHT])
             .show(ctx, |ui| {
-                ui.set_width(CRON_JOB_DESCRIBE_DIALOG_WIDTH);
-                ui.set_height(CRON_JOB_DESCRIBE_CONTENT_HEIGHT);
+                ui.set_width(DESCRIBE_DIALOG_WIDTH);
+                ui.set_height(DESCRIBE_CONTENT_HEIGHT);
                 egui::ScrollArea::both()
-                    .id_salt(("cron_job-describe-content", &dialog.key))
-                    .max_width(CRON_JOB_DESCRIBE_DIALOG_WIDTH)
-                    .max_height(CRON_JOB_DESCRIBE_CONTENT_HEIGHT)
+                    .id_salt(("secret-describe-content", &dialog.key))
+                    .max_width(DESCRIBE_DIALOG_WIDTH)
+                    .max_height(DESCRIBE_CONTENT_HEIGHT)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.set_min_width(CRON_JOB_DESCRIBE_CONTENT_WIDTH);
+                        ui.set_min_width(DESCRIBE_CONTENT_WIDTH);
                         ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-                        show_cron_job_describe(ui, &dialog.describe);
+                        show_secret_describe(ui, &dialog.describe);
                     });
             });
 
@@ -338,7 +339,7 @@ impl CronJobResourcePanel {
 
         let mut open = true;
         let response = ResourceYamlViewDialog {
-            id: egui::Id::new(("cron_job-view-dialog", &dialog.key)),
+            id: egui::Id::new(("secret-view-dialog", &dialog.key)),
             title: format!("View {}", dialog.name),
             yaml: &dialog.yaml,
             open: &mut open,
@@ -351,11 +352,11 @@ impl CronJobResourcePanel {
     }
 
     #[cfg(test)]
-    fn request_cronjobs(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
+    fn request_secrets(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
         let request = ResourceLoadRequest {
             request_id: self.allocate_request_id(),
             cluster_id,
-            kind: ResourceLoadKind::CronJobs {
+            kind: ResourceLoadKind::Secrets {
                 namespace: self.namespace_filter.clone(),
             },
         };
@@ -375,11 +376,11 @@ impl CronJobResourcePanel {
         request
     }
 
-    fn request_cron_job_watch(&mut self, cluster_id: ClusterId) -> ResourceWatchRequest {
+    fn request_secret_watch(&mut self, cluster_id: ClusterId) -> ResourceWatchRequest {
         let request = ResourceWatchRequest {
             request_id: self.allocate_request_id(),
             cluster_id,
-            kind: ResourceLoadKind::CronJobs {
+            kind: ResourceLoadKind::Secrets {
                 namespace: self.namespace_filter.clone(),
             },
         };
@@ -408,42 +409,39 @@ impl CronJobResourcePanel {
             .collect()
     }
 
-    fn row_by_key(&self, key: &str) -> Option<&CronJobRow> {
+    fn row_by_key(&self, key: &str) -> Option<&SecretRow> {
         self.rows.iter().find(|row| row.key == key)
     }
 }
 
-fn show_cron_job_table(
+fn show_secret_table(
     ui: &mut egui::Ui,
-    rows: &[CronJobRow],
+    rows: &[SecretRow],
     row_indices: Vec<usize>,
-) -> Option<CronJobTableAction> {
+) -> Option<SecretTableAction> {
     let row_height = ui.spacing().interact_size.y;
-    let table_width: f32 = CRON_JOB_COLUMN_WIDTHS.iter().sum::<f32>()
-        + ui.spacing().item_spacing.x * CRON_JOB_COLUMN_WIDTHS.len().saturating_sub(1) as f32;
+    let table_width: f32 = COLUMN_WIDTHS.iter().sum::<f32>()
+        + ui.spacing().item_spacing.x * COLUMN_WIDTHS.len().saturating_sub(1) as f32;
     let mut action = None;
 
     egui::ScrollArea::horizontal()
-        .id_salt("cron_job_resource_table_horizontal")
+        .id_salt("secret_resource_table_horizontal")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.set_min_width(table_width);
-
             let mut table = TableBuilder::new(ui)
-                .id_salt("cron_job_resource_table")
+                .id_salt("secret_resource_table")
                 .striped(true)
                 .resizable(false)
                 .sense(egui::Sense::click())
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .min_scrolled_height(0.0);
-
-            for width in CRON_JOB_COLUMN_WIDTHS {
+            for width in COLUMN_WIDTHS {
                 table = table.column(Column::exact(width));
             }
-
             table
                 .header(row_height, |mut header| {
-                    for label in CRON_JOB_COLUMNS {
+                    for label in COLUMNS {
                         header.col(|ui| {
                             ui.strong(label);
                         });
@@ -451,9 +449,8 @@ fn show_cron_job_table(
                 })
                 .body(|body| {
                     body.rows(row_height, row_indices.len(), |mut table_row| {
-                        let row_index = table_row.index();
                         let Some(row) = row_indices
-                            .get(row_index)
+                            .get(table_row.index())
                             .and_then(|index| rows.get(*index))
                         else {
                             return;
@@ -466,22 +463,16 @@ fn show_cron_job_table(
                             ui.label(&row.namespace);
                         });
                         table_row.col(|ui| {
-                            ui.label(&row.schedule);
+                            ui.label(&row.secret_type);
                         });
                         table_row.col(|ui| {
-                            ui.label(&row.suspend);
+                            ui.label(&row.data_count);
                         });
                         table_row.col(|ui| {
-                            ui.label(&row.active);
+                            ui.label(&row.immutable);
                         });
                         table_row.col(|ui| {
-                            ui.label(&row.last_schedule);
-                        });
-                        table_row.col(|ui| {
-                            ui.label(&row.last_success);
-                        });
-                        table_row.col(|ui| {
-                            ui.label(&row.concurrency);
+                            ui.label(&row.keys);
                         });
                         table_row.col(|ui| {
                             ui.label(&row.age);
@@ -492,7 +483,7 @@ fn show_cron_job_table(
                                 .button(format!("{} Describe", egui_phosphor::regular::INFO))
                                 .clicked()
                             {
-                                action = Some(CronJobTableAction::Describe {
+                                action = Some(SecretTableAction::Describe {
                                     key: row.key.clone(),
                                 });
                                 ui.close();
@@ -501,7 +492,7 @@ fn show_cron_job_table(
                                 .button(format!("{} View", egui_phosphor::regular::EYE))
                                 .clicked()
                             {
-                                action = Some(CronJobTableAction::View {
+                                action = Some(SecretTableAction::View {
                                     key: row.key.clone(),
                                 });
                                 ui.close();
@@ -514,50 +505,45 @@ fn show_cron_job_table(
     action
 }
 
-const CRON_JOB_COLUMNS: [&str; 9] = [
+const COLUMNS: [&str; 7] = [
     "Name",
     "Namespace",
-    "Schedule",
-    "Suspend",
-    "Active",
-    "Last Schedule",
-    "Last Success",
-    "Concurrency",
+    "Type",
+    "Data",
+    "Immutable",
+    "Keys",
     "Age",
 ];
-const CRON_JOB_COLUMN_WIDTHS: [f32; 9] =
-    [240.0, 160.0, 180.0, 90.0, 90.0, 180.0, 180.0, 120.0, 90.0];
-const CRON_JOB_DESCRIBE_DIALOG_WIDTH: f32 = 860.0;
-const CRON_JOB_DESCRIBE_DIALOG_HEIGHT: f32 = 580.0;
-const CRON_JOB_DESCRIBE_CONTENT_HEIGHT: f32 = 520.0;
-const CRON_JOB_DESCRIBE_CONTENT_WIDTH: f32 = 1160.0;
-const CRON_JOB_DESCRIBE_SECTION_WIDTH: f32 = 1128.0;
-const CRON_JOB_DESCRIBE_FIELD_LABEL_WIDTH: f32 = 140.0;
-const CRON_JOB_DESCRIBE_FIELD_VALUE_WIDTH: f32 = 370.0;
-const CRON_JOB_DESCRIBE_LINE_WIDTH: f32 = 1080.0;
+const COLUMN_WIDTHS: [f32; 7] = [240.0, 160.0, 240.0, 80.0, 100.0, 360.0, 90.0];
+const DESCRIBE_DIALOG_WIDTH: f32 = 820.0;
+const DESCRIBE_DIALOG_HEIGHT: f32 = 560.0;
+const DESCRIBE_CONTENT_HEIGHT: f32 = 500.0;
+const DESCRIBE_CONTENT_WIDTH: f32 = 1080.0;
+const DESCRIBE_SECTION_WIDTH: f32 = 1048.0;
+const DESCRIBE_FIELD_LABEL_WIDTH: f32 = 130.0;
+const DESCRIBE_FIELD_VALUE_WIDTH: f32 = 360.0;
 
 #[cfg(test)]
-fn filter_cron_job_rows<'a>(rows: &'a [CronJobRow], search_text: &str) -> Vec<&'a CronJobRow> {
+fn filter_secret_rows<'a>(rows: &'a [SecretRow], search_text: &str) -> Vec<&'a SecretRow> {
     rows.iter()
         .filter(|row| row_matches_search(row, search_text))
         .collect()
 }
 
-fn row_matches_search(row: &CronJobRow, search_text: &str) -> bool {
+fn row_matches_search(row: &SecretRow, search_text: &str) -> bool {
     let needle = search_text.trim().to_lowercase();
     needle.is_empty()
         || row.name.to_lowercase().contains(&needle)
         || row.namespace.to_lowercase().contains(&needle)
-        || row.schedule.to_lowercase().contains(&needle)
-        || row.suspend.to_lowercase().contains(&needle)
-        || row.concurrency.to_lowercase().contains(&needle)
-        || row.status_summary.to_lowercase().contains(&needle)
+        || row.secret_type.to_lowercase().contains(&needle)
+        || row.keys.to_lowercase().contains(&needle)
+        || row.summary.to_lowercase().contains(&needle)
 }
 
-fn cron_job_rows_from_list(items: &[ResourceSummary]) -> Vec<CronJobRow> {
+fn secret_rows_from_list(items: &[ResourceSummary]) -> Vec<SecretRow> {
     let mut rows = items
         .iter()
-        .map(CronJobRow::from_summary)
+        .map(SecretRow::from_summary)
         .collect::<Vec<_>>();
     rows.sort_by(|left, right| {
         left.namespace
@@ -568,50 +554,46 @@ fn cron_job_rows_from_list(items: &[ResourceSummary]) -> Vec<CronJobRow> {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct CronJobRow {
+struct SecretRow {
     key: String,
     name: String,
     namespace: String,
-    schedule: String,
-    suspend: String,
-    active: String,
-    last_schedule: String,
-    last_success: String,
-    concurrency: String,
-    status_summary: String,
+    secret_type: String,
+    data_count: String,
+    immutable: String,
+    keys: String,
+    summary: String,
     age: String,
     raw: serde_json::Value,
 }
 
-impl CronJobRow {
+impl SecretRow {
     fn from_summary(summary: &ResourceSummary) -> Self {
         let raw = &summary.raw;
         let name = value_str(raw, &["metadata", "name"]).unwrap_or(&summary.name);
         let namespace = value_str(raw, &["metadata", "namespace"])
             .or(summary.namespace.as_deref())
             .unwrap_or("N/A");
-        let schedule = value_str(raw, &["spec", "schedule"]).unwrap_or("N/A");
-        let suspend = value_bool(raw, &["spec", "suspend"])
+        let secret_type = value_str(raw, &["type"]).unwrap_or("Opaque").to_owned();
+        let keys = sorted_keys(&[raw.pointer("/data"), raw.pointer("/stringData")]);
+        let keys_label = if keys.is_empty() {
+            "N/A".to_owned()
+        } else {
+            keys.join(", ")
+        };
+        let data_count = keys.len();
+        let immutable = value_bool(raw, &["immutable"])
             .map_or_else(|| "N/A".to_owned(), |value| value.to_string());
-        let active = raw
-            .pointer("/status/active")
-            .and_then(serde_json::Value::as_array)
-            .map_or(0, Vec::len);
-        let last_schedule = value_str(raw, &["status", "lastScheduleTime"]).unwrap_or("N/A");
-        let last_success = value_str(raw, &["status", "lastSuccessfulTime"]).unwrap_or("N/A");
-        let concurrency = value_str(raw, &["spec", "concurrencyPolicy"]).unwrap_or("N/A");
 
         Self {
-            key: cron_job_key(namespace, name),
+            key: namespaced_key(namespace, name),
             name: name.to_owned(),
             namespace: namespace.to_owned(),
-            schedule: schedule.to_owned(),
-            suspend,
-            active: active.to_string(),
-            last_schedule: last_schedule.to_owned(),
-            last_success: last_success.to_owned(),
-            concurrency: concurrency.to_owned(),
-            status_summary: cron_job_status_summary(schedule, active, concurrency),
+            secret_type: secret_type.clone(),
+            data_count: data_count.to_string(),
+            immutable,
+            keys: keys_label.clone(),
+            summary: format!("type={secret_type}, data={data_count}, keys={keys_label}"),
             age: value_str(raw, &["metadata", "creationTimestamp"])
                 .map(|timestamp| {
                     human_age_from_rfc3339(timestamp).unwrap_or_else(|| timestamp.to_owned())
@@ -623,51 +605,33 @@ impl CronJobRow {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum CronJobTableAction {
+enum SecretTableAction {
     Describe { key: String },
     View { key: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct CronJobDescribeDialog {
+struct SecretDescribeDialog {
     key: String,
     name: String,
-    describe: CronJobDescribe,
+    describe: SecretDescribe,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct CronJobViewDialog {
+struct SecretViewDialog {
     key: String,
     name: String,
     yaml: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct CronJobDescribe {
+struct SecretDescribe {
     summary: Vec<DescribeField>,
-    replicas: Vec<DescribeField>,
-    rollout: Vec<DescribeField>,
-    selector: Vec<ResourceMapEntry>,
-    template_labels: Vec<ResourceMapEntry>,
-    containers: Vec<ContainerDescribe>,
-    conditions: Vec<CronJobConditionDescribe>,
+    data_keys: Vec<ResourceMapEntry>,
+    string_data_keys: Vec<ResourceMapEntry>,
     labels: Vec<ResourceMapEntry>,
     annotations: Vec<ResourceMapEntry>,
     raw_yaml: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct ContainerDescribe {
-    name: String,
-    image: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct CronJobConditionDescribe {
-    condition_type: String,
-    status: String,
-    reason: String,
-    message: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -676,100 +640,45 @@ struct DescribeField {
     value: String,
 }
 
-fn show_cron_job_describe(ui: &mut egui::Ui, describe: &CronJobDescribe) {
-    describe_group(ui, egui_phosphor::regular::STACK, "CronJob", |ui| {
+impl DescribeField {
+    fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            value: value.into(),
+        }
+    }
+}
+
+fn show_secret_describe(ui: &mut egui::Ui, describe: &SecretDescribe) {
+    describe_group(ui, egui_phosphor::regular::LOCK_KEY, "Secret", |ui| {
         describe_fields(ui, &describe.summary);
     });
 
     ui.add_space(10.0);
-    describe_group(ui, egui_phosphor::regular::GAUGE, "Schedule", |ui| {
-        describe_fields(ui, &describe.replicas);
-    });
-
-    ui.add_space(10.0);
-    describe_group(
-        ui,
-        egui_phosphor::regular::ARROWS_CLOCKWISE,
-        "Status",
-        |ui| {
-            describe_fields(ui, &describe.rollout);
-        },
-    );
-
-    ui.add_space(10.0);
-    describe_group(ui, egui_phosphor::regular::FUNNEL, "Selector", |ui| {
+    describe_group(ui, egui_phosphor::regular::KEY, "Keys", |ui| {
         ResourceMapView {
-            id_salt: "cron_job-describe-selector",
-            icon: egui_phosphor::regular::FUNNEL,
-            title: "Match labels",
-            entries: &describe.selector,
-            empty_label: "No selector labels.",
-        }
-        .show(ui);
-    });
-
-    ui.add_space(10.0);
-    describe_group(ui, egui_phosphor::regular::CUBE, "Pod template", |ui| {
-        ResourceMapView {
-            id_salt: "cron_job-describe-template-labels",
-            icon: egui_phosphor::regular::TAG,
-            title: "Labels",
-            entries: &describe.template_labels,
-            empty_label: "No template labels.",
+            id_salt: "secret-describe-data-keys",
+            icon: egui_phosphor::regular::KEY,
+            title: "Data",
+            entries: &describe.data_keys,
+            empty_label: "No data keys.",
         }
         .show(ui);
         ui.add_space(8.0);
-        if describe.containers.is_empty() {
-            non_wrapping_value(ui, "N/A", CRON_JOB_DESCRIBE_LINE_WIDTH);
-        } else {
-            for container in &describe.containers {
-                non_wrapping_value(
-                    ui,
-                    &format!("{}: {}", container.name, container.image),
-                    CRON_JOB_DESCRIBE_LINE_WIDTH,
-                );
-            }
+        ResourceMapView {
+            id_salt: "secret-describe-string-data-keys",
+            icon: egui_phosphor::regular::KEY,
+            title: "String data",
+            entries: &describe.string_data_keys,
+            empty_label: "No stringData keys.",
         }
+        .show(ui);
     });
-
-    ui.add_space(10.0);
-    describe_group(
-        ui,
-        egui_phosphor::regular::CHECK_CIRCLE,
-        "Conditions",
-        |ui| {
-            if describe.conditions.is_empty() {
-                non_wrapping_value(ui, "N/A", CRON_JOB_DESCRIBE_LINE_WIDTH);
-            } else {
-                egui::Grid::new("cron_job-describe-conditions")
-                    .num_columns(4)
-                    .spacing([18.0, 4.0])
-                    .striped(true)
-                    .show(ui, |ui| {
-                        ui.strong("Type");
-                        ui.strong("Status");
-                        ui.strong("Reason");
-                        ui.strong("Message");
-                        ui.end_row();
-                        for condition in &describe.conditions {
-                            non_wrapping_value(ui, &condition.condition_type, 180.0);
-                            ui.colored_label(
-                                condition_color(ui, &condition.status),
-                                &condition.status,
-                            );
-                            non_wrapping_value(ui, &condition.reason, 220.0);
-                            non_wrapping_value(ui, &condition.message, 520.0);
-                            ui.end_row();
-                        }
-                    });
-            }
-        },
-    );
 
     ui.add_space(10.0);
     describe_group(ui, egui_phosphor::regular::TAG, "Metadata", |ui| {
         ResourceMapView {
-            id_salt: "cron_job-describe-labels",
+            id_salt: "secret-describe-labels",
             icon: egui_phosphor::regular::TAG,
             title: "Labels",
             entries: &describe.labels,
@@ -778,7 +687,7 @@ fn show_cron_job_describe(ui: &mut egui::Ui, describe: &CronJobDescribe) {
         .show(ui);
         ui.add_space(8.0);
         ResourceMapView {
-            id_salt: "cron_job-describe-annotations",
+            id_salt: "secret-describe-annotations",
             icon: egui_phosphor::regular::NOTE,
             title: "Annotations",
             entries: &describe.annotations,
@@ -790,7 +699,7 @@ fn show_cron_job_describe(ui: &mut egui::Ui, describe: &CronJobDescribe) {
     ui.add_space(10.0);
     describe_group(ui, egui_phosphor::regular::CODE, "Raw manifest", |ui| {
         egui::ScrollArea::both()
-            .id_salt("cron_job-describe-raw-manifest-content")
+            .id_salt("secret-describe-raw-manifest-content")
             .max_height(180.0)
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -818,7 +727,7 @@ fn describe_group(
         .corner_radius(egui::CornerRadius::same(4))
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
-            ui.set_min_width(CRON_JOB_DESCRIBE_SECTION_WIDTH);
+            ui.set_min_width(DESCRIBE_SECTION_WIDTH);
             ui.horizontal(|ui| {
                 ui.label(icon);
                 ui.strong(title);
@@ -836,11 +745,16 @@ fn describe_fields(ui: &mut egui::Ui, fields: &[DescribeField]) {
             for chunk in fields.chunks(2) {
                 for field in chunk {
                     ui.add_sized(
-                        [CRON_JOB_DESCRIBE_FIELD_LABEL_WIDTH, 0.0],
+                        [DESCRIBE_FIELD_LABEL_WIDTH, 0.0],
                         egui::Label::new(egui::RichText::new(&field.label).weak())
                             .wrap_mode(TextWrapMode::Extend),
                     );
-                    non_wrapping_value(ui, &field.value, CRON_JOB_DESCRIBE_FIELD_VALUE_WIDTH);
+                    ui.add_sized(
+                        [DESCRIBE_FIELD_VALUE_WIDTH, 0.0],
+                        egui::Label::new(&field.value)
+                            .wrap_mode(TextWrapMode::Extend)
+                            .selectable(true),
+                    );
                 }
                 if chunk.len() == 1 {
                     ui.label("");
@@ -851,115 +765,60 @@ fn describe_fields(ui: &mut egui::Ui, fields: &[DescribeField]) {
         });
 }
 
-fn non_wrapping_value(ui: &mut egui::Ui, value: &str, width: f32) {
-    ui.add_sized(
-        [width, 0.0],
-        egui::Label::new(value)
-            .wrap_mode(TextWrapMode::Extend)
-            .selectable(true),
-    );
-}
-
-fn condition_color(ui: &egui::Ui, status: &str) -> egui::Color32 {
-    match status {
-        "True" | "Available" => egui::Color32::from_rgb(46, 160, 67),
-        "False" | "Progressing" => egui::Color32::from_rgb(191, 135, 0),
-        "Unknown" => ui.visuals().error_fg_color,
-        _ => ui.visuals().text_color(),
-    }
-}
-
-impl DescribeField {
-    fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
-        Self {
-            label: label.into(),
-            value: value.into(),
-        }
-    }
-}
-
-fn cron_job_describe_from_row(row: &CronJobRow) -> CronJobDescribe {
+fn secret_describe_from_row(row: &SecretRow) -> SecretDescribe {
     let raw = &row.raw;
-    CronJobDescribe {
+    let redacted = redacted_secret_manifest(raw);
+    SecretDescribe {
         summary: vec![
             DescribeField::new("Name", row.name.clone()),
             DescribeField::new("Namespace", row.namespace.clone()),
+            DescribeField::new("Type", row.secret_type.clone()),
             DescribeField::new("Age", row.age.clone()),
-            DescribeField::new("Concurrency", row.concurrency.clone()),
+            DescribeField::new("Immutable", row.immutable.clone()),
+            DescribeField::new("Data", row.data_count.clone()),
+            DescribeField::new("Keys", row.keys.clone()),
         ],
-        replicas: vec![
-            DescribeField::new("Schedule", row.schedule.clone()),
-            DescribeField::new("Suspend", row.suspend.clone()),
-            DescribeField::new("Last schedule", row.last_schedule.clone()),
-            DescribeField::new("Last success", row.last_success.clone()),
-        ],
-        rollout: vec![
-            DescribeField::new("Active", row.active.clone()),
-            DescribeField::new(
-                "Successful history",
-                value_u64(raw, &["spec", "successfulJobsHistoryLimit"])
-                    .map_or_else(|| "N/A".to_owned(), |value| value.to_string()),
-            ),
-            DescribeField::new(
-                "Failed history",
-                value_u64(raw, &["spec", "failedJobsHistoryLimit"])
-                    .map_or_else(|| "N/A".to_owned(), |value| value.to_string()),
-            ),
-            DescribeField::new(
-                "Starting deadline",
-                value_u64(raw, &["spec", "startingDeadlineSeconds"])
-                    .map_or_else(|| "N/A".to_owned(), |value| value.to_string()),
-            ),
-        ],
-        selector: string_map_entries(raw.pointer("/spec/jobTemplate/spec/selector/matchLabels")),
-        template_labels: string_map_entries(
-            raw.pointer("/spec/jobTemplate/spec/template/metadata/labels"),
-        ),
-        containers: cron_job_containers(raw),
-        conditions: cron_job_condition_describes(raw),
+        data_keys: key_entries(raw.pointer("/data")),
+        string_data_keys: key_entries(raw.pointer("/stringData")),
         labels: string_map_entries(raw.pointer("/metadata/labels")),
         annotations: string_map_entries(raw.pointer("/metadata/annotations")),
-        raw_yaml: full_manifest_yaml(raw),
+        raw_yaml: full_manifest_yaml(&redacted),
     }
 }
 
-fn cron_job_key(namespace: &str, name: &str) -> String {
+fn redacted_secret_manifest(raw: &serde_json::Value) -> serde_json::Value {
+    let mut redacted = raw.clone();
+    for field in ["data", "stringData"] {
+        if let Some(object) = redacted
+            .get_mut(field)
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            for value in object.values_mut() {
+                *value = serde_json::Value::String(REDACTED_SECRET_VALUE.to_owned());
+            }
+        }
+    }
+    redacted
+}
+
+fn namespaced_key(namespace: &str, name: &str) -> String {
     format!("{namespace}/{name}")
 }
 
-fn cron_job_status_summary(schedule: &str, active: usize, concurrency: &str) -> String {
-    format!("schedule={schedule}, active={active}, concurrency={concurrency}")
+fn sorted_keys(values: &[Option<&serde_json::Value>]) -> Vec<String> {
+    let mut keys = BTreeSet::new();
+    for value in values {
+        if let Some(object) = value.and_then(serde_json::Value::as_object) {
+            keys.extend(object.keys().cloned());
+        }
+    }
+    keys.into_iter().collect()
 }
 
-fn cron_job_containers(raw: &serde_json::Value) -> Vec<ContainerDescribe> {
-    raw.pointer("/spec/jobTemplate/spec/template/spec/containers")
-        .and_then(serde_json::Value::as_array)
+fn key_entries(value: Option<&serde_json::Value>) -> Vec<ResourceMapEntry> {
+    sorted_keys(&[value])
         .into_iter()
-        .flatten()
-        .map(|container| ContainerDescribe {
-            name: value_str(container, &["name"]).unwrap_or("N/A").to_owned(),
-            image: value_str(container, &["image"]).unwrap_or("N/A").to_owned(),
-        })
-        .collect()
-}
-
-fn cron_job_condition_describes(raw: &serde_json::Value) -> Vec<CronJobConditionDescribe> {
-    raw.pointer("/status/conditions")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .map(|condition| CronJobConditionDescribe {
-            condition_type: value_str(condition, &["type"]).unwrap_or("N/A").to_owned(),
-            status: value_str(condition, &["status"])
-                .unwrap_or("N/A")
-                .to_owned(),
-            reason: value_str(condition, &["reason"])
-                .unwrap_or("N/A")
-                .to_owned(),
-            message: value_str(condition, &["message"])
-                .unwrap_or("N/A")
-                .to_owned(),
-        })
+        .map(|key| ResourceMapEntry::new(key, REDACTED_SECRET_VALUE))
         .collect()
 }
 
@@ -994,14 +853,6 @@ fn value_str<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a str>
     current.as_str()
 }
 
-fn value_u64(value: &serde_json::Value, path: &[&str]) -> Option<u64> {
-    let mut current = value;
-    for key in path {
-        current = current.get(*key)?;
-    }
-    current.as_u64()
-}
-
 fn value_bool(value: &serde_json::Value, path: &[&str]) -> Option<bool> {
     let mut current = value;
     for key in path {
@@ -1016,112 +867,112 @@ mod tests {
     use miku_api::ResourceList;
 
     #[test]
-    fn cron_job_request_query_uses_selected_namespace() {
-        let mut panel = CronJobResourcePanel {
+    fn secret_request_query_uses_selected_namespace() {
+        let mut panel = SecretResourcePanel {
             namespace_filter: Some("production".to_owned()),
-            ..CronJobResourcePanel::default()
+            ..SecretResourcePanel::default()
         };
 
-        let request = panel.request_cronjobs(ClusterId::new("local"));
+        let request = panel.request_secrets(ClusterId::new("local"));
         let query = request.query();
 
-        assert_eq!(query.resource.plural, "cronjobs");
-        assert_eq!(query.resource.group.as_deref(), Some("batch"));
+        assert_eq!(query.resource.plural, "secrets");
+        assert_eq!(query.resource.group, None);
         assert_eq!(query.namespace.as_deref(), Some("production"));
     }
 
     #[test]
-    fn cron_job_row_extracts_table_fields_from_raw_summary() {
-        let row = CronJobRow::from_summary(&cron_job_summary());
+    fn secret_row_extracts_table_fields_from_raw_summary() {
+        let row = SecretRow::from_summary(&secret_summary());
 
-        assert_eq!(row.name, "backup");
+        assert_eq!(row.name, "app-secret");
         assert_eq!(row.namespace, "default");
-        assert_eq!(row.schedule, "*/5 * * * *");
-        assert_eq!(row.suspend, "false");
-        assert_eq!(row.active, "2");
-        assert_eq!(row.last_schedule, "2026-05-18T10:00:00Z");
-        assert_eq!(row.last_success, "2026-05-18T09:55:00Z");
-        assert_eq!(row.concurrency, "Forbid");
-        assert_eq!(
-            row.status_summary,
-            "schedule=*/5 * * * *, active=2, concurrency=Forbid"
-        );
+        assert_eq!(row.secret_type, "kubernetes.io/tls");
+        assert_eq!(row.data_count, "3");
+        assert_eq!(row.immutable, "true");
+        assert_eq!(row.keys, "password, tls.crt, token");
         assert!(row.age.ends_with(" ago"));
     }
 
     #[test]
-    fn cron_job_row_handles_missing_optional_fields() {
-        let row = CronJobRow::from_summary(&ResourceSummary {
+    fn secret_row_handles_missing_optional_fields() {
+        let row = SecretRow::from_summary(&ResourceSummary {
             name: "minimal".to_owned(),
             namespace: Some("default".to_owned()),
-            kind: "CronJob".to_owned(),
+            kind: "Secret".to_owned(),
             status: None,
             raw: serde_json::json!({"metadata": {"name": "minimal", "namespace": "default"}}),
         });
 
-        assert_eq!(row.schedule, "N/A");
-        assert_eq!(row.suspend, "N/A");
-        assert_eq!(row.active, "0");
-        assert_eq!(row.last_schedule, "N/A");
-        assert_eq!(row.last_success, "N/A");
-        assert_eq!(row.concurrency, "N/A");
+        assert_eq!(row.secret_type, "Opaque");
+        assert_eq!(row.data_count, "0");
+        assert_eq!(row.immutable, "N/A");
+        assert_eq!(row.keys, "N/A");
+        assert_eq!(row.age, "N/A");
     }
 
     #[test]
-    fn cron_job_rows_filter_by_multiple_fields_case_insensitively() {
+    fn secret_rows_filter_by_fields_case_insensitively() {
         let rows = vec![
-            CronJobRow::from_summary(&cron_job_summary()),
-            CronJobRow::from_summary(&cron_job_summary_with_name("production", "worker")),
+            SecretRow::from_summary(&secret_summary()),
+            SecretRow::from_summary(&secret_summary_with_name("production", "worker-secret")),
         ];
 
-        assert_eq!(filter_cron_job_rows(&rows, "BACKUP").len(), 1);
-        assert_eq!(filter_cron_job_rows(&rows, "PRODUCTION").len(), 1);
-        assert_eq!(filter_cron_job_rows(&rows, "FORBID").len(), 2);
-        assert_eq!(filter_cron_job_rows(&rows, "*/5").len(), 2);
+        assert_eq!(filter_secret_rows(&rows, "APP-SECRET").len(), 1);
+        assert_eq!(filter_secret_rows(&rows, "PRODUCTION").len(), 1);
+        assert_eq!(filter_secret_rows(&rows, "TLS.CRT").len(), 2);
+        assert_eq!(filter_secret_rows(&rows, "kubernetes.io/TLS").len(), 2);
     }
 
     #[test]
-    fn cron_job_rows_are_sorted_by_namespace_and_name() {
-        let rows = cron_job_rows_from_list(&[
-            cron_job_summary_with_name("zeta", "worker"),
-            cron_job_summary_with_name("default", "backup"),
-            cron_job_summary_with_name("default", "archive"),
+    fn secret_rows_are_sorted_by_namespace_and_name() {
+        let rows = secret_rows_from_list(&[
+            secret_summary_with_name("zeta", "worker"),
+            secret_summary_with_name("default", "api-b"),
+            secret_summary_with_name("default", "api-a"),
         ]);
 
         let keys = rows.into_iter().map(|row| row.key).collect::<Vec<_>>();
-        assert_eq!(
-            keys,
-            vec!["default/archive", "default/backup", "zeta/worker"]
-        );
+        assert_eq!(keys, vec!["default/api-a", "default/api-b", "zeta/worker"]);
     }
 
     #[test]
-    fn cron_job_describe_extracts_details() {
-        let row = CronJobRow::from_summary(&cron_job_summary());
-        let describe = cron_job_describe_from_row(&row);
+    fn secret_describe_redacts_data_and_string_data_values() {
+        let row = SecretRow::from_summary(&secret_summary());
+        let describe = secret_describe_from_row(&row);
 
-        assert_eq!(describe.template_labels.len(), 1);
-        assert_eq!(describe.containers.len(), 1);
-        assert!(describe.labels.iter().any(|entry| entry.key == "app"));
-        assert!(
-            describe
-                .summary
-                .iter()
-                .any(|field| field.label == "Concurrency" && field.value == "Forbid")
-        );
+        assert_eq!(describe.data_keys.len(), 2);
+        assert_eq!(describe.string_data_keys.len(), 1);
+        assert!(describe.raw_yaml.contains("tls.crt"));
+        assert!(describe.raw_yaml.contains("password"));
+        assert!(describe.raw_yaml.contains(REDACTED_SECRET_VALUE));
+        assert!(!describe.raw_yaml.contains("dG9rZW4="));
+        assert!(!describe.raw_yaml.contains("plain-password"));
+    }
+
+    #[test]
+    fn redacted_secret_manifest_preserves_keys_and_replaces_values() {
+        let redacted = redacted_secret_manifest(&secret_summary().raw);
+        let yaml = full_manifest_yaml(&redacted);
+
+        assert!(yaml.contains("token"));
+        assert!(yaml.contains("password"));
+        assert!(yaml.contains(REDACTED_SECRET_VALUE));
+        assert!(!yaml.contains("dG9rZW4="));
+        assert!(!yaml.contains("plain-password"));
     }
 
     #[test]
     fn stale_resource_events_do_not_replace_current_rows() {
-        let mut panel = CronJobResourcePanel::default();
+        let mut panel = SecretResourcePanel::default();
         let cluster_id = ClusterId::new("local");
-        let first = panel.request_cronjobs(cluster_id.clone());
-        let second = panel.request_cronjobs(cluster_id);
+        let first = panel.request_secrets(cluster_id.clone());
+        let second = panel.request_secrets(cluster_id);
 
         panel.apply_event(ResourceUiEvent::ResourcesLoaded {
             request: first,
             result: Ok(ResourceList {
-                items: vec![cron_job_summary_with_name("default", "stale")],
+                items: vec![secret_summary_with_name("default", "stale")],
                 continue_token: None,
             }),
         });
@@ -1130,25 +981,25 @@ mod tests {
         panel.apply_event(ResourceUiEvent::ResourcesLoaded {
             request: second,
             result: Ok(ResourceList {
-                items: vec![cron_job_summary()],
+                items: vec![secret_summary()],
                 continue_token: None,
             }),
         });
 
-        assert_eq!(panel.rows[0].name, "backup");
+        assert_eq!(panel.rows[0].name, "app-secret");
     }
 
     #[test]
     fn stale_watch_events_do_not_replace_current_rows() {
-        let mut panel = CronJobResourcePanel::default();
+        let mut panel = SecretResourcePanel::default();
         let cluster_id = ClusterId::new("local");
-        let first = panel.request_cron_job_watch(cluster_id.clone());
-        let second = panel.request_cron_job_watch(cluster_id);
+        let first = panel.request_secret_watch(cluster_id.clone());
+        let second = panel.request_secret_watch(cluster_id);
 
         panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
             request: first,
             result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
-                items: vec![cron_job_summary_with_name("default", "stale")],
+                items: vec![secret_summary_with_name("default", "stale")],
                 continue_token: None,
             })),
         });
@@ -1157,17 +1008,17 @@ mod tests {
         panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
             request: second,
             result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
-                items: vec![cron_job_summary()],
+                items: vec![secret_summary()],
                 continue_token: None,
             })),
         });
 
-        assert_eq!(panel.rows[0].name, "backup");
+        assert_eq!(panel.rows[0].name, "app-secret");
     }
 
     #[test]
     fn namespace_watch_events_from_shared_request_update_selector() {
-        let mut panel = CronJobResourcePanel::default();
+        let mut panel = SecretResourcePanel::default();
         panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
             request: ResourceWatchRequest {
                 request_id: 42,
@@ -1183,49 +1034,32 @@ mod tests {
         assert_eq!(panel.namespaces, vec!["production".to_owned()]);
     }
 
-    fn cron_job_summary() -> ResourceSummary {
-        cron_job_summary_with_name("default", "backup")
+    fn secret_summary() -> ResourceSummary {
+        secret_summary_with_name("default", "app-secret")
     }
 
-    fn cron_job_summary_with_name(namespace: &str, name: &str) -> ResourceSummary {
+    fn secret_summary_with_name(namespace: &str, name: &str) -> ResourceSummary {
         ResourceSummary {
             name: name.to_owned(),
             namespace: Some(namespace.to_owned()),
-            kind: "CronJob".to_owned(),
+            kind: "Secret".to_owned(),
             status: None,
             raw: serde_json::json!({
                 "metadata": {
                     "name": name,
                     "namespace": namespace,
                     "creationTimestamp": "2026-05-18T10:00:00Z",
-                    "labels": {"app": name}
+                    "labels": {"app": "api"},
+                    "annotations": {"owner": "platform"}
                 },
-                "spec": {
-                    "schedule": "*/5 * * * *",
-                    "suspend": false,
-                    "concurrencyPolicy": "Forbid",
-                    "successfulJobsHistoryLimit": 3,
-                    "failedJobsHistoryLimit": 1,
-                    "jobTemplate": {
-                        "spec": {
-                            "template": {
-                                "metadata": {"labels": {"job-name": name}},
-                                "spec": {
-                                    "containers": [
-                                        {"name": name, "image": "ghcr.io/example/backup:1.0.0"}
-                                    ]
-                                }
-                            }
-                        }
-                    }
+                "type": "kubernetes.io/tls",
+                "immutable": true,
+                "data": {
+                    "token": "dG9rZW4=",
+                    "tls.crt": "Y2VydA=="
                 },
-                "status": {
-                    "active": [
-                        {"name": "backup-1"},
-                        {"name": "backup-2"}
-                    ],
-                    "lastScheduleTime": "2026-05-18T10:00:00Z",
-                    "lastSuccessfulTime": "2026-05-18T09:55:00Z"
+                "stringData": {
+                    "password": "plain-password"
                 }
             }),
         }

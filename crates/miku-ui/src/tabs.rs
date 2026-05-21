@@ -7,11 +7,11 @@ use miku_api::{
 };
 
 use crate::resource_panel::{
-    CronJobResourcePanel, CustomResourcesPanel, DaemonSetResourcePanel, DeploymentResourcePanel,
-    EventResourcePanel, JobResourcePanel, NamespaceResourcePanel, NodeResourcePanel,
-    PodAttachInputRequest, PodAttachRequest, PodLogRequest, PodResourcePanel,
+    ConfigMapResourcePanel, CronJobResourcePanel, CustomResourcesPanel, DaemonSetResourcePanel,
+    DeploymentResourcePanel, EventResourcePanel, JobResourcePanel, NamespaceResourcePanel,
+    NodeResourcePanel, PodAttachInputRequest, PodAttachRequest, PodLogRequest, PodResourcePanel,
     ReplicaSetResourcePanel, ResourceActionRequest, ResourceLoadRequest, ResourceWatchRequest,
-    StatefulSetResourcePanel,
+    SecretResourcePanel, StatefulSetResourcePanel,
 };
 use crate::resources::{RESOURCE_CATEGORIES, ResourceNavItem};
 use crate::state::{AppState, ClusterConnectionState};
@@ -41,6 +41,7 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) selected_resource: Option<ResourceNavItem>,
     pub(crate) selected_cluster_id: Option<miku_core::ClusterId>,
     pub(crate) cluster_status_panel: Option<&'a mut ClusterStatusPanel>,
+    pub(crate) config_map_resource_panel: Option<&'a mut ConfigMapResourcePanel>,
     pub(crate) cron_job_resource_panel: Option<&'a mut CronJobResourcePanel>,
     pub(crate) daemon_set_resource_panel: Option<&'a mut DaemonSetResourcePanel>,
     pub(crate) deployment_resource_panel: Option<&'a mut DeploymentResourcePanel>,
@@ -50,6 +51,7 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) node_resource_panel: Option<&'a mut NodeResourcePanel>,
     pub(crate) pod_resource_panel: Option<&'a mut PodResourcePanel>,
     pub(crate) replica_set_resource_panel: Option<&'a mut ReplicaSetResourcePanel>,
+    pub(crate) secret_resource_panel: Option<&'a mut SecretResourcePanel>,
     pub(crate) stateful_set_resource_panel: Option<&'a mut StatefulSetResourcePanel>,
     pub(crate) custom_resources_panel: Option<&'a mut CustomResourcesPanel>,
     pub(crate) status_load_requests: Vec<ClusterStatusLoadRequest>,
@@ -151,7 +153,17 @@ impl TabViewer for AppTabViewer<'_> {
                 }
             }
             AppTab::Resource(resource) => {
-                if resource.name == "Cron Jobs" {
+                if resource.name == "Config Maps" {
+                    if let Some(panel) = self.config_map_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("ConfigMap resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Cron Jobs" {
                     if let Some(panel) = self.cron_job_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
                         self.resource_load_requests.extend(requests.loads);
@@ -244,6 +256,16 @@ impl TabViewer for AppTabViewer<'_> {
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("ReplicaSet resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Secrets" {
+                    if let Some(panel) = self.secret_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("Secret resource panel is unavailable.");
                         });
                     }
                 } else if resource.name == "Stateful Sets" {

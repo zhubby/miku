@@ -94,12 +94,14 @@ impl JobResourcePanel {
                     }
                 }
                 ResourceLoadKind::Nodes
+                | ResourceLoadKind::ConfigMaps { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::ReplicaSets { .. }
+                | ResourceLoadKind::Secrets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
@@ -131,12 +133,14 @@ impl JobResourcePanel {
                     }
                 }
                 ResourceLoadKind::Nodes
+                | ResourceLoadKind::ConfigMaps { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::ReplicaSets { .. }
+                | ResourceLoadKind::Secrets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },

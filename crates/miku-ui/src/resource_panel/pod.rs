@@ -122,12 +122,14 @@ impl PodResourcePanel {
                     }
                 }
                 ResourceLoadKind::Nodes
+                | ResourceLoadKind::ConfigMaps { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::Jobs { .. }
                 | ResourceLoadKind::ReplicaSets { .. }
+                | ResourceLoadKind::Secrets { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
@@ -258,12 +260,14 @@ impl PodResourcePanel {
                     }
                 }
                 ResourceLoadKind::Nodes
+                | ResourceLoadKind::ConfigMaps { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::Jobs { .. }
                 | ResourceLoadKind::ReplicaSets { .. }
+                | ResourceLoadKind::Secrets { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },

@@ -6,6 +6,7 @@ use miku_api::{
 use miku_core::{ClusterId, ResourceRef};
 
 mod components;
+mod config_map;
 mod cron_job;
 mod custom_resources;
 mod daemon_set;
@@ -16,8 +17,10 @@ mod namespace;
 mod node;
 mod pod;
 mod replica_set;
+mod secret;
 mod stateful_set;
 
+pub(crate) use config_map::ConfigMapResourcePanel;
 pub(crate) use cron_job::CronJobResourcePanel;
 pub(crate) use custom_resources::CustomResourcesPanel;
 pub(crate) use daemon_set::DaemonSetResourcePanel;
@@ -28,6 +31,7 @@ pub(crate) use namespace::NamespaceResourcePanel;
 pub(crate) use node::NodeResourcePanel;
 pub(crate) use pod::PodResourcePanel;
 pub(crate) use replica_set::ReplicaSetResourcePanel;
+pub(crate) use secret::SecretResourcePanel;
 pub(crate) use stateful_set::StatefulSetResourcePanel;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -98,12 +102,14 @@ pub(crate) struct ResourcePanelRequests {
 pub(crate) enum ResourceLoadKind {
     Namespaces,
     Nodes,
+    ConfigMaps { namespace: Option<String> },
     Events { namespace: Option<String> },
     CronJobs { namespace: Option<String> },
     DaemonSets { namespace: Option<String> },
     Deployments { namespace: Option<String> },
     Jobs { namespace: Option<String> },
     ReplicaSets { namespace: Option<String> },
+    Secrets { namespace: Option<String> },
     StatefulSets { namespace: Option<String> },
     Pods { namespace: Option<String> },
     CustomResourceDefinitions,
@@ -171,6 +177,7 @@ impl ResourceWatchRequest {
         let kind = match &self.kind {
             ResourceLoadKind::Namespaces => ResourceLoadKind::Namespaces,
             ResourceLoadKind::Nodes => ResourceLoadKind::Nodes,
+            ResourceLoadKind::ConfigMaps { .. } => ResourceLoadKind::ConfigMaps { namespace: None },
             ResourceLoadKind::Events { .. } => ResourceLoadKind::Events { namespace: None },
             ResourceLoadKind::CronJobs { .. } => ResourceLoadKind::CronJobs { namespace: None },
             ResourceLoadKind::DaemonSets { .. } => ResourceLoadKind::DaemonSets { namespace: None },
@@ -184,6 +191,7 @@ impl ResourceWatchRequest {
             ResourceLoadKind::ReplicaSets { .. } => {
                 ResourceLoadKind::ReplicaSets { namespace: None }
             }
+            ResourceLoadKind::Secrets { .. } => ResourceLoadKind::Secrets { namespace: None },
             ResourceLoadKind::Pods { .. } => ResourceLoadKind::Pods { namespace: None },
             ResourceLoadKind::CustomResourceDefinitions => {
                 ResourceLoadKind::CustomResourceDefinitions
@@ -349,6 +357,14 @@ fn resource_query_for_kind(
             cluster_id,
             ResourceRef::core("v1", "nodes").cluster_scoped(),
         ),
+        ResourceLoadKind::ConfigMaps { namespace } => {
+            let mut query =
+                miku_api::ResourceQuery::new(cluster_id, ResourceRef::core("v1", "configmaps"));
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
         ResourceLoadKind::Events { namespace } => {
             let mut query =
                 miku_api::ResourceQuery::new(cluster_id, ResourceRef::core("v1", "events"));
@@ -412,6 +428,14 @@ fn resource_query_for_kind(
                 cluster_id,
                 ResourceRef::grouped("apps", "v1", "replicasets"),
             );
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
+        ResourceLoadKind::Secrets { namespace } => {
+            let mut query =
+                miku_api::ResourceQuery::new(cluster_id, ResourceRef::core("v1", "secrets"));
             if let Some(namespace) = namespace {
                 query = query.namespace(namespace.clone());
             }
@@ -484,6 +508,54 @@ mod tests {
         );
 
         assert_eq!(query.resource, ResourceRef::core("v1", "events"));
+        assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn config_maps_query_uses_core_api_without_namespace_by_default() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::ConfigMaps { namespace: None },
+        );
+
+        assert_eq!(query.resource, ResourceRef::core("v1", "configmaps"));
+        assert_eq!(query.namespace, None);
+    }
+
+    #[test]
+    fn config_maps_query_uses_selected_namespace() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::ConfigMaps {
+                namespace: Some("production".to_owned()),
+            },
+        );
+
+        assert_eq!(query.resource, ResourceRef::core("v1", "configmaps"));
+        assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn secrets_query_uses_core_api_without_namespace_by_default() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::Secrets { namespace: None },
+        );
+
+        assert_eq!(query.resource, ResourceRef::core("v1", "secrets"));
+        assert_eq!(query.namespace, None);
+    }
+
+    #[test]
+    fn secrets_query_uses_selected_namespace() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::Secrets {
+                namespace: Some("production".to_owned()),
+            },
+        );
+
+        assert_eq!(query.resource, ResourceRef::core("v1", "secrets"));
         assert_eq!(query.namespace.as_deref(), Some("production"));
     }
 

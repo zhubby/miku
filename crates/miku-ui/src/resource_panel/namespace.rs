@@ -71,6 +71,7 @@ impl NamespaceResourcePanel {
                     }
                 }
                 ResourceLoadKind::Nodes
+                | ResourceLoadKind::ConfigMaps { .. }
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::DaemonSets { .. }
@@ -78,6 +79,7 @@ impl NamespaceResourcePanel {
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::Jobs { .. }
                 | ResourceLoadKind::ReplicaSets { .. }
+                | ResourceLoadKind::Secrets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
@@ -96,6 +98,7 @@ impl NamespaceResourcePanel {
                     }
                 }
                 ResourceLoadKind::Nodes
+                | ResourceLoadKind::ConfigMaps { .. }
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::DaemonSets { .. }
@@ -103,6 +106,7 @@ impl NamespaceResourcePanel {
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::Jobs { .. }
                 | ResourceLoadKind::ReplicaSets { .. }
+                | ResourceLoadKind::Secrets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
