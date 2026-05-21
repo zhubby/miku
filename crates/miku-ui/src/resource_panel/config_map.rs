@@ -121,6 +121,13 @@ impl ConfigMapResourcePanel {
                 | ResourceLoadKind::RoleBindings { .. }
                 | ResourceLoadKind::Roles { .. }
                 | ResourceLoadKind::ServiceAccounts { .. }
+                | ResourceLoadKind::HorizontalPodAutoscalers { .. }
+                | ResourceLoadKind::PodDisruptionBudgets { .. }
+                | ResourceLoadKind::PriorityClasses
+                | ResourceLoadKind::RuntimeClasses
+                | ResourceLoadKind::Leases { .. }
+                | ResourceLoadKind::MutatingWebhookConfigurations
+                | ResourceLoadKind::ValidatingWebhookConfigurations
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
             ResourceUiEvent::ResourceWatchUpdated { request, result } => match request.kind {
@@ -176,6 +183,13 @@ impl ConfigMapResourcePanel {
                 | ResourceLoadKind::RoleBindings { .. }
                 | ResourceLoadKind::Roles { .. }
                 | ResourceLoadKind::ServiceAccounts { .. }
+                | ResourceLoadKind::HorizontalPodAutoscalers { .. }
+                | ResourceLoadKind::PodDisruptionBudgets { .. }
+                | ResourceLoadKind::PriorityClasses
+                | ResourceLoadKind::RuntimeClasses
+                | ResourceLoadKind::Leases { .. }
+                | ResourceLoadKind::MutatingWebhookConfigurations
+                | ResourceLoadKind::ValidatingWebhookConfigurations
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
             ResourceUiEvent::ResourceActionCompleted { .. }

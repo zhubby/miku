@@ -32,26 +32,33 @@ fn kind_for_plural(plural: &str) -> String {
         "services" => "Service".to_owned(),
         "endpoints" => "Endpoints".to_owned(),
         "endpointslices" => "EndpointSlice".to_owned(),
+        "horizontalpodautoscalers" => "HorizontalPodAutoscaler".to_owned(),
         "cronjobs" => "CronJob".to_owned(),
         "daemonsets" => "DaemonSet".to_owned(),
         "deployments" => "Deployment".to_owned(),
         "jobs" => "Job".to_owned(),
+        "leases" => "Lease".to_owned(),
         "replicasets" => "ReplicaSet".to_owned(),
         "statefulsets" => "StatefulSet".to_owned(),
         "namespaces" => "Namespace".to_owned(),
         "configmaps" => "ConfigMap".to_owned(),
         "limitranges" => "LimitRange".to_owned(),
+        "mutatingwebhookconfigurations" => "MutatingWebhookConfiguration".to_owned(),
         "ingresses" => "Ingress".to_owned(),
         "ingressclasses" => "IngressClass".to_owned(),
         "networkpolicies" => "NetworkPolicy".to_owned(),
         "persistentvolumeclaims" => "PersistentVolumeClaim".to_owned(),
         "persistentvolumes" => "PersistentVolume".to_owned(),
+        "poddisruptionbudgets" => "PodDisruptionBudget".to_owned(),
+        "priorityclasses" => "PriorityClass".to_owned(),
         "resourcequotas" => "ResourceQuota".to_owned(),
         "rolebindings" => "RoleBinding".to_owned(),
         "roles" => "Role".to_owned(),
         "secrets" => "Secret".to_owned(),
         "serviceaccounts" => "ServiceAccount".to_owned(),
+        "runtimeclasses" => "RuntimeClass".to_owned(),
         "storageclasses" => "StorageClass".to_owned(),
+        "validatingwebhookconfigurations" => "ValidatingWebhookConfiguration".to_owned(),
         "customresourcedefinitions" => "CustomResourceDefinition".to_owned(),
         value => value
             .trim_end_matches('s')
@@ -429,6 +436,61 @@ mod tests {
                 ),
                 "ClusterRoleBinding",
                 "clusterrolebindings",
+            ),
+        ];
+
+        for (resource, kind, plural) in cases {
+            let api_resource = api_resource(&resource);
+            assert_eq!(api_resource.kind, kind);
+            assert_eq!(api_resource.plural, plural);
+        }
+    }
+
+    #[test]
+    fn api_resource_uses_known_kind_for_remaining_config_resources() {
+        let cases = [
+            (
+                miku_core::ResourceRef::grouped("autoscaling", "v2", "horizontalpodautoscalers"),
+                "HorizontalPodAutoscaler",
+                "horizontalpodautoscalers",
+            ),
+            (
+                miku_core::ResourceRef::grouped("policy", "v1", "poddisruptionbudgets"),
+                "PodDisruptionBudget",
+                "poddisruptionbudgets",
+            ),
+            (
+                miku_core::ResourceRef::grouped("coordination.k8s.io", "v1", "leases"),
+                "Lease",
+                "leases",
+            ),
+            (
+                miku_core::ResourceRef::grouped("scheduling.k8s.io", "v1", "priorityclasses"),
+                "PriorityClass",
+                "priorityclasses",
+            ),
+            (
+                miku_core::ResourceRef::grouped("node.k8s.io", "v1", "runtimeclasses"),
+                "RuntimeClass",
+                "runtimeclasses",
+            ),
+            (
+                miku_core::ResourceRef::grouped(
+                    "admissionregistration.k8s.io",
+                    "v1",
+                    "mutatingwebhookconfigurations",
+                ),
+                "MutatingWebhookConfiguration",
+                "mutatingwebhookconfigurations",
+            ),
+            (
+                miku_core::ResourceRef::grouped(
+                    "admissionregistration.k8s.io",
+                    "v1",
+                    "validatingwebhookconfigurations",
+                ),
+                "ValidatingWebhookConfiguration",
+                "validatingwebhookconfigurations",
             ),
         ];
 

@@ -1,0 +1,1336 @@
+use eframe::egui::{self, TextWrapMode};
+use egui_extras::{Column, TableBuilder};
+use miku_api::ResourceSummary;
+use miku_core::ClusterId;
+
+#[cfg(test)]
+use super::ResourceLoadRequest;
+use super::components::ResourceYamlViewDialog;
+use super::{
+    LoadStatus, ResourceLoadKind, ResourcePanelRequests, ResourceUiEvent, ResourceWatchRequest,
+    namespaces_from_list,
+};
+use crate::time::human_age_from_rfc3339;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ConfigResourceKind {
+    HorizontalPodAutoscaler,
+    PodDisruptionBudget,
+    PriorityClass,
+    RuntimeClass,
+    Lease,
+    MutatingWebhookConfiguration,
+    ValidatingWebhookConfiguration,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ConfigResourcePanel {
+    kind: ConfigResourceKind,
+    namespace_filter: Option<String>,
+    search_text: String,
+    namespaces: Vec<String>,
+    namespace_status: LoadStatus,
+    row_status: LoadStatus,
+    rows: Vec<ConfigRow>,
+    next_request_id: u64,
+    namespace_request_id: Option<u64>,
+    row_request_id: Option<u64>,
+    namespace_watch_request_id: Option<u64>,
+    row_watch_request_id: Option<u64>,
+    last_cluster_id: Option<ClusterId>,
+    describe_dialog: Option<ConfigDescribeDialog>,
+    view_dialog: Option<ConfigViewDialog>,
+}
+
+impl ConfigResourcePanel {
+    pub(crate) fn new(kind: ConfigResourceKind) -> Self {
+        Self {
+            kind,
+            namespace_filter: None,
+            search_text: String::new(),
+            namespaces: Vec::new(),
+            namespace_status: LoadStatus::Idle,
+            row_status: LoadStatus::Idle,
+            rows: Vec::new(),
+            next_request_id: 0,
+            namespace_request_id: None,
+            row_request_id: None,
+            namespace_watch_request_id: None,
+            row_watch_request_id: None,
+            last_cluster_id: None,
+            describe_dialog: None,
+            view_dialog: None,
+        }
+    }
+
+    pub(crate) fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        cluster_id: Option<&ClusterId>,
+    ) -> ResourcePanelRequests {
+        let mut requests = ResourcePanelRequests::default();
+        let Some(cluster_id) = cluster_id else {
+            ui.centered_and_justified(|ui| {
+                ui.label(format!("Select a cluster to load {}.", self.kind.title()));
+            });
+            return requests;
+        };
+
+        self.reset_for_cluster_change(cluster_id);
+        if self.kind.is_namespaced() && matches!(self.namespace_status, LoadStatus::Idle) {
+            requests
+                .watches
+                .push(self.request_namespace_watch(cluster_id.clone()));
+        }
+        if matches!(self.row_status, LoadStatus::Idle) {
+            requests
+                .watches
+                .push(self.request_resource_watch(cluster_id.clone()));
+        }
+
+        self.show_toolbar(ui, cluster_id, &mut requests);
+        ui.separator();
+        self.show_body(ui);
+        self.show_describe_dialog(ui.ctx());
+        self.show_view_dialog(ui.ctx());
+        requests
+    }
+
+    pub(crate) fn apply_event(&mut self, event: ResourceUiEvent) {
+        match event {
+            ResourceUiEvent::ResourcesLoaded { request, result } => {
+                if matches!(request.kind, ResourceLoadKind::Namespaces) {
+                    self.apply_namespaces_load(request.request_id, result);
+                } else if self.kind.matches_load_kind(&request.kind) {
+                    self.apply_rows_load(request.request_id, result);
+                }
+            }
+            ResourceUiEvent::ResourceWatchUpdated { request, result } => {
+                if matches!(request.kind, ResourceLoadKind::Namespaces) {
+                    self.apply_namespaces_watch(request.request_id, result);
+                } else if self.kind.matches_load_kind(&request.kind) {
+                    self.apply_rows_watch(request.request_id, result);
+                }
+            }
+            ResourceUiEvent::ResourceActionCompleted { .. }
+            | ResourceUiEvent::PodLogsLoaded { .. }
+            | ResourceUiEvent::PodAttachConnected { .. }
+            | ResourceUiEvent::PodAttachOutput { .. } => {}
+        }
+    }
+
+    fn apply_namespaces_load(
+        &mut self,
+        request_id: u64,
+        result: Result<miku_api::ResourceList, String>,
+    ) {
+        if self.namespace_request_id == Some(request_id) {
+            self.namespace_request_id = None;
+        }
+        match result {
+            Ok(list) => {
+                self.namespaces = namespaces_from_list(&list);
+                self.namespace_status = LoadStatus::Loaded;
+            }
+            Err(error) => self.namespace_status = LoadStatus::Error(error),
+        }
+    }
+
+    fn apply_rows_load(&mut self, request_id: u64, result: Result<miku_api::ResourceList, String>) {
+        if self.row_request_id != Some(request_id) {
+            return;
+        }
+        self.row_request_id = None;
+        match result {
+            Ok(list) => {
+                self.rows = self.kind.rows_from_list(&list.items);
+                self.row_status = LoadStatus::Loaded;
+            }
+            Err(error) => self.row_status = LoadStatus::Error(error),
+        }
+    }
+
+    fn apply_namespaces_watch(
+        &mut self,
+        request_id: u64,
+        result: Result<miku_api::ResourceEvent, String>,
+    ) {
+        if self.namespace_watch_request_id == Some(request_id) {
+            self.namespace_watch_request_id = None;
+        }
+        match result {
+            Ok(miku_api::ResourceEvent::Snapshot(list)) => {
+                self.namespaces = namespaces_from_list(&list);
+                self.namespace_status = LoadStatus::Loaded;
+            }
+            Ok(_) => {}
+            Err(error) => self.namespace_status = LoadStatus::Error(error),
+        }
+    }
+
+    fn apply_rows_watch(
+        &mut self,
+        request_id: u64,
+        result: Result<miku_api::ResourceEvent, String>,
+    ) {
+        if self.row_watch_request_id != Some(request_id) {
+            return;
+        }
+        match result {
+            Ok(miku_api::ResourceEvent::Snapshot(list)) => {
+                self.rows = self.kind.rows_from_list(&list.items);
+                self.row_status = LoadStatus::Loaded;
+            }
+            Ok(_) => {}
+            Err(error) => self.row_status = LoadStatus::Error(error),
+        }
+    }
+
+    fn reset_for_cluster_change(&mut self, cluster_id: &ClusterId) {
+        if self.last_cluster_id.as_ref() == Some(cluster_id) {
+            return;
+        }
+        self.last_cluster_id = Some(cluster_id.clone());
+        self.namespace_filter = None;
+        self.search_text.clear();
+        self.namespaces.clear();
+        self.rows.clear();
+        self.namespace_status = LoadStatus::Idle;
+        self.row_status = LoadStatus::Idle;
+        self.namespace_request_id = None;
+        self.row_request_id = None;
+        self.namespace_watch_request_id = None;
+        self.row_watch_request_id = None;
+        self.describe_dialog = None;
+        self.view_dialog = None;
+    }
+
+    fn show_toolbar(
+        &mut self,
+        ui: &mut egui::Ui,
+        cluster_id: &ClusterId,
+        requests: &mut ResourcePanelRequests,
+    ) {
+        ui.horizontal(|ui| {
+            let mut namespace_changed = false;
+            if self.kind.is_namespaced() {
+                egui::ComboBox::from_id_salt((self.kind.id(), "namespace_filter"))
+                    .selected_text(
+                        self.namespace_filter
+                            .as_deref()
+                            .unwrap_or("All namespaces")
+                            .to_owned(),
+                    )
+                    .width(220.0)
+                    .show_ui(ui, |ui| {
+                        namespace_changed |= ui
+                            .selectable_value(&mut self.namespace_filter, None, "All namespaces")
+                            .changed();
+                        for namespace in &self.namespaces {
+                            namespace_changed |= ui
+                                .selectable_value(
+                                    &mut self.namespace_filter,
+                                    Some(namespace.clone()),
+                                    namespace,
+                                )
+                                .changed();
+                        }
+                    });
+            }
+            ui.add(
+                egui::TextEdit::singleline(&mut self.search_text)
+                    .hint_text(format!("Search {}...", self.kind.title()))
+                    .desired_width(280.0),
+            );
+            if ui
+                .button(egui_phosphor::regular::ARROWS_CLOCKWISE)
+                .on_hover_text("Refresh")
+                .clicked()
+            {
+                if self.kind.is_namespaced() {
+                    requests
+                        .watches
+                        .push(self.request_namespace_watch(cluster_id.clone()));
+                }
+                requests
+                    .watches
+                    .push(self.request_resource_watch(cluster_id.clone()));
+            }
+            ui.separator();
+            ui.label(format!("{} items", self.filtered_row_count()));
+            if matches!(self.row_status, LoadStatus::Loading) {
+                ui.label("Loading...");
+            }
+            if matches!(self.namespace_status, LoadStatus::Error(_)) && self.kind.is_namespaced() {
+                ui.colored_label(ui.visuals().error_fg_color, "Namespaces unavailable");
+            }
+            if namespace_changed {
+                requests
+                    .watches
+                    .push(self.request_resource_watch(cluster_id.clone()));
+            }
+        });
+    }
+
+    fn show_body(&mut self, ui: &mut egui::Ui) {
+        match &self.row_status {
+            LoadStatus::Idle | LoadStatus::Loading if self.rows.is_empty() => {
+                ui.centered_and_justified(|ui| {
+                    ui.label(format!("Loading {}...", self.kind.title()));
+                });
+            }
+            LoadStatus::Error(error) => {
+                ui.centered_and_justified(|ui| {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                });
+            }
+            _ => {
+                let indices = self.filtered_row_indices();
+                if indices.is_empty() {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(format!(
+                            "No {} match the current filters.",
+                            self.kind.title()
+                        ));
+                    });
+                    return;
+                }
+                let action = show_config_table(ui, self.kind, &self.rows, indices);
+                self.apply_table_action(action);
+            }
+        }
+    }
+
+    fn apply_table_action(&mut self, action: Option<ConfigTableAction>) {
+        match action {
+            Some(ConfigTableAction::Describe { key }) => {
+                let Some((name, describe)) = self
+                    .row_by_key(&key)
+                    .map(|row| (row.name.clone(), describe_from_row(self.kind, row)))
+                else {
+                    return;
+                };
+                self.describe_dialog = Some(ConfigDescribeDialog {
+                    key,
+                    name,
+                    describe,
+                });
+            }
+            Some(ConfigTableAction::View { key }) => {
+                let Some((name, yaml)) = self
+                    .row_by_key(&key)
+                    .map(|row| (row.name.clone(), full_manifest_yaml(&row.raw)))
+                else {
+                    return;
+                };
+                self.view_dialog = Some(ConfigViewDialog { key, name, yaml });
+            }
+            None => {}
+        }
+    }
+
+    fn show_describe_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.describe_dialog.as_ref() else {
+            return;
+        };
+        let mut open = true;
+        egui::Window::new(format!("Describe {}", dialog.name))
+            .id(egui::Id::new((self.kind.id(), "describe", &dialog.key)))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .open(&mut open)
+            .collapsible(false)
+            .fixed_size([860.0, 580.0])
+            .show(ctx, |ui| {
+                egui::ScrollArea::both()
+                    .id_salt((self.kind.id(), "describe_content", &dialog.key))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_min_width(1120.0);
+                        ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
+                        show_config_describe(ui, &dialog.describe);
+                    });
+            });
+        if !open {
+            self.describe_dialog = None;
+        }
+    }
+
+    fn show_view_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.view_dialog.as_ref() else {
+            return;
+        };
+        let mut open = true;
+        let response = ResourceYamlViewDialog {
+            id: egui::Id::new((self.kind.id(), "view", &dialog.key)),
+            title: format!("View {}", dialog.name),
+            yaml: &dialog.yaml,
+            open: &mut open,
+        }
+        .show(ctx);
+        if !response.open {
+            self.view_dialog = None;
+        }
+    }
+
+    #[cfg(test)]
+    fn request_resources(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
+        let request = ResourceLoadRequest {
+            request_id: self.allocate_request_id(),
+            cluster_id,
+            kind: self.kind.load_kind(self.namespace_filter.clone()),
+        };
+        self.row_request_id = Some(request.request_id);
+        self.row_status = LoadStatus::Loading;
+        request
+    }
+
+    fn request_namespace_watch(&mut self, cluster_id: ClusterId) -> ResourceWatchRequest {
+        let request = ResourceWatchRequest {
+            request_id: self.allocate_request_id(),
+            cluster_id,
+            kind: ResourceLoadKind::Namespaces,
+        };
+        self.namespace_watch_request_id = Some(request.request_id);
+        self.namespace_status = LoadStatus::Loading;
+        request
+    }
+
+    fn request_resource_watch(&mut self, cluster_id: ClusterId) -> ResourceWatchRequest {
+        let request = ResourceWatchRequest {
+            request_id: self.allocate_request_id(),
+            cluster_id,
+            kind: self.kind.load_kind(self.namespace_filter.clone()),
+        };
+        self.row_watch_request_id = Some(request.request_id);
+        self.row_status = LoadStatus::Loading;
+        request
+    }
+
+    fn allocate_request_id(&mut self) -> u64 {
+        self.next_request_id += 1;
+        self.next_request_id
+    }
+
+    fn filtered_row_count(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|row| row_matches_search(row, &self.search_text))
+            .count()
+    }
+
+    fn filtered_row_indices(&self) -> Vec<usize> {
+        self.rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| row_matches_search(row, &self.search_text).then_some(index))
+            .collect()
+    }
+
+    fn row_by_key(&self, key: &str) -> Option<&ConfigRow> {
+        self.rows.iter().find(|row| row.key == key)
+    }
+}
+
+impl ConfigResourceKind {
+    fn id(self) -> &'static str {
+        match self {
+            Self::HorizontalPodAutoscaler => "horizontal_pod_autoscaler",
+            Self::PodDisruptionBudget => "pod_disruption_budget",
+            Self::PriorityClass => "priority_class",
+            Self::RuntimeClass => "runtime_class",
+            Self::Lease => "lease",
+            Self::MutatingWebhookConfiguration => "mutating_webhook_configuration",
+            Self::ValidatingWebhookConfiguration => "validating_webhook_configuration",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::HorizontalPodAutoscaler => "HorizontalPodAutoscalers",
+            Self::PodDisruptionBudget => "PodDisruptionBudgets",
+            Self::PriorityClass => "PriorityClasses",
+            Self::RuntimeClass => "RuntimeClasses",
+            Self::Lease => "Leases",
+            Self::MutatingWebhookConfiguration => "MutatingWebhookConfigurations",
+            Self::ValidatingWebhookConfiguration => "ValidatingWebhookConfigurations",
+        }
+    }
+
+    fn is_namespaced(self) -> bool {
+        matches!(
+            self,
+            Self::HorizontalPodAutoscaler | Self::PodDisruptionBudget | Self::Lease
+        )
+    }
+
+    fn columns(self) -> &'static [&'static str] {
+        match self {
+            Self::HorizontalPodAutoscaler => &[
+                "Name",
+                "Namespace",
+                "Reference",
+                "Targets",
+                "Min",
+                "Max",
+                "Replicas",
+                "Age",
+            ],
+            Self::PodDisruptionBudget => &[
+                "Name",
+                "Namespace",
+                "Min Available",
+                "Max Unavailable",
+                "Allowed",
+                "Current Healthy",
+                "Desired Healthy",
+                "Age",
+            ],
+            Self::PriorityClass => &[
+                "Name",
+                "Value",
+                "Global Default",
+                "Preemption Policy",
+                "Description",
+                "Age",
+            ],
+            Self::RuntimeClass => &["Name", "Handler", "Overhead", "Scheduling", "Age"],
+            Self::Lease => &[
+                "Name",
+                "Namespace",
+                "Holder",
+                "Acquire Time",
+                "Renew Time",
+                "Duration",
+                "Transitions",
+                "Age",
+            ],
+            Self::MutatingWebhookConfiguration | Self::ValidatingWebhookConfiguration => &[
+                "Name",
+                "Webhooks",
+                "Failure Policy",
+                "Side Effects",
+                "Admission Review Versions",
+                "Age",
+            ],
+        }
+    }
+
+    fn widths(self) -> &'static [f32] {
+        match self {
+            Self::HorizontalPodAutoscaler => &[240.0, 160.0, 220.0, 240.0, 80.0, 80.0, 120.0, 90.0],
+            Self::PodDisruptionBudget => &[240.0, 160.0, 130.0, 150.0, 90.0, 130.0, 130.0, 90.0],
+            Self::PriorityClass => &[260.0, 110.0, 130.0, 170.0, 360.0, 90.0],
+            Self::RuntimeClass => &[260.0, 220.0, 180.0, 260.0, 90.0],
+            Self::Lease => &[240.0, 160.0, 220.0, 220.0, 220.0, 100.0, 110.0, 90.0],
+            Self::MutatingWebhookConfiguration | Self::ValidatingWebhookConfiguration => {
+                &[300.0, 100.0, 180.0, 180.0, 260.0, 90.0]
+            }
+        }
+    }
+
+    fn load_kind(self, namespace: Option<String>) -> ResourceLoadKind {
+        match self {
+            Self::HorizontalPodAutoscaler => {
+                ResourceLoadKind::HorizontalPodAutoscalers { namespace }
+            }
+            Self::PodDisruptionBudget => ResourceLoadKind::PodDisruptionBudgets { namespace },
+            Self::PriorityClass => ResourceLoadKind::PriorityClasses,
+            Self::RuntimeClass => ResourceLoadKind::RuntimeClasses,
+            Self::Lease => ResourceLoadKind::Leases { namespace },
+            Self::MutatingWebhookConfiguration => ResourceLoadKind::MutatingWebhookConfigurations,
+            Self::ValidatingWebhookConfiguration => {
+                ResourceLoadKind::ValidatingWebhookConfigurations
+            }
+        }
+    }
+
+    fn matches_load_kind(self, kind: &ResourceLoadKind) -> bool {
+        matches!(
+            (self, kind),
+            (
+                Self::HorizontalPodAutoscaler,
+                ResourceLoadKind::HorizontalPodAutoscalers { .. }
+            ) | (
+                Self::PodDisruptionBudget,
+                ResourceLoadKind::PodDisruptionBudgets { .. }
+            ) | (Self::PriorityClass, ResourceLoadKind::PriorityClasses)
+                | (Self::RuntimeClass, ResourceLoadKind::RuntimeClasses)
+                | (Self::Lease, ResourceLoadKind::Leases { .. })
+                | (
+                    Self::MutatingWebhookConfiguration,
+                    ResourceLoadKind::MutatingWebhookConfigurations
+                )
+                | (
+                    Self::ValidatingWebhookConfiguration,
+                    ResourceLoadKind::ValidatingWebhookConfigurations
+                )
+        )
+    }
+
+    fn rows_from_list(self, items: &[ResourceSummary]) -> Vec<ConfigRow> {
+        let mut rows = items
+            .iter()
+            .map(|summary| row_from_summary(self, summary))
+            .collect::<Vec<_>>();
+        if self.is_namespaced() {
+            rows.sort_by(|left, right| {
+                left.namespace
+                    .cmp(&right.namespace)
+                    .then(left.name.cmp(&right.name))
+            });
+        } else {
+            rows.sort_by(|left, right| left.name.cmp(&right.name));
+        }
+        rows
+    }
+}
+
+fn show_config_table(
+    ui: &mut egui::Ui,
+    kind: ConfigResourceKind,
+    rows: &[ConfigRow],
+    row_indices: Vec<usize>,
+) -> Option<ConfigTableAction> {
+    let row_height = ui.spacing().interact_size.y;
+    let widths = kind.widths();
+    let table_width = widths.iter().sum::<f32>()
+        + ui.spacing().item_spacing.x * widths.len().saturating_sub(1) as f32;
+    let mut action = None;
+    egui::ScrollArea::horizontal()
+        .id_salt((kind.id(), "table_horizontal"))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.set_min_width(table_width);
+            let mut table = TableBuilder::new(ui)
+                .id_salt((kind.id(), "table"))
+                .striped(true)
+                .resizable(false)
+                .sense(egui::Sense::click())
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .min_scrolled_height(0.0);
+            for width in widths {
+                table = table.column(Column::exact(*width));
+            }
+            table
+                .header(row_height, |mut header| {
+                    for label in kind.columns() {
+                        header.col(|ui| {
+                            ui.strong(*label);
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(row_height, row_indices.len(), |mut table_row| {
+                        let Some(row) = row_indices
+                            .get(table_row.index())
+                            .and_then(|index| rows.get(*index))
+                        else {
+                            return;
+                        };
+                        for cell in &row.cells {
+                            table_row.col(|ui| {
+                                ui.label(cell);
+                            });
+                        }
+                        table_row.response().context_menu(|ui| {
+                            if ui
+                                .button(format!("{} Describe", egui_phosphor::regular::INFO))
+                                .clicked()
+                            {
+                                action = Some(ConfigTableAction::Describe {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
+                            if ui
+                                .button(format!("{} View", egui_phosphor::regular::EYE))
+                                .clicked()
+                            {
+                                action = Some(ConfigTableAction::View {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
+                        });
+                    });
+                });
+        });
+    action
+}
+
+fn row_matches_search(row: &ConfigRow, search_text: &str) -> bool {
+    let needle = search_text.trim().to_lowercase();
+    needle.is_empty() || row.search_text.contains(&needle)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ConfigRow {
+    key: String,
+    name: String,
+    namespace: String,
+    cells: Vec<String>,
+    details: Vec<(String, String)>,
+    raw: serde_json::Value,
+    search_text: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ConfigTableAction {
+    Describe { key: String },
+    View { key: String },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ConfigDescribeDialog {
+    key: String,
+    name: String,
+    describe: ConfigDescribe,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ConfigViewDialog {
+    key: String,
+    name: String,
+    yaml: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ConfigDescribe {
+    title: &'static str,
+    summary: Vec<(String, String)>,
+    labels: String,
+    annotations: String,
+    raw_yaml: String,
+}
+
+fn row_from_summary(kind: ConfigResourceKind, summary: &ResourceSummary) -> ConfigRow {
+    let raw = &summary.raw;
+    let name = value_str(raw, &["metadata", "name"])
+        .unwrap_or(&summary.name)
+        .to_owned();
+    let namespace = value_str(raw, &["metadata", "namespace"])
+        .or(summary.namespace.as_deref())
+        .unwrap_or("N/A")
+        .to_owned();
+    let age = value_str(raw, &["metadata", "creationTimestamp"])
+        .map(|timestamp| human_age_from_rfc3339(timestamp).unwrap_or_else(|| timestamp.to_owned()))
+        .unwrap_or_else(|| "N/A".to_owned());
+    let cells = match kind {
+        ConfigResourceKind::HorizontalPodAutoscaler => hpa_cells(raw, &name, &namespace, &age),
+        ConfigResourceKind::PodDisruptionBudget => pdb_cells(raw, &name, &namespace, &age),
+        ConfigResourceKind::PriorityClass => priority_class_cells(raw, &name, &age),
+        ConfigResourceKind::RuntimeClass => runtime_class_cells(raw, &name, &age),
+        ConfigResourceKind::Lease => lease_cells(raw, &name, &namespace, &age),
+        ConfigResourceKind::MutatingWebhookConfiguration
+        | ConfigResourceKind::ValidatingWebhookConfiguration => webhook_cells(raw, &name, &age),
+    };
+    let details = kind
+        .columns()
+        .iter()
+        .zip(cells.iter())
+        .map(|(label, value)| ((*label).to_owned(), value.clone()))
+        .collect::<Vec<_>>();
+    let key = if kind.is_namespaced() {
+        format!("{namespace}/{name}")
+    } else {
+        name.clone()
+    };
+    let search_text = cells.join(" ").to_lowercase();
+    ConfigRow {
+        key,
+        name,
+        namespace,
+        cells,
+        details,
+        raw: summary.raw.clone(),
+        search_text,
+    }
+}
+
+fn hpa_cells(raw: &serde_json::Value, name: &str, namespace: &str, age: &str) -> Vec<String> {
+    vec![
+        name.to_owned(),
+        namespace.to_owned(),
+        scale_target_ref(raw),
+        hpa_targets(raw),
+        value_i64(raw, &["spec", "minReplicas"])
+            .map_or_else(|| "N/A".to_owned(), |value| value.to_string()),
+        value_i64(raw, &["spec", "maxReplicas"])
+            .map_or_else(|| "N/A".to_owned(), |value| value.to_string()),
+        hpa_replicas(raw),
+        age.to_owned(),
+    ]
+}
+
+fn pdb_cells(raw: &serde_json::Value, name: &str, namespace: &str, age: &str) -> Vec<String> {
+    vec![
+        name.to_owned(),
+        namespace.to_owned(),
+        int_or_string(raw.pointer("/spec/minAvailable")),
+        int_or_string(raw.pointer("/spec/maxUnavailable")),
+        value_i64(raw, &["status", "disruptionsAllowed"])
+            .unwrap_or(0)
+            .to_string(),
+        value_i64(raw, &["status", "currentHealthy"])
+            .unwrap_or(0)
+            .to_string(),
+        value_i64(raw, &["status", "desiredHealthy"])
+            .unwrap_or(0)
+            .to_string(),
+        age.to_owned(),
+    ]
+}
+
+fn priority_class_cells(raw: &serde_json::Value, name: &str, age: &str) -> Vec<String> {
+    vec![
+        name.to_owned(),
+        value_i64(raw, &["value"]).map_or_else(|| "N/A".to_owned(), |value| value.to_string()),
+        value_bool(raw, &["globalDefault"])
+            .map_or_else(|| "N/A".to_owned(), |value| value.to_string()),
+        value_str(raw, &["preemptionPolicy"])
+            .unwrap_or("N/A")
+            .to_owned(),
+        value_str(raw, &["description"]).unwrap_or("N/A").to_owned(),
+        age.to_owned(),
+    ]
+}
+
+fn runtime_class_cells(raw: &serde_json::Value, name: &str, age: &str) -> Vec<String> {
+    vec![
+        name.to_owned(),
+        value_str(raw, &["handler"]).unwrap_or("N/A").to_owned(),
+        runtime_overhead(raw),
+        runtime_scheduling(raw),
+        age.to_owned(),
+    ]
+}
+
+fn lease_cells(raw: &serde_json::Value, name: &str, namespace: &str, age: &str) -> Vec<String> {
+    vec![
+        name.to_owned(),
+        namespace.to_owned(),
+        value_str(raw, &["spec", "holderIdentity"])
+            .unwrap_or("N/A")
+            .to_owned(),
+        value_str(raw, &["spec", "acquireTime"])
+            .unwrap_or("N/A")
+            .to_owned(),
+        value_str(raw, &["spec", "renewTime"])
+            .unwrap_or("N/A")
+            .to_owned(),
+        value_i64(raw, &["spec", "leaseDurationSeconds"])
+            .map_or_else(|| "N/A".to_owned(), |value| format!("{value}s")),
+        value_i64(raw, &["spec", "leaseTransitions"])
+            .unwrap_or(0)
+            .to_string(),
+        age.to_owned(),
+    ]
+}
+
+fn webhook_cells(raw: &serde_json::Value, name: &str, age: &str) -> Vec<String> {
+    vec![
+        name.to_owned(),
+        array_len(raw.pointer("/webhooks")).to_string(),
+        webhook_values(raw, "failurePolicy"),
+        webhook_values(raw, "sideEffects"),
+        webhook_admission_versions(raw),
+        age.to_owned(),
+    ]
+}
+
+fn scale_target_ref(raw: &serde_json::Value) -> String {
+    let kind = value_str(raw, &["spec", "scaleTargetRef", "kind"]);
+    let name = value_str(raw, &["spec", "scaleTargetRef", "name"]);
+    match (kind, name) {
+        (Some(kind), Some(name)) => format!("{kind}/{name}"),
+        (_, Some(name)) => name.to_owned(),
+        _ => "N/A".to_owned(),
+    }
+}
+
+fn hpa_targets(raw: &serde_json::Value) -> String {
+    let Some(metrics) = raw
+        .pointer("/status/currentMetrics")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return "N/A".to_owned();
+    };
+    let values = metrics
+        .iter()
+        .map(|metric| {
+            let metric_type = value_str(metric, &["type"]).unwrap_or("Metric");
+            let current = metric
+                .pointer("/resource/current/averageUtilization")
+                .or_else(|| metric.pointer("/resource/current/averageValue"))
+                .or_else(|| metric.pointer("/pods/current/averageValue"))
+                .or_else(|| metric.pointer("/object/current/value"))
+                .or_else(|| metric.pointer("/external/current/value"))
+                .map(value_to_string)
+                .unwrap_or_else(|| "N/A".to_owned());
+            format!("{metric_type}: {current}")
+        })
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        "N/A".to_owned()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn hpa_replicas(raw: &serde_json::Value) -> String {
+    let current = value_i64(raw, &["status", "currentReplicas"]).unwrap_or(0);
+    let desired = value_i64(raw, &["status", "desiredReplicas"]).unwrap_or(0);
+    format!("{current}/{desired}")
+}
+
+fn int_or_string(value: Option<&serde_json::Value>) -> String {
+    value.map_or_else(|| "N/A".to_owned(), value_to_string)
+}
+
+fn runtime_overhead(raw: &serde_json::Value) -> String {
+    resource_map(raw.pointer("/overhead/podFixed")).unwrap_or_else(|| "N/A".to_owned())
+}
+
+fn runtime_scheduling(raw: &serde_json::Value) -> String {
+    let selector = resource_map(raw.pointer("/scheduling/nodeSelector"));
+    let tolerations = array_len(raw.pointer("/scheduling/tolerations"));
+    match (selector, tolerations) {
+        (Some(selector), 0) => selector,
+        (Some(selector), count) => format!("{selector}; tolerations={count}"),
+        (None, count) if count > 0 => format!("tolerations={count}"),
+        _ => "N/A".to_owned(),
+    }
+}
+
+fn webhook_values(raw: &serde_json::Value, field: &str) -> String {
+    let Some(webhooks) = raw
+        .pointer("/webhooks")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return "N/A".to_owned();
+    };
+    let mut values = webhooks
+        .iter()
+        .filter_map(|webhook| webhook.get(field))
+        .filter_map(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    values.sort();
+    values.dedup();
+    if values.is_empty() {
+        "N/A".to_owned()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn webhook_admission_versions(raw: &serde_json::Value) -> String {
+    let Some(webhooks) = raw
+        .pointer("/webhooks")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return "N/A".to_owned();
+    };
+    let mut values = webhooks
+        .iter()
+        .filter_map(|webhook| webhook.get("admissionReviewVersions"))
+        .filter_map(serde_json::Value::as_array)
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    values.sort();
+    values.dedup();
+    if values.is_empty() {
+        "N/A".to_owned()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn describe_from_row(kind: ConfigResourceKind, row: &ConfigRow) -> ConfigDescribe {
+    ConfigDescribe {
+        title: kind.title(),
+        summary: row.details.clone(),
+        labels: resource_map(row.raw.pointer("/metadata/labels"))
+            .unwrap_or_else(|| "N/A".to_owned()),
+        annotations: resource_map(row.raw.pointer("/metadata/annotations"))
+            .unwrap_or_else(|| "N/A".to_owned()),
+        raw_yaml: full_manifest_yaml(&row.raw),
+    }
+}
+
+fn show_config_describe(ui: &mut egui::Ui, describe: &ConfigDescribe) {
+    ui.heading(describe.title);
+    ui.separator();
+    egui::Grid::new("config_describe_summary")
+        .num_columns(2)
+        .spacing([16.0, 4.0])
+        .show(ui, |ui| {
+            for (label, value) in &describe.summary {
+                ui.weak(label);
+                ui.label(value);
+                ui.end_row();
+            }
+        });
+    ui.add_space(10.0);
+    describe_block(ui, "Labels", &describe.labels);
+    describe_block(ui, "Annotations", &describe.annotations);
+    describe_block(ui, "Raw manifest", &describe.raw_yaml);
+}
+
+fn describe_block(ui: &mut egui::Ui, title: &str, value: &str) {
+    ui.strong(title);
+    ui.add(
+        egui::Label::new(egui::RichText::new(value).monospace())
+            .wrap_mode(TextWrapMode::Extend)
+            .selectable(true),
+    );
+    ui.add_space(8.0);
+}
+
+fn resource_map(value: Option<&serde_json::Value>) -> Option<String> {
+    let mut entries = value
+        .and_then(serde_json::Value::as_object)?
+        .iter()
+        .map(|(key, value)| {
+            let value = value
+                .as_str()
+                .map_or_else(|| value.to_string(), ToOwned::to_owned);
+            format!("{key}={value}")
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+    (!entries.is_empty()).then(|| entries.join(", "))
+}
+
+fn array_len(value: Option<&serde_json::Value>) -> usize {
+    value
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len)
+}
+
+fn value_to_string(value: &serde_json::Value) -> String {
+    value
+        .as_str()
+        .map_or_else(|| value.to_string(), ToOwned::to_owned)
+}
+
+fn value_str<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a str> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_str()
+}
+
+fn value_i64(value: &serde_json::Value, path: &[&str]) -> Option<i64> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_i64()
+}
+
+fn value_bool(value: &serde_json::Value, path: &[&str]) -> Option<bool> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_bool()
+}
+
+fn full_manifest_yaml(raw: &serde_json::Value) -> String {
+    serde_yaml::to_string(raw)
+        .or_else(|_| serde_json::to_string_pretty(raw))
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use miku_api::ResourceList;
+
+    #[test]
+    fn namespaced_config_requests_use_selected_namespace() {
+        for kind in [
+            ConfigResourceKind::HorizontalPodAutoscaler,
+            ConfigResourceKind::PodDisruptionBudget,
+            ConfigResourceKind::Lease,
+        ] {
+            let mut panel = ConfigResourcePanel::new(kind);
+            panel.namespace_filter = Some("production".to_owned());
+            let query = panel.request_resources(ClusterId::new("local")).query();
+            assert_eq!(query.namespace.as_deref(), Some("production"));
+        }
+    }
+
+    #[test]
+    fn cluster_config_requests_are_cluster_scoped() {
+        for kind in [
+            ConfigResourceKind::PriorityClass,
+            ConfigResourceKind::RuntimeClass,
+            ConfigResourceKind::MutatingWebhookConfiguration,
+            ConfigResourceKind::ValidatingWebhookConfiguration,
+        ] {
+            let mut panel = ConfigResourcePanel::new(kind);
+            let query = panel.request_resources(ClusterId::new("local")).query();
+            assert_eq!(query.namespace, None);
+            assert!(matches!(
+                query.resource.scope,
+                miku_core::ResourceScope::Cluster
+            ));
+        }
+    }
+
+    #[test]
+    fn config_rows_extract_fields() {
+        let hpa = row_from_summary(ConfigResourceKind::HorizontalPodAutoscaler, &hpa_summary());
+        assert_eq!(hpa.cells[2], "Deployment/api");
+        assert_eq!(hpa.cells[3], "Resource: 70");
+        assert_eq!(hpa.cells[4], "2");
+        assert_eq!(hpa.cells[5], "10");
+        assert_eq!(hpa.cells[6], "3/5");
+
+        let pdb = row_from_summary(ConfigResourceKind::PodDisruptionBudget, &pdb_summary());
+        assert_eq!(pdb.cells[2], "50%");
+        assert_eq!(pdb.cells[3], "1");
+        assert_eq!(pdb.cells[4], "2");
+        assert_eq!(pdb.cells[5], "4");
+        assert_eq!(pdb.cells[6], "3");
+
+        let priority = row_from_summary(ConfigResourceKind::PriorityClass, &priority_summary());
+        assert_eq!(priority.cells[1], "100000");
+        assert_eq!(priority.cells[2], "false");
+        assert_eq!(priority.cells[3], "PreemptLowerPriority");
+
+        let runtime = row_from_summary(ConfigResourceKind::RuntimeClass, &runtime_summary());
+        assert_eq!(runtime.cells[1], "runc");
+        assert_eq!(runtime.cells[2], "cpu=100m");
+        assert_eq!(runtime.cells[3], "disk=ssd; tolerations=1");
+
+        let lease = row_from_summary(ConfigResourceKind::Lease, &lease_summary());
+        assert_eq!(lease.cells[2], "controller");
+        assert_eq!(lease.cells[5], "15s");
+        assert_eq!(lease.cells[6], "4");
+
+        let webhook = row_from_summary(
+            ConfigResourceKind::MutatingWebhookConfiguration,
+            &webhook_summary("MutatingWebhookConfiguration"),
+        );
+        assert_eq!(webhook.cells[1], "1");
+        assert_eq!(webhook.cells[2], "Fail");
+        assert_eq!(webhook.cells[3], "None");
+        assert_eq!(webhook.cells[4], "v1");
+    }
+
+    #[test]
+    fn config_rows_handle_missing_fields() {
+        let hpa = row_from_summary(
+            ConfigResourceKind::HorizontalPodAutoscaler,
+            &minimal_summary("HorizontalPodAutoscaler"),
+        );
+        assert_eq!(hpa.cells[2], "N/A");
+        assert_eq!(hpa.cells[3], "N/A");
+        assert_eq!(hpa.cells[4], "N/A");
+        assert_eq!(hpa.cells[5], "N/A");
+        assert_eq!(hpa.cells[6], "0/0");
+
+        let pdb = row_from_summary(
+            ConfigResourceKind::PodDisruptionBudget,
+            &minimal_summary("PodDisruptionBudget"),
+        );
+        assert_eq!(pdb.cells[2], "N/A");
+        assert_eq!(pdb.cells[4], "0");
+
+        let webhook = row_from_summary(
+            ConfigResourceKind::ValidatingWebhookConfiguration,
+            &minimal_summary("ValidatingWebhookConfiguration"),
+        );
+        assert_eq!(webhook.cells[1], "0");
+        assert_eq!(webhook.cells[2], "N/A");
+    }
+
+    #[test]
+    fn config_rows_sort_and_filter_case_insensitively() {
+        let rows = ConfigResourceKind::Lease.rows_from_list(&[
+            lease_summary_with_name("zeta", "worker"),
+            lease_summary_with_name("default", "api-b"),
+            lease_summary_with_name("default", "api-a"),
+        ]);
+        let keys = rows.iter().map(|row| row.key.as_str()).collect::<Vec<_>>();
+        assert_eq!(keys, vec!["default/api-a", "default/api-b", "zeta/worker"]);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row_matches_search(row, "CONTROLLER"))
+                .count(),
+            3
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row_matches_search(row, "ZETA"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn stale_watch_events_do_not_replace_current_rows() {
+        let mut panel = ConfigResourcePanel::new(ConfigResourceKind::Lease);
+        let cluster_id = ClusterId::new("local");
+        let first = panel.request_resource_watch(cluster_id.clone());
+        let second = panel.request_resource_watch(cluster_id);
+        panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
+            request: first,
+            result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
+                items: vec![lease_summary_with_name("default", "stale")],
+                continue_token: None,
+            })),
+        });
+        assert!(panel.rows.is_empty());
+        panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
+            request: second,
+            result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
+                items: vec![lease_summary()],
+                continue_token: None,
+            })),
+        });
+        assert_eq!(panel.rows[0].name, "kube-scheduler");
+    }
+
+    #[test]
+    fn namespace_watch_events_update_namespaced_selectors() {
+        let mut panel = ConfigResourcePanel::new(ConfigResourceKind::HorizontalPodAutoscaler);
+        panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
+            request: ResourceWatchRequest {
+                request_id: 42,
+                cluster_id: ClusterId::new("local"),
+                kind: ResourceLoadKind::Namespaces,
+            },
+            result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
+                items: vec![namespace_summary("production")],
+                continue_token: None,
+            })),
+        });
+        assert_eq!(panel.namespaces, vec!["production".to_owned()]);
+    }
+
+    fn hpa_summary() -> ResourceSummary {
+        ResourceSummary {
+            name: "api".to_owned(),
+            namespace: Some("default".to_owned()),
+            kind: "HorizontalPodAutoscaler".to_owned(),
+            status: None,
+            raw: serde_json::json!({
+                "metadata": {"name": "api", "namespace": "default", "creationTimestamp": "2026-05-18T10:00:00Z"},
+                "spec": {"scaleTargetRef": {"kind": "Deployment", "name": "api"}, "minReplicas": 2, "maxReplicas": 10},
+                "status": {
+                    "currentReplicas": 3,
+                    "desiredReplicas": 5,
+                    "currentMetrics": [{"type": "Resource", "resource": {"current": {"averageUtilization": 70}}}]
+                }
+            }),
+        }
+    }
+
+    fn pdb_summary() -> ResourceSummary {
+        ResourceSummary {
+            name: "api".to_owned(),
+            namespace: Some("default".to_owned()),
+            kind: "PodDisruptionBudget".to_owned(),
+            status: None,
+            raw: serde_json::json!({
+                "metadata": {"name": "api", "namespace": "default", "creationTimestamp": "2026-05-18T10:00:00Z"},
+                "spec": {"minAvailable": "50%", "maxUnavailable": 1},
+                "status": {"disruptionsAllowed": 2, "currentHealthy": 4, "desiredHealthy": 3}
+            }),
+        }
+    }
+
+    fn priority_summary() -> ResourceSummary {
+        ResourceSummary {
+            name: "high".to_owned(),
+            namespace: None,
+            kind: "PriorityClass".to_owned(),
+            status: None,
+            raw: serde_json::json!({
+                "metadata": {"name": "high", "creationTimestamp": "2026-05-18T10:00:00Z"},
+                "value": 100000,
+                "globalDefault": false,
+                "preemptionPolicy": "PreemptLowerPriority",
+                "description": "high priority"
+            }),
+        }
+    }
+
+    fn runtime_summary() -> ResourceSummary {
+        ResourceSummary {
+            name: "runc".to_owned(),
+            namespace: None,
+            kind: "RuntimeClass".to_owned(),
+            status: None,
+            raw: serde_json::json!({
+                "metadata": {"name": "runc", "creationTimestamp": "2026-05-18T10:00:00Z"},
+                "handler": "runc",
+                "overhead": {"podFixed": {"cpu": "100m"}},
+                "scheduling": {"nodeSelector": {"disk": "ssd"}, "tolerations": [{"key": "runtime"}]}
+            }),
+        }
+    }
+
+    fn lease_summary() -> ResourceSummary {
+        lease_summary_with_name("kube-system", "kube-scheduler")
+    }
+
+    fn lease_summary_with_name(namespace: &str, name: &str) -> ResourceSummary {
+        ResourceSummary {
+            name: name.to_owned(),
+            namespace: Some(namespace.to_owned()),
+            kind: "Lease".to_owned(),
+            status: None,
+            raw: serde_json::json!({
+                "metadata": {"name": name, "namespace": namespace, "creationTimestamp": "2026-05-18T10:00:00Z"},
+                "spec": {
+                    "holderIdentity": "controller",
+                    "acquireTime": "2026-05-18T10:01:00Z",
+                    "renewTime": "2026-05-18T10:02:00Z",
+                    "leaseDurationSeconds": 15,
+                    "leaseTransitions": 4
+                }
+            }),
+        }
+    }
+
+    fn webhook_summary(kind: &str) -> ResourceSummary {
+        ResourceSummary {
+            name: "policy".to_owned(),
+            namespace: None,
+            kind: kind.to_owned(),
+            status: None,
+            raw: serde_json::json!({
+                "metadata": {"name": "policy", "creationTimestamp": "2026-05-18T10:00:00Z"},
+                "webhooks": [{"name": "policy.example.com", "failurePolicy": "Fail", "sideEffects": "None", "admissionReviewVersions": ["v1"]}]
+            }),
+        }
+    }
+
+    fn minimal_summary(kind: &str) -> ResourceSummary {
+        ResourceSummary {
+            name: "minimal".to_owned(),
+            namespace: Some("default".to_owned()),
+            kind: kind.to_owned(),
+            status: None,
+            raw: serde_json::json!({"metadata": {"name": "minimal", "namespace": "default"}}),
+        }
+    }
+
+    fn namespace_summary(name: &str) -> ResourceSummary {
+        ResourceSummary {
+            name: name.to_owned(),
+            namespace: None,
+            kind: "Namespace".to_owned(),
+            status: Some("Active".to_owned()),
+            raw: serde_json::json!({"metadata": {"name": name}}),
+        }
+    }
+}

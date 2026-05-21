@@ -10,13 +10,16 @@ use crate::resource_panel::{
     ClusterRoleBindingResourcePanel, ClusterRoleResourcePanel, ConfigMapResourcePanel,
     CronJobResourcePanel, CustomResourcesPanel, DaemonSetResourcePanel, DeploymentResourcePanel,
     EndpointSliceResourcePanel, EndpointsResourcePanel, EventResourcePanel,
-    IngressClassResourcePanel, IngressResourcePanel, JobResourcePanel, LimitRangeResourcePanel,
-    NamespaceResourcePanel, NetworkPolicyResourcePanel, NodeResourcePanel,
-    PersistentVolumeClaimResourcePanel, PersistentVolumeResourcePanel, PodAttachInputRequest,
-    PodAttachRequest, PodLogRequest, PodResourcePanel, ReplicaSetResourcePanel,
-    ResourceActionRequest, ResourceLoadRequest, ResourceQuotaResourcePanel, ResourceWatchRequest,
-    RoleBindingResourcePanel, RoleResourcePanel, SecretResourcePanel, ServiceAccountResourcePanel,
-    ServiceResourcePanel, StatefulSetResourcePanel, StorageClassResourcePanel,
+    HorizontalPodAutoscalerResourcePanel, IngressClassResourcePanel, IngressResourcePanel,
+    JobResourcePanel, LeaseResourcePanel, LimitRangeResourcePanel,
+    MutatingWebhookConfigurationResourcePanel, NamespaceResourcePanel, NetworkPolicyResourcePanel,
+    NodeResourcePanel, PersistentVolumeClaimResourcePanel, PersistentVolumeResourcePanel,
+    PodAttachInputRequest, PodAttachRequest, PodDisruptionBudgetResourcePanel, PodLogRequest,
+    PodResourcePanel, PriorityClassResourcePanel, ReplicaSetResourcePanel, ResourceActionRequest,
+    ResourceLoadRequest, ResourceQuotaResourcePanel, ResourceWatchRequest,
+    RoleBindingResourcePanel, RoleResourcePanel, RuntimeClassResourcePanel, SecretResourcePanel,
+    ServiceAccountResourcePanel, ServiceResourcePanel, StatefulSetResourcePanel,
+    StorageClassResourcePanel, ValidatingWebhookConfigurationResourcePanel,
 };
 use crate::resources::{RESOURCE_CATEGORIES, ResourceNavItem};
 use crate::state::{AppState, ClusterConnectionState};
@@ -55,26 +58,37 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) endpoint_slice_resource_panel: Option<&'a mut EndpointSliceResourcePanel>,
     pub(crate) endpoints_resource_panel: Option<&'a mut EndpointsResourcePanel>,
     pub(crate) event_resource_panel: Option<&'a mut EventResourcePanel>,
+    pub(crate) horizontal_pod_autoscaler_resource_panel:
+        Option<&'a mut HorizontalPodAutoscalerResourcePanel>,
     pub(crate) ingress_class_resource_panel: Option<&'a mut IngressClassResourcePanel>,
     pub(crate) ingress_resource_panel: Option<&'a mut IngressResourcePanel>,
     pub(crate) job_resource_panel: Option<&'a mut JobResourcePanel>,
+    pub(crate) lease_resource_panel: Option<&'a mut LeaseResourcePanel>,
     pub(crate) limit_range_resource_panel: Option<&'a mut LimitRangeResourcePanel>,
+    pub(crate) mutating_webhook_configuration_resource_panel:
+        Option<&'a mut MutatingWebhookConfigurationResourcePanel>,
     pub(crate) namespace_resource_panel: Option<&'a mut NamespaceResourcePanel>,
     pub(crate) network_policy_resource_panel: Option<&'a mut NetworkPolicyResourcePanel>,
     pub(crate) node_resource_panel: Option<&'a mut NodeResourcePanel>,
     pub(crate) persistent_volume_claim_resource_panel:
         Option<&'a mut PersistentVolumeClaimResourcePanel>,
     pub(crate) persistent_volume_resource_panel: Option<&'a mut PersistentVolumeResourcePanel>,
+    pub(crate) pod_disruption_budget_resource_panel:
+        Option<&'a mut PodDisruptionBudgetResourcePanel>,
     pub(crate) pod_resource_panel: Option<&'a mut PodResourcePanel>,
+    pub(crate) priority_class_resource_panel: Option<&'a mut PriorityClassResourcePanel>,
     pub(crate) replica_set_resource_panel: Option<&'a mut ReplicaSetResourcePanel>,
     pub(crate) resource_quota_resource_panel: Option<&'a mut ResourceQuotaResourcePanel>,
     pub(crate) role_binding_resource_panel: Option<&'a mut RoleBindingResourcePanel>,
     pub(crate) role_resource_panel: Option<&'a mut RoleResourcePanel>,
+    pub(crate) runtime_class_resource_panel: Option<&'a mut RuntimeClassResourcePanel>,
     pub(crate) secret_resource_panel: Option<&'a mut SecretResourcePanel>,
     pub(crate) service_account_resource_panel: Option<&'a mut ServiceAccountResourcePanel>,
     pub(crate) service_resource_panel: Option<&'a mut ServiceResourcePanel>,
     pub(crate) storage_class_resource_panel: Option<&'a mut StorageClassResourcePanel>,
     pub(crate) stateful_set_resource_panel: Option<&'a mut StatefulSetResourcePanel>,
+    pub(crate) validating_webhook_configuration_resource_panel:
+        Option<&'a mut ValidatingWebhookConfigurationResourcePanel>,
     pub(crate) custom_resources_panel: Option<&'a mut CustomResourcesPanel>,
     pub(crate) status_load_requests: Vec<ClusterStatusLoadRequest>,
     pub(crate) resource_load_requests: Vec<ResourceLoadRequest>,
@@ -245,6 +259,18 @@ impl TabViewer for AppTabViewer<'_> {
                             ui.label("Event resource panel is unavailable.");
                         });
                     }
+                } else if resource.name == "Horizontal Pod Autoscalers" {
+                    if let Some(panel) =
+                        self.horizontal_pod_autoscaler_resource_panel.as_deref_mut()
+                    {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("HorizontalPodAutoscaler resource panel is unavailable.");
+                        });
+                    }
                 } else if resource.name == "Endpoint Slices" {
                     if let Some(panel) = self.endpoint_slice_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
@@ -295,6 +321,16 @@ impl TabViewer for AppTabViewer<'_> {
                             ui.label("Job resource panel is unavailable.");
                         });
                     }
+                } else if resource.name == "Leases" {
+                    if let Some(panel) = self.lease_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("Lease resource panel is unavailable.");
+                        });
+                    }
                 } else if resource.name == "Limit Ranges" {
                     if let Some(panel) = self.limit_range_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
@@ -313,6 +349,19 @@ impl TabViewer for AppTabViewer<'_> {
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Namespace resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Mutating Webhook Configurations" {
+                    if let Some(panel) = self
+                        .mutating_webhook_configuration_resource_panel
+                        .as_deref_mut()
+                    {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("MutatingWebhookConfiguration resource panel is unavailable.");
                         });
                     }
                 } else if resource.name == "Nodes" {
@@ -346,6 +395,16 @@ impl TabViewer for AppTabViewer<'_> {
                             ui.label("PersistentVolume resource panel is unavailable.");
                         });
                     }
+                } else if resource.name == "Pod Disruption Budgets" {
+                    if let Some(panel) = self.pod_disruption_budget_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("PodDisruptionBudget resource panel is unavailable.");
+                        });
+                    }
                 } else if resource.name == "Pods" {
                     if let Some(panel) = self.pod_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
@@ -369,6 +428,16 @@ impl TabViewer for AppTabViewer<'_> {
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("ReplicaSet resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Priority Classes" {
+                    if let Some(panel) = self.priority_class_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("PriorityClass resource panel is unavailable.");
                         });
                     }
                 } else if resource.name == "Resource Quotas" {
@@ -399,6 +468,16 @@ impl TabViewer for AppTabViewer<'_> {
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Role resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Runtime Classes" {
+                    if let Some(panel) = self.runtime_class_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("RuntimeClass resource panel is unavailable.");
                         });
                     }
                 } else if resource.name == "Secrets" {
@@ -459,6 +538,21 @@ impl TabViewer for AppTabViewer<'_> {
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("StatefulSet resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Validating Webhook Configurations" {
+                    if let Some(panel) = self
+                        .validating_webhook_configuration_resource_panel
+                        .as_deref_mut()
+                    {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label(
+                                "ValidatingWebhookConfiguration resource panel is unavailable.",
+                            );
                         });
                     }
                 } else if resource.name == "Custom Resources" {

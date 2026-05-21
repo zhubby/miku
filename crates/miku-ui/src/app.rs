@@ -15,14 +15,17 @@ use crate::resource_panel::{
     ClusterRoleBindingResourcePanel, ClusterRoleResourcePanel, ConfigMapResourcePanel,
     CronJobResourcePanel, CustomResourcesPanel, DaemonSetResourcePanel, DeploymentResourcePanel,
     EndpointSliceResourcePanel, EndpointsResourcePanel, EventResourcePanel,
-    IngressClassResourcePanel, IngressResourcePanel, JobResourcePanel, LimitRangeResourcePanel,
-    NamespaceResourcePanel, NetworkPolicyResourcePanel, NodeResourcePanel,
-    PersistentVolumeClaimResourcePanel, PersistentVolumeResourcePanel, PodAttachInputRequest,
-    PodAttachRequest, PodLogRequest, PodResourcePanel, ReplicaSetResourcePanel, ResourceActionKind,
+    HorizontalPodAutoscalerResourcePanel, IngressClassResourcePanel, IngressResourcePanel,
+    JobResourcePanel, LeaseResourcePanel, LimitRangeResourcePanel,
+    MutatingWebhookConfigurationResourcePanel, NamespaceResourcePanel, NetworkPolicyResourcePanel,
+    NodeResourcePanel, PersistentVolumeClaimResourcePanel, PersistentVolumeResourcePanel,
+    PodAttachInputRequest, PodAttachRequest, PodDisruptionBudgetResourcePanel, PodLogRequest,
+    PodResourcePanel, PriorityClassResourcePanel, ReplicaSetResourcePanel, ResourceActionKind,
     ResourceActionOutcome, ResourceActionRequest, ResourceLoadKind, ResourceLoadRequest,
     ResourceQuotaResourcePanel, ResourceUiEvent, ResourceWatchRequest, RoleBindingResourcePanel,
-    RoleResourcePanel, SecretResourcePanel, ServiceAccountResourcePanel, ServiceResourcePanel,
-    StatefulSetResourcePanel, StorageClassResourcePanel,
+    RoleResourcePanel, RuntimeClassResourcePanel, SecretResourcePanel, ServiceAccountResourcePanel,
+    ServiceResourcePanel, StatefulSetResourcePanel, StorageClassResourcePanel,
+    ValidatingWebhookConfigurationResourcePanel,
 };
 use crate::resources::ResourceNavItem;
 use crate::state::{AppState, ClusterConnectionState, RuntimeMode};
@@ -71,26 +74,35 @@ pub(crate) struct ClusterWorkspace {
     pub(crate) endpoint_slice_resource_panel: EndpointSliceResourcePanel,
     pub(crate) endpoints_resource_panel: EndpointsResourcePanel,
     pub(crate) event_resource_panel: EventResourcePanel,
+    pub(crate) horizontal_pod_autoscaler_resource_panel: HorizontalPodAutoscalerResourcePanel,
     pub(crate) ingress_class_resource_panel: IngressClassResourcePanel,
     pub(crate) ingress_resource_panel: IngressResourcePanel,
     pub(crate) cron_job_resource_panel: CronJobResourcePanel,
     pub(crate) job_resource_panel: JobResourcePanel,
+    pub(crate) lease_resource_panel: LeaseResourcePanel,
     pub(crate) limit_range_resource_panel: LimitRangeResourcePanel,
+    pub(crate) mutating_webhook_configuration_resource_panel:
+        MutatingWebhookConfigurationResourcePanel,
     pub(crate) namespace_resource_panel: NamespaceResourcePanel,
     pub(crate) network_policy_resource_panel: NetworkPolicyResourcePanel,
     pub(crate) node_resource_panel: NodeResourcePanel,
     pub(crate) persistent_volume_claim_resource_panel: PersistentVolumeClaimResourcePanel,
     pub(crate) persistent_volume_resource_panel: PersistentVolumeResourcePanel,
+    pub(crate) pod_disruption_budget_resource_panel: PodDisruptionBudgetResourcePanel,
     pub(crate) pod_resource_panel: PodResourcePanel,
+    pub(crate) priority_class_resource_panel: PriorityClassResourcePanel,
     pub(crate) replica_set_resource_panel: ReplicaSetResourcePanel,
     pub(crate) resource_quota_resource_panel: ResourceQuotaResourcePanel,
     pub(crate) role_binding_resource_panel: RoleBindingResourcePanel,
     pub(crate) role_resource_panel: RoleResourcePanel,
+    pub(crate) runtime_class_resource_panel: RuntimeClassResourcePanel,
     pub(crate) secret_resource_panel: SecretResourcePanel,
     pub(crate) service_account_resource_panel: ServiceAccountResourcePanel,
     pub(crate) service_resource_panel: ServiceResourcePanel,
     pub(crate) storage_class_resource_panel: StorageClassResourcePanel,
     pub(crate) stateful_set_resource_panel: StatefulSetResourcePanel,
+    pub(crate) validating_webhook_configuration_resource_panel:
+        ValidatingWebhookConfigurationResourcePanel,
     pub(crate) custom_resources_panel: CustomResourcesPanel,
 }
 
@@ -108,26 +120,36 @@ impl Default for ClusterWorkspace {
             endpoint_slice_resource_panel: EndpointSliceResourcePanel::default(),
             endpoints_resource_panel: EndpointsResourcePanel::default(),
             event_resource_panel: EventResourcePanel::default(),
+            horizontal_pod_autoscaler_resource_panel: HorizontalPodAutoscalerResourcePanel::default(
+            ),
             ingress_class_resource_panel: IngressClassResourcePanel::default(),
             ingress_resource_panel: IngressResourcePanel::default(),
             cron_job_resource_panel: CronJobResourcePanel::default(),
             job_resource_panel: JobResourcePanel::default(),
+            lease_resource_panel: LeaseResourcePanel::default(),
             limit_range_resource_panel: LimitRangeResourcePanel::default(),
+            mutating_webhook_configuration_resource_panel:
+                MutatingWebhookConfigurationResourcePanel::default(),
             namespace_resource_panel: NamespaceResourcePanel::default(),
             network_policy_resource_panel: NetworkPolicyResourcePanel::default(),
             node_resource_panel: NodeResourcePanel::default(),
             persistent_volume_claim_resource_panel: PersistentVolumeClaimResourcePanel::default(),
             persistent_volume_resource_panel: PersistentVolumeResourcePanel::default(),
+            pod_disruption_budget_resource_panel: PodDisruptionBudgetResourcePanel::default(),
             pod_resource_panel: PodResourcePanel::default(),
+            priority_class_resource_panel: PriorityClassResourcePanel::default(),
             replica_set_resource_panel: ReplicaSetResourcePanel::default(),
             resource_quota_resource_panel: ResourceQuotaResourcePanel::default(),
             role_binding_resource_panel: RoleBindingResourcePanel::default(),
             role_resource_panel: RoleResourcePanel::default(),
+            runtime_class_resource_panel: RuntimeClassResourcePanel::default(),
             secret_resource_panel: SecretResourcePanel::default(),
             service_account_resource_panel: ServiceAccountResourcePanel::default(),
             service_resource_panel: ServiceResourcePanel::default(),
             storage_class_resource_panel: StorageClassResourcePanel::default(),
             stateful_set_resource_panel: StatefulSetResourcePanel::default(),
+            validating_webhook_configuration_resource_panel:
+                ValidatingWebhookConfigurationResourcePanel::default(),
             custom_resources_panel: CustomResourcesPanel::default(),
         }
     }
@@ -268,25 +290,32 @@ impl eframe::App for MikuApp {
                     endpoint_slice_resource_panel: None,
                     endpoints_resource_panel: None,
                     event_resource_panel: None,
+                    horizontal_pod_autoscaler_resource_panel: None,
                     ingress_class_resource_panel: None,
                     ingress_resource_panel: None,
                     job_resource_panel: None,
+                    lease_resource_panel: None,
                     limit_range_resource_panel: None,
+                    mutating_webhook_configuration_resource_panel: None,
                     namespace_resource_panel: None,
                     network_policy_resource_panel: None,
                     node_resource_panel: None,
                     persistent_volume_claim_resource_panel: None,
                     persistent_volume_resource_panel: None,
+                    pod_disruption_budget_resource_panel: None,
                     pod_resource_panel: None,
+                    priority_class_resource_panel: None,
                     replica_set_resource_panel: None,
                     resource_quota_resource_panel: None,
                     role_binding_resource_panel: None,
                     role_resource_panel: None,
+                    runtime_class_resource_panel: None,
                     secret_resource_panel: None,
                     service_account_resource_panel: None,
                     service_resource_panel: None,
                     storage_class_resource_panel: None,
                     stateful_set_resource_panel: None,
+                    validating_webhook_configuration_resource_panel: None,
                     custom_resources_panel: None,
                     status_load_requests: Vec::new(),
                     resource_load_requests: Vec::new(),
@@ -353,25 +382,32 @@ impl eframe::App for MikuApp {
                     endpoint_slice_resource_panel: None,
                     endpoints_resource_panel: None,
                     event_resource_panel: None,
+                    horizontal_pod_autoscaler_resource_panel: None,
                     ingress_class_resource_panel: None,
                     ingress_resource_panel: None,
                     job_resource_panel: None,
+                    lease_resource_panel: None,
                     limit_range_resource_panel: None,
+                    mutating_webhook_configuration_resource_panel: None,
                     namespace_resource_panel: None,
                     network_policy_resource_panel: None,
                     node_resource_panel: None,
                     persistent_volume_claim_resource_panel: None,
                     persistent_volume_resource_panel: None,
+                    pod_disruption_budget_resource_panel: None,
                     pod_resource_panel: None,
+                    priority_class_resource_panel: None,
                     replica_set_resource_panel: None,
                     resource_quota_resource_panel: None,
                     role_binding_resource_panel: None,
                     role_resource_panel: None,
+                    runtime_class_resource_panel: None,
                     secret_resource_panel: None,
                     service_account_resource_panel: None,
                     service_resource_panel: None,
                     storage_class_resource_panel: None,
                     stateful_set_resource_panel: None,
+                    validating_webhook_configuration_resource_panel: None,
                     custom_resources_panel: None,
                     status_load_requests: Vec::new(),
                     resource_load_requests: Vec::new(),
@@ -448,10 +484,17 @@ impl eframe::App for MikuApp {
                 endpoint_slice_resource_panel: Some(&mut workspace.endpoint_slice_resource_panel),
                 endpoints_resource_panel: Some(&mut workspace.endpoints_resource_panel),
                 event_resource_panel: Some(&mut workspace.event_resource_panel),
+                horizontal_pod_autoscaler_resource_panel: Some(
+                    &mut workspace.horizontal_pod_autoscaler_resource_panel,
+                ),
                 ingress_class_resource_panel: Some(&mut workspace.ingress_class_resource_panel),
                 ingress_resource_panel: Some(&mut workspace.ingress_resource_panel),
                 job_resource_panel: Some(&mut workspace.job_resource_panel),
+                lease_resource_panel: Some(&mut workspace.lease_resource_panel),
                 limit_range_resource_panel: Some(&mut workspace.limit_range_resource_panel),
+                mutating_webhook_configuration_resource_panel: Some(
+                    &mut workspace.mutating_webhook_configuration_resource_panel,
+                ),
                 namespace_resource_panel: Some(&mut workspace.namespace_resource_panel),
                 network_policy_resource_panel: Some(&mut workspace.network_policy_resource_panel),
                 node_resource_panel: Some(&mut workspace.node_resource_panel),
@@ -461,16 +504,24 @@ impl eframe::App for MikuApp {
                 persistent_volume_resource_panel: Some(
                     &mut workspace.persistent_volume_resource_panel,
                 ),
+                pod_disruption_budget_resource_panel: Some(
+                    &mut workspace.pod_disruption_budget_resource_panel,
+                ),
                 pod_resource_panel: Some(&mut workspace.pod_resource_panel),
+                priority_class_resource_panel: Some(&mut workspace.priority_class_resource_panel),
                 replica_set_resource_panel: Some(&mut workspace.replica_set_resource_panel),
                 resource_quota_resource_panel: Some(&mut workspace.resource_quota_resource_panel),
                 role_binding_resource_panel: Some(&mut workspace.role_binding_resource_panel),
                 role_resource_panel: Some(&mut workspace.role_resource_panel),
+                runtime_class_resource_panel: Some(&mut workspace.runtime_class_resource_panel),
                 secret_resource_panel: Some(&mut workspace.secret_resource_panel),
                 service_account_resource_panel: Some(&mut workspace.service_account_resource_panel),
                 service_resource_panel: Some(&mut workspace.service_resource_panel),
                 storage_class_resource_panel: Some(&mut workspace.storage_class_resource_panel),
                 stateful_set_resource_panel: Some(&mut workspace.stateful_set_resource_panel),
+                validating_webhook_configuration_resource_panel: Some(
+                    &mut workspace.validating_webhook_configuration_resource_panel,
+                ),
                 custom_resources_panel: Some(&mut workspace.custom_resources_panel),
                 status_load_requests: Vec::new(),
                 resource_load_requests: Vec::new(),
@@ -697,6 +748,13 @@ impl MikuApp {
                         .role_binding_resource_panel
                         .apply_event(event.clone());
                     workspace
+                        .horizontal_pod_autoscaler_resource_panel
+                        .apply_event(event.clone());
+                    workspace
+                        .pod_disruption_budget_resource_panel
+                        .apply_event(event.clone());
+                    workspace.lease_resource_panel.apply_event(event.clone());
+                    workspace
                         .config_map_resource_panel
                         .apply_event(event.clone());
                     workspace.cron_job_resource_panel.apply_event(event.clone());
@@ -754,6 +812,11 @@ impl MikuApp {
                 ResourceLoadKind::Events { .. } => {
                     workspace.event_resource_panel.apply_event(event);
                 }
+                ResourceLoadKind::HorizontalPodAutoscalers { .. } => {
+                    workspace
+                        .horizontal_pod_autoscaler_resource_panel
+                        .apply_event(event);
+                }
                 ResourceLoadKind::EndpointSlices { .. } => {
                     workspace.endpoint_slice_resource_panel.apply_event(event);
                 }
@@ -778,6 +841,9 @@ impl MikuApp {
                 ResourceLoadKind::Jobs { .. } => {
                     workspace.job_resource_panel.apply_event(event);
                 }
+                ResourceLoadKind::Leases { .. } => {
+                    workspace.lease_resource_panel.apply_event(event);
+                }
                 ResourceLoadKind::IngressClasses => {
                     workspace.ingress_class_resource_panel.apply_event(event);
                 }
@@ -786,6 +852,11 @@ impl MikuApp {
                 }
                 ResourceLoadKind::LimitRanges { .. } => {
                     workspace.limit_range_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::MutatingWebhookConfigurations => {
+                    workspace
+                        .mutating_webhook_configuration_resource_panel
+                        .apply_event(event);
                 }
                 ResourceLoadKind::NetworkPolicies { .. } => {
                     workspace.network_policy_resource_panel.apply_event(event);
@@ -799,6 +870,14 @@ impl MikuApp {
                     workspace
                         .persistent_volume_resource_panel
                         .apply_event(event);
+                }
+                ResourceLoadKind::PodDisruptionBudgets { .. } => {
+                    workspace
+                        .pod_disruption_budget_resource_panel
+                        .apply_event(event);
+                }
+                ResourceLoadKind::PriorityClasses => {
+                    workspace.priority_class_resource_panel.apply_event(event);
                 }
                 ResourceLoadKind::ReplicaSets { .. } => {
                     workspace.replica_set_resource_panel.apply_event(event);
@@ -823,6 +902,14 @@ impl MikuApp {
                 }
                 ResourceLoadKind::StorageClasses => {
                     workspace.storage_class_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::RuntimeClasses => {
+                    workspace.runtime_class_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::ValidatingWebhookConfigurations => {
+                    workspace
+                        .validating_webhook_configuration_resource_panel
+                        .apply_event(event);
                 }
                 ResourceLoadKind::Pods { .. } => {
                     workspace.pod_resource_panel.apply_event(event);
@@ -841,6 +928,13 @@ impl MikuApp {
                         .role_binding_resource_panel
                         .apply_event(event.clone());
                     workspace
+                        .horizontal_pod_autoscaler_resource_panel
+                        .apply_event(event.clone());
+                    workspace
+                        .pod_disruption_budget_resource_panel
+                        .apply_event(event.clone());
+                    workspace.lease_resource_panel.apply_event(event.clone());
+                    workspace
                         .config_map_resource_panel
                         .apply_event(event.clone());
                     workspace.cron_job_resource_panel.apply_event(event.clone());
@@ -898,6 +992,11 @@ impl MikuApp {
                 ResourceLoadKind::Events { .. } => {
                     workspace.event_resource_panel.apply_event(event);
                 }
+                ResourceLoadKind::HorizontalPodAutoscalers { .. } => {
+                    workspace
+                        .horizontal_pod_autoscaler_resource_panel
+                        .apply_event(event);
+                }
                 ResourceLoadKind::EndpointSlices { .. } => {
                     workspace.endpoint_slice_resource_panel.apply_event(event);
                 }
@@ -922,6 +1021,9 @@ impl MikuApp {
                 ResourceLoadKind::Jobs { .. } => {
                     workspace.job_resource_panel.apply_event(event);
                 }
+                ResourceLoadKind::Leases { .. } => {
+                    workspace.lease_resource_panel.apply_event(event);
+                }
                 ResourceLoadKind::IngressClasses => {
                     workspace.ingress_class_resource_panel.apply_event(event);
                 }
@@ -930,6 +1032,11 @@ impl MikuApp {
                 }
                 ResourceLoadKind::LimitRanges { .. } => {
                     workspace.limit_range_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::MutatingWebhookConfigurations => {
+                    workspace
+                        .mutating_webhook_configuration_resource_panel
+                        .apply_event(event);
                 }
                 ResourceLoadKind::NetworkPolicies { .. } => {
                     workspace.network_policy_resource_panel.apply_event(event);
@@ -943,6 +1050,14 @@ impl MikuApp {
                     workspace
                         .persistent_volume_resource_panel
                         .apply_event(event);
+                }
+                ResourceLoadKind::PodDisruptionBudgets { .. } => {
+                    workspace
+                        .pod_disruption_budget_resource_panel
+                        .apply_event(event);
+                }
+                ResourceLoadKind::PriorityClasses => {
+                    workspace.priority_class_resource_panel.apply_event(event);
                 }
                 ResourceLoadKind::ReplicaSets { .. } => {
                     workspace.replica_set_resource_panel.apply_event(event);
@@ -967,6 +1082,14 @@ impl MikuApp {
                 }
                 ResourceLoadKind::StorageClasses => {
                     workspace.storage_class_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::RuntimeClasses => {
+                    workspace.runtime_class_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::ValidatingWebhookConfigurations => {
+                    workspace
+                        .validating_webhook_configuration_resource_panel
+                        .apply_event(event);
                 }
                 ResourceLoadKind::Pods { .. } => {
                     workspace.pod_resource_panel.apply_event(event);

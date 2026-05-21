@@ -10,6 +10,7 @@ mod cluster_role;
 mod cluster_role_binding;
 mod components;
 mod config_map;
+mod config_shared;
 mod cron_job;
 mod custom_resources;
 mod daemon_set;
@@ -17,10 +18,13 @@ mod deployment;
 mod endpoint_slice;
 mod endpoints;
 mod event;
+mod horizontal_pod_autoscaler;
 mod ingress;
 mod ingress_class;
 mod job;
+mod lease;
 mod limit_range;
+mod mutating_webhook_configuration;
 mod namespace;
 mod network_policy;
 mod network_shared;
@@ -28,16 +32,20 @@ mod node;
 mod persistent_volume;
 mod persistent_volume_claim;
 mod pod;
+mod pod_disruption_budget;
+mod priority_class;
 mod replica_set;
 mod resource_quota;
 mod role;
 mod role_binding;
+mod runtime_class;
 mod secret;
 mod service;
 mod service_account;
 mod stateful_set;
 mod storage_class;
 mod storage_shared;
+mod validating_webhook_configuration;
 
 pub(crate) use cluster_role::ClusterRoleResourcePanel;
 pub(crate) use cluster_role_binding::ClusterRoleBindingResourcePanel;
@@ -49,25 +57,32 @@ pub(crate) use deployment::DeploymentResourcePanel;
 pub(crate) use endpoint_slice::EndpointSliceResourcePanel;
 pub(crate) use endpoints::EndpointsResourcePanel;
 pub(crate) use event::EventResourcePanel;
+pub(crate) use horizontal_pod_autoscaler::HorizontalPodAutoscalerResourcePanel;
 pub(crate) use ingress::IngressResourcePanel;
 pub(crate) use ingress_class::IngressClassResourcePanel;
 pub(crate) use job::JobResourcePanel;
+pub(crate) use lease::LeaseResourcePanel;
 pub(crate) use limit_range::LimitRangeResourcePanel;
+pub(crate) use mutating_webhook_configuration::MutatingWebhookConfigurationResourcePanel;
 pub(crate) use namespace::NamespaceResourcePanel;
 pub(crate) use network_policy::NetworkPolicyResourcePanel;
 pub(crate) use node::NodeResourcePanel;
 pub(crate) use persistent_volume::PersistentVolumeResourcePanel;
 pub(crate) use persistent_volume_claim::PersistentVolumeClaimResourcePanel;
 pub(crate) use pod::PodResourcePanel;
+pub(crate) use pod_disruption_budget::PodDisruptionBudgetResourcePanel;
+pub(crate) use priority_class::PriorityClassResourcePanel;
 pub(crate) use replica_set::ReplicaSetResourcePanel;
 pub(crate) use resource_quota::ResourceQuotaResourcePanel;
 pub(crate) use role::RoleResourcePanel;
 pub(crate) use role_binding::RoleBindingResourcePanel;
+pub(crate) use runtime_class::RuntimeClassResourcePanel;
 pub(crate) use secret::SecretResourcePanel;
 pub(crate) use service::ServiceResourcePanel;
 pub(crate) use service_account::ServiceAccountResourcePanel;
 pub(crate) use stateful_set::StatefulSetResourcePanel;
 pub(crate) use storage_class::StorageClassResourcePanel;
+pub(crate) use validating_webhook_configuration::ValidatingWebhookConfigurationResourcePanel;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResourceLoadRequest {
@@ -143,16 +158,21 @@ pub(crate) enum ResourceLoadKind {
     EndpointSlices { namespace: Option<String> },
     Endpoints { namespace: Option<String> },
     Events { namespace: Option<String> },
+    HorizontalPodAutoscalers { namespace: Option<String> },
     CronJobs { namespace: Option<String> },
     DaemonSets { namespace: Option<String> },
     Deployments { namespace: Option<String> },
     Jobs { namespace: Option<String> },
+    Leases { namespace: Option<String> },
     LimitRanges { namespace: Option<String> },
     IngressClasses,
     Ingresses { namespace: Option<String> },
+    MutatingWebhookConfigurations,
     NetworkPolicies { namespace: Option<String> },
     PersistentVolumeClaims { namespace: Option<String> },
     PersistentVolumes,
+    PodDisruptionBudgets { namespace: Option<String> },
+    PriorityClasses,
     ReplicaSets { namespace: Option<String> },
     ResourceQuotas { namespace: Option<String> },
     RoleBindings { namespace: Option<String> },
@@ -162,6 +182,8 @@ pub(crate) enum ResourceLoadKind {
     Services { namespace: Option<String> },
     StorageClasses,
     StatefulSets { namespace: Option<String> },
+    RuntimeClasses,
+    ValidatingWebhookConfigurations,
     Pods { namespace: Option<String> },
     CustomResourceDefinitions,
 }
@@ -236,6 +258,9 @@ impl ResourceWatchRequest {
             }
             ResourceLoadKind::Endpoints { .. } => ResourceLoadKind::Endpoints { namespace: None },
             ResourceLoadKind::Events { .. } => ResourceLoadKind::Events { namespace: None },
+            ResourceLoadKind::HorizontalPodAutoscalers { .. } => {
+                ResourceLoadKind::HorizontalPodAutoscalers { namespace: None }
+            }
             ResourceLoadKind::CronJobs { .. } => ResourceLoadKind::CronJobs { namespace: None },
             ResourceLoadKind::DaemonSets { .. } => ResourceLoadKind::DaemonSets { namespace: None },
             ResourceLoadKind::Deployments { .. } => {
@@ -245,11 +270,15 @@ impl ResourceWatchRequest {
                 ResourceLoadKind::StatefulSets { namespace: None }
             }
             ResourceLoadKind::Jobs { .. } => ResourceLoadKind::Jobs { namespace: None },
+            ResourceLoadKind::Leases { .. } => ResourceLoadKind::Leases { namespace: None },
             ResourceLoadKind::LimitRanges { .. } => {
                 ResourceLoadKind::LimitRanges { namespace: None }
             }
             ResourceLoadKind::IngressClasses => ResourceLoadKind::IngressClasses,
             ResourceLoadKind::Ingresses { .. } => ResourceLoadKind::Ingresses { namespace: None },
+            ResourceLoadKind::MutatingWebhookConfigurations => {
+                ResourceLoadKind::MutatingWebhookConfigurations
+            }
             ResourceLoadKind::NetworkPolicies { .. } => {
                 ResourceLoadKind::NetworkPolicies { namespace: None }
             }
@@ -257,6 +286,10 @@ impl ResourceWatchRequest {
                 ResourceLoadKind::PersistentVolumeClaims { namespace: None }
             }
             ResourceLoadKind::PersistentVolumes => ResourceLoadKind::PersistentVolumes,
+            ResourceLoadKind::PodDisruptionBudgets { .. } => {
+                ResourceLoadKind::PodDisruptionBudgets { namespace: None }
+            }
+            ResourceLoadKind::PriorityClasses => ResourceLoadKind::PriorityClasses,
             ResourceLoadKind::ReplicaSets { .. } => {
                 ResourceLoadKind::ReplicaSets { namespace: None }
             }
@@ -273,6 +306,10 @@ impl ResourceWatchRequest {
             }
             ResourceLoadKind::Services { .. } => ResourceLoadKind::Services { namespace: None },
             ResourceLoadKind::StorageClasses => ResourceLoadKind::StorageClasses,
+            ResourceLoadKind::RuntimeClasses => ResourceLoadKind::RuntimeClasses,
+            ResourceLoadKind::ValidatingWebhookConfigurations => {
+                ResourceLoadKind::ValidatingWebhookConfigurations
+            }
             ResourceLoadKind::Pods { .. } => ResourceLoadKind::Pods { namespace: None },
             ResourceLoadKind::CustomResourceDefinitions => {
                 ResourceLoadKind::CustomResourceDefinitions
@@ -482,6 +519,16 @@ fn resource_query_for_kind(
             }
             query
         }
+        ResourceLoadKind::HorizontalPodAutoscalers { namespace } => {
+            let mut query = miku_api::ResourceQuery::new(
+                cluster_id,
+                ResourceRef::grouped("autoscaling", "v2", "horizontalpodautoscalers"),
+            );
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
         ResourceLoadKind::CronJobs { namespace } => {
             let mut query = miku_api::ResourceQuery::new(
                 cluster_id,
@@ -532,6 +579,16 @@ fn resource_query_for_kind(
             }
             query
         }
+        ResourceLoadKind::Leases { namespace } => {
+            let mut query = miku_api::ResourceQuery::new(
+                cluster_id,
+                ResourceRef::grouped("coordination.k8s.io", "v1", "leases"),
+            );
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
         ResourceLoadKind::LimitRanges { namespace } => {
             let mut query =
                 miku_api::ResourceQuery::new(cluster_id, ResourceRef::core("v1", "limitranges"));
@@ -554,6 +611,15 @@ fn resource_query_for_kind(
             }
             query
         }
+        ResourceLoadKind::MutatingWebhookConfigurations => miku_api::ResourceQuery::new(
+            cluster_id,
+            ResourceRef::grouped(
+                "admissionregistration.k8s.io",
+                "v1",
+                "mutatingwebhookconfigurations",
+            )
+            .cluster_scoped(),
+        ),
         ResourceLoadKind::NetworkPolicies { namespace } => {
             let mut query = miku_api::ResourceQuery::new(
                 cluster_id,
@@ -577,6 +643,20 @@ fn resource_query_for_kind(
         ResourceLoadKind::PersistentVolumes => miku_api::ResourceQuery::new(
             cluster_id,
             ResourceRef::core("v1", "persistentvolumes").cluster_scoped(),
+        ),
+        ResourceLoadKind::PodDisruptionBudgets { namespace } => {
+            let mut query = miku_api::ResourceQuery::new(
+                cluster_id,
+                ResourceRef::grouped("policy", "v1", "poddisruptionbudgets"),
+            );
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
+        ResourceLoadKind::PriorityClasses => miku_api::ResourceQuery::new(
+            cluster_id,
+            ResourceRef::grouped("scheduling.k8s.io", "v1", "priorityclasses").cluster_scoped(),
         ),
         ResourceLoadKind::ReplicaSets { namespace } => {
             let mut query = miku_api::ResourceQuery::new(
@@ -645,6 +725,19 @@ fn resource_query_for_kind(
         ResourceLoadKind::StorageClasses => miku_api::ResourceQuery::new(
             cluster_id,
             ResourceRef::grouped("storage.k8s.io", "v1", "storageclasses").cluster_scoped(),
+        ),
+        ResourceLoadKind::RuntimeClasses => miku_api::ResourceQuery::new(
+            cluster_id,
+            ResourceRef::grouped("node.k8s.io", "v1", "runtimeclasses").cluster_scoped(),
+        ),
+        ResourceLoadKind::ValidatingWebhookConfigurations => miku_api::ResourceQuery::new(
+            cluster_id,
+            ResourceRef::grouped(
+                "admissionregistration.k8s.io",
+                "v1",
+                "validatingwebhookconfigurations",
+            )
+            .cluster_scoped(),
         ),
         ResourceLoadKind::Pods { namespace } => {
             let mut query =
@@ -787,6 +880,116 @@ mod tests {
 
         assert_eq!(query.resource, ResourceRef::core("v1", "events"));
         assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn horizontal_pod_autoscalers_query_uses_autoscaling_api_and_selected_namespace() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::HorizontalPodAutoscalers {
+                namespace: Some("production".to_owned()),
+            },
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("autoscaling", "v2", "horizontalpodautoscalers")
+        );
+        assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn pod_disruption_budgets_query_uses_policy_api_and_selected_namespace() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::PodDisruptionBudgets {
+                namespace: Some("production".to_owned()),
+            },
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("policy", "v1", "poddisruptionbudgets")
+        );
+        assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn leases_query_uses_coordination_api_and_selected_namespace() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::Leases {
+                namespace: Some("production".to_owned()),
+            },
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("coordination.k8s.io", "v1", "leases")
+        );
+        assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn priority_classes_query_uses_cluster_scoped_scheduling_api() {
+        let query =
+            resource_query_for_kind(ClusterId::new("local"), &ResourceLoadKind::PriorityClasses);
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("scheduling.k8s.io", "v1", "priorityclasses").cluster_scoped()
+        );
+        assert_eq!(query.namespace, None);
+    }
+
+    #[test]
+    fn runtime_classes_query_uses_cluster_scoped_node_api() {
+        let query =
+            resource_query_for_kind(ClusterId::new("local"), &ResourceLoadKind::RuntimeClasses);
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("node.k8s.io", "v1", "runtimeclasses").cluster_scoped()
+        );
+        assert_eq!(query.namespace, None);
+    }
+
+    #[test]
+    fn mutating_webhook_configurations_query_uses_cluster_scoped_admission_api() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::MutatingWebhookConfigurations,
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped(
+                "admissionregistration.k8s.io",
+                "v1",
+                "mutatingwebhookconfigurations"
+            )
+            .cluster_scoped()
+        );
+        assert_eq!(query.namespace, None);
+    }
+
+    #[test]
+    fn validating_webhook_configurations_query_uses_cluster_scoped_admission_api() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::ValidatingWebhookConfigurations,
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped(
+                "admissionregistration.k8s.io",
+                "v1",
+                "validatingwebhookconfigurations"
+            )
+            .cluster_scoped()
+        );
+        assert_eq!(query.namespace, None);
     }
 
     #[test]
