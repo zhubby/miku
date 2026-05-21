@@ -12,10 +12,10 @@ use crate::forms::NewClusterForm;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::resource_panel::ResourceWatchKey;
 use crate::resource_panel::{
-    CustomResourcesPanel, NamespaceResourcePanel, NodeResourcePanel, PodAttachInputRequest,
-    PodAttachRequest, PodLogRequest, PodResourcePanel, ResourceActionKind, ResourceActionOutcome,
-    ResourceActionRequest, ResourceLoadKind, ResourceLoadRequest, ResourceUiEvent,
-    ResourceWatchRequest,
+    CustomResourcesPanel, EventResourcePanel, NamespaceResourcePanel, NodeResourcePanel,
+    PodAttachInputRequest, PodAttachRequest, PodLogRequest, PodResourcePanel, ResourceActionKind,
+    ResourceActionOutcome, ResourceActionRequest, ResourceLoadKind, ResourceLoadRequest,
+    ResourceUiEvent, ResourceWatchRequest,
 };
 use crate::resources::ResourceNavItem;
 use crate::state::{AppState, ClusterConnectionState, RuntimeMode};
@@ -56,6 +56,7 @@ pub(crate) struct ClusterWorkspace {
     pub(crate) dock_state: DockState<AppTab>,
     pub(crate) selected_resource: Option<ResourceNavItem>,
     pub(crate) status_panel: ClusterStatusPanel,
+    pub(crate) event_resource_panel: EventResourcePanel,
     pub(crate) namespace_resource_panel: NamespaceResourcePanel,
     pub(crate) node_resource_panel: NodeResourcePanel,
     pub(crate) pod_resource_panel: PodResourcePanel,
@@ -68,6 +69,7 @@ impl Default for ClusterWorkspace {
             dock_state: DockState::new(vec![AppTab::Workspace(1)]),
             selected_resource: None,
             status_panel: ClusterStatusPanel::default(),
+            event_resource_panel: EventResourcePanel::default(),
             namespace_resource_panel: NamespaceResourcePanel::default(),
             node_resource_panel: NodeResourcePanel::default(),
             pod_resource_panel: PodResourcePanel::default(),
@@ -202,6 +204,7 @@ impl eframe::App for MikuApp {
                     selected_resource: None,
                     selected_cluster_id: self.selected_cluster_id(),
                     cluster_status_panel: None,
+                    event_resource_panel: None,
                     namespace_resource_panel: None,
                     node_resource_panel: None,
                     pod_resource_panel: None,
@@ -262,6 +265,7 @@ impl eframe::App for MikuApp {
                     selected_resource: None,
                     selected_cluster_id: self.selected_cluster_id(),
                     cluster_status_panel: None,
+                    event_resource_panel: None,
                     namespace_resource_panel: None,
                     node_resource_panel: None,
                     pod_resource_panel: None,
@@ -330,6 +334,7 @@ impl eframe::App for MikuApp {
                 selected_resource: None,
                 selected_cluster_id: Some(selected_cluster_id),
                 cluster_status_panel: Some(&mut workspace.status_panel),
+                event_resource_panel: Some(&mut workspace.event_resource_panel),
                 namespace_resource_panel: Some(&mut workspace.namespace_resource_panel),
                 node_resource_panel: Some(&mut workspace.node_resource_panel),
                 pod_resource_panel: Some(&mut workspace.pod_resource_panel),
@@ -551,6 +556,7 @@ impl MikuApp {
                     workspace.custom_resources_panel.apply_event(event);
                 }
                 ResourceLoadKind::Namespaces => {
+                    workspace.event_resource_panel.apply_event(event.clone());
                     workspace
                         .namespace_resource_panel
                         .apply_event(event.clone());
@@ -558,6 +564,9 @@ impl MikuApp {
                 }
                 ResourceLoadKind::Nodes => {
                     workspace.node_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::Events { .. } => {
+                    workspace.event_resource_panel.apply_event(event);
                 }
                 ResourceLoadKind::Pods { .. } => {
                     workspace.pod_resource_panel.apply_event(event);
@@ -568,6 +577,7 @@ impl MikuApp {
                     workspace.custom_resources_panel.apply_event(event);
                 }
                 ResourceLoadKind::Namespaces => {
+                    workspace.event_resource_panel.apply_event(event.clone());
                     workspace
                         .namespace_resource_panel
                         .apply_event(event.clone());
@@ -575,6 +585,9 @@ impl MikuApp {
                 }
                 ResourceLoadKind::Nodes => {
                     workspace.node_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::Events { .. } => {
+                    workspace.event_resource_panel.apply_event(event);
                 }
                 ResourceLoadKind::Pods { .. } => {
                     workspace.pod_resource_panel.apply_event(event);

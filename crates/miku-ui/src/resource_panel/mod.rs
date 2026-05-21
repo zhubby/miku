@@ -7,11 +7,13 @@ use miku_core::{ClusterId, ResourceRef};
 
 mod components;
 mod custom_resources;
+mod event;
 mod namespace;
 mod node;
 mod pod;
 
 pub(crate) use custom_resources::CustomResourcesPanel;
+pub(crate) use event::EventResourcePanel;
 pub(crate) use namespace::NamespaceResourcePanel;
 pub(crate) use node::NodeResourcePanel;
 pub(crate) use pod::PodResourcePanel;
@@ -84,6 +86,7 @@ pub(crate) struct ResourcePanelRequests {
 pub(crate) enum ResourceLoadKind {
     Namespaces,
     Nodes,
+    Events { namespace: Option<String> },
     Pods { namespace: Option<String> },
     CustomResourceDefinitions,
 }
@@ -150,6 +153,7 @@ impl ResourceWatchRequest {
         let kind = match &self.kind {
             ResourceLoadKind::Namespaces => ResourceLoadKind::Namespaces,
             ResourceLoadKind::Nodes => ResourceLoadKind::Nodes,
+            ResourceLoadKind::Events { .. } => ResourceLoadKind::Events { namespace: None },
             ResourceLoadKind::Pods { .. } => ResourceLoadKind::Pods { namespace: None },
             ResourceLoadKind::CustomResourceDefinitions => {
                 ResourceLoadKind::CustomResourceDefinitions
@@ -315,6 +319,14 @@ fn resource_query_for_kind(
             cluster_id,
             ResourceRef::core("v1", "nodes").cluster_scoped(),
         ),
+        ResourceLoadKind::Events { namespace } => {
+            let mut query =
+                miku_api::ResourceQuery::new(cluster_id, ResourceRef::core("v1", "events"));
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
         ResourceLoadKind::Pods { namespace } => {
             let mut query =
                 miku_api::ResourceQuery::new(cluster_id, ResourceRef::core("v1", "pods"));
@@ -359,5 +371,29 @@ mod tests {
             ResourceRef::core("v1", "nodes").cluster_scoped()
         );
         assert_eq!(query.namespace, None);
+    }
+
+    #[test]
+    fn events_query_uses_core_api_without_namespace_by_default() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::Events { namespace: None },
+        );
+
+        assert_eq!(query.resource, ResourceRef::core("v1", "events"));
+        assert_eq!(query.namespace, None);
+    }
+
+    #[test]
+    fn events_query_uses_selected_namespace() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::Events {
+                namespace: Some("production".to_owned()),
+            },
+        );
+
+        assert_eq!(query.resource, ResourceRef::core("v1", "events"));
+        assert_eq!(query.namespace.as_deref(), Some("production"));
     }
 }

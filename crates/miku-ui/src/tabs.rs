@@ -7,9 +7,9 @@ use miku_api::{
 };
 
 use crate::resource_panel::{
-    CustomResourcesPanel, NamespaceResourcePanel, NodeResourcePanel, PodAttachInputRequest,
-    PodAttachRequest, PodLogRequest, PodResourcePanel, ResourceActionRequest, ResourceLoadRequest,
-    ResourceWatchRequest,
+    CustomResourcesPanel, EventResourcePanel, NamespaceResourcePanel, NodeResourcePanel,
+    PodAttachInputRequest, PodAttachRequest, PodLogRequest, PodResourcePanel,
+    ResourceActionRequest, ResourceLoadRequest, ResourceWatchRequest,
 };
 use crate::resources::{RESOURCE_CATEGORIES, ResourceNavItem};
 use crate::state::{AppState, ClusterConnectionState};
@@ -39,6 +39,7 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) selected_resource: Option<ResourceNavItem>,
     pub(crate) selected_cluster_id: Option<miku_core::ClusterId>,
     pub(crate) cluster_status_panel: Option<&'a mut ClusterStatusPanel>,
+    pub(crate) event_resource_panel: Option<&'a mut EventResourcePanel>,
     pub(crate) namespace_resource_panel: Option<&'a mut NamespaceResourcePanel>,
     pub(crate) node_resource_panel: Option<&'a mut NodeResourcePanel>,
     pub(crate) pod_resource_panel: Option<&'a mut PodResourcePanel>,
@@ -142,7 +143,17 @@ impl TabViewer for AppTabViewer<'_> {
                 }
             }
             AppTab::Resource(resource) => {
-                if resource.name == "Namespaces" {
+                if resource.name == "Events" {
+                    if let Some(panel) = self.event_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("Event resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Namespaces" {
                     if let Some(panel) = self.namespace_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
                         self.resource_load_requests.extend(requests.loads);

@@ -121,7 +121,9 @@ impl PodResourcePanel {
                         Err(error) => self.row_status = LoadStatus::Error(error),
                     }
                 }
-                ResourceLoadKind::Nodes | ResourceLoadKind::CustomResourceDefinitions => {}
+                ResourceLoadKind::Nodes
+                | ResourceLoadKind::Events { .. }
+                | ResourceLoadKind::CustomResourceDefinitions => {}
             },
             ResourceUiEvent::ResourceActionCompleted { request, result } => {
                 if self.action_request_id != Some(request.request_id) {
@@ -249,7 +251,9 @@ impl PodResourcePanel {
                         Err(error) => self.row_status = LoadStatus::Error(error),
                     }
                 }
-                ResourceLoadKind::Nodes | ResourceLoadKind::CustomResourceDefinitions => {}
+                ResourceLoadKind::Nodes
+                | ResourceLoadKind::Events { .. }
+                | ResourceLoadKind::CustomResourceDefinitions => {}
             },
         }
     }
