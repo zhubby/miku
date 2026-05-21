@@ -12,65 +12,18 @@ use super::{
 };
 use crate::time::human_age_from_rfc3339;
 
-macro_rules! network_panel {
-    ($name:ident, $kind:expr) => {
-        #[derive(Clone, Debug)]
-        pub(crate) struct $name {
-            inner: NetworkResourcePanel,
-        }
-
-        impl Default for $name {
-            fn default() -> Self {
-                Self {
-                    inner: NetworkResourcePanel::new($kind),
-                }
-            }
-        }
-
-        impl $name {
-            pub(crate) fn show(
-                &mut self,
-                ui: &mut egui::Ui,
-                cluster_id: Option<&ClusterId>,
-            ) -> ResourcePanelRequests {
-                self.inner.show(ui, cluster_id)
-            }
-
-            pub(crate) fn apply_event(&mut self, event: ResourceUiEvent) {
-                self.inner.apply_event(event);
-            }
-        }
-    };
-}
-
-network_panel!(ServiceResourcePanel, NetworkResourceKind::Services);
-network_panel!(
-    EndpointSliceResourcePanel,
-    NetworkResourceKind::EndpointSlices
-);
-network_panel!(EndpointsResourcePanel, NetworkResourceKind::Endpoints);
-network_panel!(IngressResourcePanel, NetworkResourceKind::Ingresses);
-network_panel!(
-    IngressClassResourcePanel,
-    NetworkResourceKind::IngressClasses
-);
-network_panel!(
-    NetworkPolicyResourcePanel,
-    NetworkResourceKind::NetworkPolicies
-);
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum NetworkResourceKind {
-    Services,
-    EndpointSlices,
+pub(crate) enum NetworkResourceKind {
+    Service,
+    EndpointSlice,
     Endpoints,
-    Ingresses,
-    IngressClasses,
-    NetworkPolicies,
+    Ingress,
+    IngressClass,
+    NetworkPolicy,
 }
 
 #[derive(Clone, Debug)]
-struct NetworkResourcePanel {
+pub(crate) struct NetworkResourcePanel {
     kind: NetworkResourceKind,
     namespace_filter: Option<String>,
     search_text: String,
@@ -89,7 +42,7 @@ struct NetworkResourcePanel {
 }
 
 impl NetworkResourcePanel {
-    fn new(kind: NetworkResourceKind) -> Self {
+    pub(crate) fn new(kind: NetworkResourceKind) -> Self {
         Self {
             kind,
             namespace_filter: None,
@@ -109,7 +62,11 @@ impl NetworkResourcePanel {
         }
     }
 
-    fn show(&mut self, ui: &mut egui::Ui, cluster_id: Option<&ClusterId>) -> ResourcePanelRequests {
+    pub(crate) fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        cluster_id: Option<&ClusterId>,
+    ) -> ResourcePanelRequests {
         let mut requests = ResourcePanelRequests::default();
         let Some(cluster_id) = cluster_id else {
             ui.centered_and_justified(|ui| {
@@ -138,7 +95,7 @@ impl NetworkResourcePanel {
         requests
     }
 
-    fn apply_event(&mut self, event: ResourceUiEvent) {
+    pub(crate) fn apply_event(&mut self, event: ResourceUiEvent) {
         match event {
             ResourceUiEvent::ResourcesLoaded { request, result } => {
                 if matches!(request.kind, ResourceLoadKind::Namespaces) {
@@ -477,33 +434,33 @@ impl NetworkResourcePanel {
 impl NetworkResourceKind {
     fn id(self) -> &'static str {
         match self {
-            Self::Services => "services",
-            Self::EndpointSlices => "endpoint_slices",
+            Self::Service => "services",
+            Self::EndpointSlice => "endpoint_slices",
             Self::Endpoints => "endpoints",
-            Self::Ingresses => "ingresses",
-            Self::IngressClasses => "ingress_classes",
-            Self::NetworkPolicies => "network_policies",
+            Self::Ingress => "ingresses",
+            Self::IngressClass => "ingress_classes",
+            Self::NetworkPolicy => "network_policies",
         }
     }
 
     fn title(self) -> &'static str {
         match self {
-            Self::Services => "Services",
-            Self::EndpointSlices => "EndpointSlices",
+            Self::Service => "Services",
+            Self::EndpointSlice => "EndpointSlices",
             Self::Endpoints => "Endpoints",
-            Self::Ingresses => "Ingresses",
-            Self::IngressClasses => "IngressClasses",
-            Self::NetworkPolicies => "NetworkPolicies",
+            Self::Ingress => "Ingresses",
+            Self::IngressClass => "IngressClasses",
+            Self::NetworkPolicy => "NetworkPolicies",
         }
     }
 
     fn is_namespaced(self) -> bool {
-        !matches!(self, Self::IngressClasses)
+        !matches!(self, Self::IngressClass)
     }
 
     fn columns(self) -> &'static [&'static str] {
         match self {
-            Self::Services => &[
+            Self::Service => &[
                 "Name",
                 "Namespace",
                 "Type",
@@ -513,7 +470,7 @@ impl NetworkResourceKind {
                 "Selector",
                 "Age",
             ],
-            Self::EndpointSlices => &[
+            Self::EndpointSlice => &[
                 "Name",
                 "Namespace",
                 "Service",
@@ -531,7 +488,7 @@ impl NetworkResourceKind {
                 "Ports",
                 "Age",
             ],
-            Self::Ingresses => &[
+            Self::Ingress => &[
                 "Name",
                 "Namespace",
                 "Class",
@@ -541,8 +498,8 @@ impl NetworkResourceKind {
                 "Rules",
                 "Age",
             ],
-            Self::IngressClasses => &["Name", "Controller", "Parameters", "Default", "Age"],
-            Self::NetworkPolicies => &[
+            Self::IngressClass => &["Name", "Controller", "Parameters", "Default", "Age"],
+            Self::NetworkPolicy => &[
                 "Name",
                 "Namespace",
                 "Pod Selector",
@@ -556,39 +513,36 @@ impl NetworkResourceKind {
 
     fn widths(self) -> &'static [f32] {
         match self {
-            Self::Services => &[220.0, 150.0, 120.0, 140.0, 180.0, 240.0, 260.0, 90.0],
-            Self::EndpointSlices => &[220.0, 150.0, 180.0, 120.0, 220.0, 110.0, 90.0, 90.0],
+            Self::Service => &[220.0, 150.0, 120.0, 140.0, 180.0, 240.0, 260.0, 90.0],
+            Self::EndpointSlice => &[220.0, 150.0, 180.0, 120.0, 220.0, 110.0, 90.0, 90.0],
             Self::Endpoints => &[220.0, 150.0, 320.0, 110.0, 240.0, 90.0],
-            Self::Ingresses => &[220.0, 150.0, 140.0, 280.0, 180.0, 120.0, 320.0, 90.0],
-            Self::IngressClasses => &[220.0, 340.0, 280.0, 90.0, 90.0],
-            Self::NetworkPolicies => &[220.0, 150.0, 260.0, 180.0, 90.0, 90.0, 90.0],
+            Self::Ingress => &[220.0, 150.0, 140.0, 280.0, 180.0, 120.0, 320.0, 90.0],
+            Self::IngressClass => &[220.0, 340.0, 280.0, 90.0, 90.0],
+            Self::NetworkPolicy => &[220.0, 150.0, 260.0, 180.0, 90.0, 90.0, 90.0],
         }
     }
 
     fn load_kind(self, namespace: Option<String>) -> ResourceLoadKind {
         match self {
-            Self::Services => ResourceLoadKind::Services { namespace },
-            Self::EndpointSlices => ResourceLoadKind::EndpointSlices { namespace },
+            Self::Service => ResourceLoadKind::Services { namespace },
+            Self::EndpointSlice => ResourceLoadKind::EndpointSlices { namespace },
             Self::Endpoints => ResourceLoadKind::Endpoints { namespace },
-            Self::Ingresses => ResourceLoadKind::Ingresses { namespace },
-            Self::IngressClasses => ResourceLoadKind::IngressClasses,
-            Self::NetworkPolicies => ResourceLoadKind::NetworkPolicies { namespace },
+            Self::Ingress => ResourceLoadKind::Ingresses { namespace },
+            Self::IngressClass => ResourceLoadKind::IngressClasses,
+            Self::NetworkPolicy => ResourceLoadKind::NetworkPolicies { namespace },
         }
     }
 
     fn matches_load_kind(self, kind: &ResourceLoadKind) -> bool {
         matches!(
             (self, kind),
-            (Self::Services, ResourceLoadKind::Services { .. })
-                | (
-                    Self::EndpointSlices,
-                    ResourceLoadKind::EndpointSlices { .. }
-                )
+            (Self::Service, ResourceLoadKind::Services { .. })
+                | (Self::EndpointSlice, ResourceLoadKind::EndpointSlices { .. })
                 | (Self::Endpoints, ResourceLoadKind::Endpoints { .. })
-                | (Self::Ingresses, ResourceLoadKind::Ingresses { .. })
-                | (Self::IngressClasses, ResourceLoadKind::IngressClasses)
+                | (Self::Ingress, ResourceLoadKind::Ingresses { .. })
+                | (Self::IngressClass, ResourceLoadKind::IngressClasses)
                 | (
-                    Self::NetworkPolicies,
+                    Self::NetworkPolicy,
                     ResourceLoadKind::NetworkPolicies { .. }
                 )
         )
@@ -745,12 +699,12 @@ fn row_from_summary(kind: NetworkResourceKind, summary: &ResourceSummary) -> Net
         .unwrap_or_else(|| "N/A".to_owned());
 
     let cells = match kind {
-        NetworkResourceKind::Services => service_cells(raw, &name, &namespace, &age),
-        NetworkResourceKind::EndpointSlices => endpoint_slice_cells(raw, &name, &namespace, &age),
+        NetworkResourceKind::Service => service_cells(raw, &name, &namespace, &age),
+        NetworkResourceKind::EndpointSlice => endpoint_slice_cells(raw, &name, &namespace, &age),
         NetworkResourceKind::Endpoints => endpoints_cells(raw, &name, &namespace, &age),
-        NetworkResourceKind::Ingresses => ingress_cells(raw, &name, &namespace, &age),
-        NetworkResourceKind::IngressClasses => ingress_class_cells(raw, &name, &age),
-        NetworkResourceKind::NetworkPolicies => network_policy_cells(raw, &name, &namespace, &age),
+        NetworkResourceKind::Ingress => ingress_cells(raw, &name, &namespace, &age),
+        NetworkResourceKind::IngressClass => ingress_class_cells(raw, &name, &age),
+        NetworkResourceKind::NetworkPolicy => network_policy_cells(raw, &name, &namespace, &age),
     };
     let details = kind
         .columns()
@@ -1161,7 +1115,7 @@ mod tests {
 
     #[test]
     fn service_request_query_uses_selected_namespace() {
-        let mut panel = NetworkResourcePanel::new(NetworkResourceKind::Services);
+        let mut panel = NetworkResourcePanel::new(NetworkResourceKind::Service);
         panel.namespace_filter = Some("production".to_owned());
         let query = panel.request_resources(ClusterId::new("local")).query();
         assert_eq!(query.resource.plural, "services");
@@ -1170,7 +1124,7 @@ mod tests {
 
     #[test]
     fn ingress_class_request_query_is_cluster_scoped() {
-        let mut panel = NetworkResourcePanel::new(NetworkResourceKind::IngressClasses);
+        let mut panel = NetworkResourcePanel::new(NetworkResourceKind::IngressClass);
         let query = panel.request_resources(ClusterId::new("local")).query();
         assert_eq!(query.resource.plural, "ingressclasses");
         assert_eq!(query.namespace, None);
@@ -1182,14 +1136,14 @@ mod tests {
 
     #[test]
     fn network_rows_extract_common_fields() {
-        let service = row_from_summary(NetworkResourceKind::Services, &service_summary());
+        let service = row_from_summary(NetworkResourceKind::Service, &service_summary());
         assert_eq!(service.cells[2], "LoadBalancer");
         assert_eq!(service.cells[3], "10.0.0.1");
         assert_eq!(service.cells[5], "http:80/TCP");
         assert_eq!(service.cells[6], "app=api");
 
         let slice = row_from_summary(
-            NetworkResourceKind::EndpointSlices,
+            NetworkResourceKind::EndpointSlice,
             &endpoint_slice_summary(),
         );
         assert_eq!(slice.cells[2], "api");
@@ -1197,7 +1151,7 @@ mod tests {
         assert_eq!(slice.cells[5], "2");
         assert_eq!(slice.cells[6], "1");
 
-        let ingress = row_from_summary(NetworkResourceKind::Ingresses, &ingress_summary());
+        let ingress = row_from_summary(NetworkResourceKind::Ingress, &ingress_summary());
         assert_eq!(ingress.cells[2], "nginx");
         assert_eq!(ingress.cells[3], "api.example.com");
         assert_eq!(ingress.cells[5], "1");
@@ -1207,16 +1161,14 @@ mod tests {
         assert_eq!(endpoints.cells[3], "10.1.1.2");
         assert_eq!(endpoints.cells[4], "http:80/TCP");
 
-        let ingress_class = row_from_summary(
-            NetworkResourceKind::IngressClasses,
-            &ingress_class_summary(),
-        );
+        let ingress_class =
+            row_from_summary(NetworkResourceKind::IngressClass, &ingress_class_summary());
         assert_eq!(ingress_class.cells[1], "k8s.io/ingress-nginx");
         assert_eq!(ingress_class.cells[2], "IngressParameters/nginx");
         assert_eq!(ingress_class.cells[3], "true");
 
         let policy = row_from_summary(
-            NetworkResourceKind::NetworkPolicies,
+            NetworkResourceKind::NetworkPolicy,
             &network_policy_summary(),
         );
         assert_eq!(policy.cells[2], "app=api");
@@ -1227,7 +1179,7 @@ mod tests {
 
     #[test]
     fn network_rows_handle_missing_fields() {
-        let row = row_from_summary(NetworkResourceKind::Services, &minimal_summary("Service"));
+        let row = row_from_summary(NetworkResourceKind::Service, &minimal_summary("Service"));
         assert_eq!(row.cells[2], "ClusterIP");
         assert_eq!(row.cells[3], "N/A");
         assert_eq!(row.cells[4], "N/A");
@@ -1237,7 +1189,7 @@ mod tests {
 
     #[test]
     fn rows_sort_and_filter_case_insensitively() {
-        let rows = NetworkResourceKind::Services.rows_from_list(&[
+        let rows = NetworkResourceKind::Service.rows_from_list(&[
             service_summary_with_name("zeta", "worker"),
             service_summary_with_name("default", "api-b"),
             service_summary_with_name("default", "api-a"),
@@ -1260,7 +1212,7 @@ mod tests {
 
     #[test]
     fn stale_watch_events_do_not_replace_current_rows() {
-        let mut panel = NetworkResourcePanel::new(NetworkResourceKind::Services);
+        let mut panel = NetworkResourcePanel::new(NetworkResourceKind::Service);
         let cluster_id = ClusterId::new("local");
         let first = panel.request_resource_watch(cluster_id.clone());
         let second = panel.request_resource_watch(cluster_id);
@@ -1284,7 +1236,7 @@ mod tests {
 
     #[test]
     fn namespace_watch_events_update_namespaced_selector() {
-        let mut panel = NetworkResourcePanel::new(NetworkResourceKind::NetworkPolicies);
+        let mut panel = NetworkResourcePanel::new(NetworkResourceKind::NetworkPolicy);
         panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
             request: ResourceWatchRequest {
                 request_id: 42,

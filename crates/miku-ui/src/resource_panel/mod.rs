@@ -11,16 +11,22 @@ mod cron_job;
 mod custom_resources;
 mod daemon_set;
 mod deployment;
+mod endpoint_slice;
+mod endpoints;
 mod event;
+mod ingress;
+mod ingress_class;
 mod job;
 mod limit_range;
 mod namespace;
-mod network;
+mod network_policy;
+mod network_shared;
 mod node;
 mod pod;
 mod replica_set;
 mod resource_quota;
 mod secret;
+mod service;
 mod stateful_set;
 
 pub(crate) use config_map::ConfigMapResourcePanel;
@@ -28,19 +34,21 @@ pub(crate) use cron_job::CronJobResourcePanel;
 pub(crate) use custom_resources::CustomResourcesPanel;
 pub(crate) use daemon_set::DaemonSetResourcePanel;
 pub(crate) use deployment::DeploymentResourcePanel;
+pub(crate) use endpoint_slice::EndpointSliceResourcePanel;
+pub(crate) use endpoints::EndpointsResourcePanel;
 pub(crate) use event::EventResourcePanel;
+pub(crate) use ingress::IngressResourcePanel;
+pub(crate) use ingress_class::IngressClassResourcePanel;
 pub(crate) use job::JobResourcePanel;
 pub(crate) use limit_range::LimitRangeResourcePanel;
 pub(crate) use namespace::NamespaceResourcePanel;
-pub(crate) use network::{
-    EndpointSliceResourcePanel, EndpointsResourcePanel, IngressClassResourcePanel,
-    IngressResourcePanel, NetworkPolicyResourcePanel, ServiceResourcePanel,
-};
+pub(crate) use network_policy::NetworkPolicyResourcePanel;
 pub(crate) use node::NodeResourcePanel;
 pub(crate) use pod::PodResourcePanel;
 pub(crate) use replica_set::ReplicaSetResourcePanel;
 pub(crate) use resource_quota::ResourceQuotaResourcePanel;
 pub(crate) use secret::SecretResourcePanel;
+pub(crate) use service::ServiceResourcePanel;
 pub(crate) use stateful_set::StatefulSetResourcePanel;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
