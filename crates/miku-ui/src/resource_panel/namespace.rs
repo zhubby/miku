@@ -78,7 +78,9 @@ impl NamespaceResourcePanel {
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::Jobs { .. }
+                | ResourceLoadKind::LimitRanges { .. }
                 | ResourceLoadKind::ReplicaSets { .. }
+                | ResourceLoadKind::ResourceQuotas { .. }
                 | ResourceLoadKind::Secrets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
@@ -105,7 +107,9 @@ impl NamespaceResourcePanel {
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::Jobs { .. }
+                | ResourceLoadKind::LimitRanges { .. }
                 | ResourceLoadKind::ReplicaSets { .. }
+                | ResourceLoadKind::ResourceQuotas { .. }
                 | ResourceLoadKind::Secrets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}

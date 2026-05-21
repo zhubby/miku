@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use eframe::egui::{self, TextWrapMode};
 use egui_extras::{Column, TableBuilder};
 use miku_api::ResourceSummary;
@@ -7,7 +5,7 @@ use miku_core::ClusterId;
 
 #[cfg(test)]
 use super::ResourceLoadRequest;
-use super::components::{ResourceMapEntry, ResourceMapView, ResourceYamlViewDialog};
+use super::components::ResourceYamlViewDialog;
 use super::{
     LoadStatus, ResourceLoadKind, ResourcePanelRequests, ResourceUiEvent, ResourceWatchRequest,
     namespaces_from_list,
@@ -15,24 +13,24 @@ use super::{
 use crate::time::human_age_from_rfc3339;
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ConfigMapResourcePanel {
+pub(crate) struct ResourceQuotaResourcePanel {
     namespace_filter: Option<String>,
     search_text: String,
     namespaces: Vec<String>,
     namespace_status: LoadStatus,
     row_status: LoadStatus,
-    rows: Vec<ConfigMapRow>,
+    rows: Vec<ResourceQuotaRow>,
     next_request_id: u64,
     namespace_request_id: Option<u64>,
     row_request_id: Option<u64>,
     namespace_watch_request_id: Option<u64>,
     row_watch_request_id: Option<u64>,
     last_cluster_id: Option<ClusterId>,
-    describe_dialog: Option<ConfigMapDescribeDialog>,
-    view_dialog: Option<ConfigMapViewDialog>,
+    describe_dialog: Option<ResourceQuotaDescribeDialog>,
+    view_dialog: Option<ResourceQuotaViewDialog>,
 }
 
-impl ConfigMapResourcePanel {
+impl ResourceQuotaResourcePanel {
     pub(crate) fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -41,7 +39,7 @@ impl ConfigMapResourcePanel {
         let mut requests = ResourcePanelRequests::default();
         let Some(cluster_id) = cluster_id else {
             ui.centered_and_justified(|ui| {
-                ui.label("Select a cluster to load configmaps.");
+                ui.label("Select a cluster to load resource quotas.");
             });
             return requests;
         };
@@ -55,7 +53,7 @@ impl ConfigMapResourcePanel {
         if matches!(self.row_status, LoadStatus::Idle) {
             requests
                 .watches
-                .push(self.request_config_map_watch(cluster_id.clone()));
+                .push(self.request_resource_quota_watch(cluster_id.clone()));
         }
 
         self.show_toolbar(ui, cluster_id, &mut requests);
@@ -63,7 +61,6 @@ impl ConfigMapResourcePanel {
         self.show_body(ui);
         self.show_describe_dialog(ui.ctx());
         self.show_view_dialog(ui.ctx());
-
         requests
     }
 
@@ -82,20 +79,21 @@ impl ConfigMapResourcePanel {
                         Err(error) => self.namespace_status = LoadStatus::Error(error),
                     }
                 }
-                ResourceLoadKind::ConfigMaps { .. } => {
+                ResourceLoadKind::ResourceQuotas { .. } => {
                     if self.row_request_id != Some(request.request_id) {
                         return;
                     }
                     self.row_request_id = None;
                     match result {
                         Ok(list) => {
-                            self.rows = config_map_rows_from_list(&list.items);
+                            self.rows = resource_quota_rows_from_list(&list.items);
                             self.row_status = LoadStatus::Loaded;
                         }
                         Err(error) => self.row_status = LoadStatus::Error(error),
                     }
                 }
                 ResourceLoadKind::Nodes
+                | ResourceLoadKind::ConfigMaps { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::Deployments { .. }
@@ -103,7 +101,6 @@ impl ConfigMapResourcePanel {
                 | ResourceLoadKind::Jobs { .. }
                 | ResourceLoadKind::LimitRanges { .. }
                 | ResourceLoadKind::ReplicaSets { .. }
-                | ResourceLoadKind::ResourceQuotas { .. }
                 | ResourceLoadKind::Secrets { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::Pods { .. }
@@ -123,13 +120,13 @@ impl ConfigMapResourcePanel {
                         Err(error) => self.namespace_status = LoadStatus::Error(error),
                     }
                 }
-                ResourceLoadKind::ConfigMaps { .. } => {
+                ResourceLoadKind::ResourceQuotas { .. } => {
                     if self.row_watch_request_id != Some(request.request_id) {
                         return;
                     }
                     match result {
                         Ok(miku_api::ResourceEvent::Snapshot(list)) => {
-                            self.rows = config_map_rows_from_list(&list.items);
+                            self.rows = resource_quota_rows_from_list(&list.items);
                             self.row_status = LoadStatus::Loaded;
                         }
                         Ok(_) => {}
@@ -137,6 +134,7 @@ impl ConfigMapResourcePanel {
                     }
                 }
                 ResourceLoadKind::Nodes
+                | ResourceLoadKind::ConfigMaps { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::Deployments { .. }
@@ -144,7 +142,6 @@ impl ConfigMapResourcePanel {
                 | ResourceLoadKind::Jobs { .. }
                 | ResourceLoadKind::LimitRanges { .. }
                 | ResourceLoadKind::ReplicaSets { .. }
-                | ResourceLoadKind::ResourceQuotas { .. }
                 | ResourceLoadKind::Secrets { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::Pods { .. }
@@ -161,7 +158,6 @@ impl ConfigMapResourcePanel {
         if self.last_cluster_id.as_ref() == Some(cluster_id) {
             return;
         }
-
         self.last_cluster_id = Some(cluster_id.clone());
         self.namespace_filter = None;
         self.search_text.clear();
@@ -184,15 +180,14 @@ impl ConfigMapResourcePanel {
         requests: &mut ResourcePanelRequests,
     ) {
         ui.horizontal(|ui| {
-            let selected_label = self
-                .namespace_filter
-                .as_deref()
-                .unwrap_or("All namespaces")
-                .to_owned();
             let mut namespace_changed = false;
-
-            egui::ComboBox::from_id_salt("config_map_resource_namespace_filter")
-                .selected_text(selected_label)
+            egui::ComboBox::from_id_salt("resource_quota_namespace_filter")
+                .selected_text(
+                    self.namespace_filter
+                        .as_deref()
+                        .unwrap_or("All namespaces")
+                        .to_owned(),
+                )
                 .width(220.0)
                 .show_ui(ui, |ui| {
                     namespace_changed |= ui
@@ -211,10 +206,9 @@ impl ConfigMapResourcePanel {
 
             ui.add(
                 egui::TextEdit::singleline(&mut self.search_text)
-                    .hint_text("Search ConfigMaps...")
+                    .hint_text("Search ResourceQuotas...")
                     .desired_width(280.0),
             );
-
             if ui
                 .button(egui_phosphor::regular::ARROWS_CLOCKWISE)
                 .on_hover_text("Refresh")
@@ -225,12 +219,10 @@ impl ConfigMapResourcePanel {
                     .push(self.request_namespace_watch(cluster_id.clone()));
                 requests
                     .watches
-                    .push(self.request_config_map_watch(cluster_id.clone()));
+                    .push(self.request_resource_quota_watch(cluster_id.clone()));
             }
-
             ui.separator();
             ui.label(format!("{} items", self.filtered_row_count()));
-
             if matches!(self.row_status, LoadStatus::Loading) {
                 ui.label("Loading...");
             }
@@ -240,7 +232,7 @@ impl ConfigMapResourcePanel {
             if namespace_changed {
                 requests
                     .watches
-                    .push(self.request_config_map_watch(cluster_id.clone()));
+                    .push(self.request_resource_quota_watch(cluster_id.clone()));
             }
         });
     }
@@ -249,7 +241,7 @@ impl ConfigMapResourcePanel {
         match &self.row_status {
             LoadStatus::Idle | LoadStatus::Loading if self.rows.is_empty() => {
                 ui.centered_and_justified(|ui| {
-                    ui.label("Loading configmaps...");
+                    ui.label("Loading resource quotas...");
                 });
             }
             LoadStatus::Error(error) => {
@@ -261,40 +253,39 @@ impl ConfigMapResourcePanel {
                 let row_indices = self.filtered_row_indices();
                 if row_indices.is_empty() {
                     ui.centered_and_justified(|ui| {
-                        ui.label("No configmaps match the current filters.");
+                        ui.label("No resource quotas match the current filters.");
                     });
                     return;
                 }
-
-                let action = show_config_map_table(ui, &self.rows, row_indices);
+                let action = show_resource_quota_table(ui, &self.rows, row_indices);
                 self.apply_table_action(action);
             }
         }
     }
 
-    fn apply_table_action(&mut self, action: Option<ConfigMapTableAction>) {
+    fn apply_table_action(&mut self, action: Option<ResourceQuotaTableAction>) {
         match action {
-            Some(ConfigMapTableAction::Describe { key }) => {
+            Some(ResourceQuotaTableAction::Describe { key }) => {
                 let Some((name, describe)) = self
                     .row_by_key(&key)
-                    .map(|row| (row.name.clone(), config_map_describe_from_row(row)))
+                    .map(|row| (row.name.clone(), resource_quota_describe_from_row(row)))
                 else {
                     return;
                 };
-                self.describe_dialog = Some(ConfigMapDescribeDialog {
+                self.describe_dialog = Some(ResourceQuotaDescribeDialog {
                     key,
                     name,
                     describe,
                 });
             }
-            Some(ConfigMapTableAction::View { key }) => {
+            Some(ResourceQuotaTableAction::View { key }) => {
                 let Some((name, yaml)) = self
                     .row_by_key(&key)
                     .map(|row| (row.name.clone(), full_manifest_yaml(&row.raw)))
                 else {
                     return;
                 };
-                self.view_dialog = Some(ConfigMapViewDialog { key, name, yaml });
+                self.view_dialog = Some(ResourceQuotaViewDialog { key, name, yaml });
             }
             None => {}
         }
@@ -304,29 +295,23 @@ impl ConfigMapResourcePanel {
         let Some(dialog) = self.describe_dialog.as_ref() else {
             return;
         };
-
         let mut open = true;
         egui::Window::new(format!("Describe {}", dialog.name))
-            .id(egui::Id::new(("config_map-describe-dialog", &dialog.key)))
+            .id(egui::Id::new(("resource_quota-describe", &dialog.key)))
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .open(&mut open)
             .collapsible(false)
-            .fixed_size([DESCRIBE_DIALOG_WIDTH, DESCRIBE_DIALOG_HEIGHT])
+            .fixed_size([820.0, 560.0])
             .show(ctx, |ui| {
-                ui.set_width(DESCRIBE_DIALOG_WIDTH);
-                ui.set_height(DESCRIBE_CONTENT_HEIGHT);
                 egui::ScrollArea::both()
-                    .id_salt(("config_map-describe-content", &dialog.key))
-                    .max_width(DESCRIBE_DIALOG_WIDTH)
-                    .max_height(DESCRIBE_CONTENT_HEIGHT)
+                    .id_salt(("resource_quota-describe-content", &dialog.key))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.set_min_width(DESCRIBE_CONTENT_WIDTH);
+                        ui.set_min_width(980.0);
                         ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-                        show_config_map_describe(ui, &dialog.describe);
+                        show_resource_quota_describe(ui, &dialog.describe);
                     });
             });
-
         if !open {
             self.describe_dialog = None;
         }
@@ -336,27 +321,25 @@ impl ConfigMapResourcePanel {
         let Some(dialog) = self.view_dialog.as_ref() else {
             return;
         };
-
         let mut open = true;
         let response = ResourceYamlViewDialog {
-            id: egui::Id::new(("config_map-view-dialog", &dialog.key)),
+            id: egui::Id::new(("resource_quota-view", &dialog.key)),
             title: format!("View {}", dialog.name),
             yaml: &dialog.yaml,
             open: &mut open,
         }
         .show(ctx);
-
         if !response.open {
             self.view_dialog = None;
         }
     }
 
     #[cfg(test)]
-    fn request_config_maps(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
+    fn request_resource_quotas(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
         let request = ResourceLoadRequest {
             request_id: self.allocate_request_id(),
             cluster_id,
-            kind: ResourceLoadKind::ConfigMaps {
+            kind: ResourceLoadKind::ResourceQuotas {
                 namespace: self.namespace_filter.clone(),
             },
         };
@@ -376,11 +359,11 @@ impl ConfigMapResourcePanel {
         request
     }
 
-    fn request_config_map_watch(&mut self, cluster_id: ClusterId) -> ResourceWatchRequest {
+    fn request_resource_quota_watch(&mut self, cluster_id: ClusterId) -> ResourceWatchRequest {
         let request = ResourceWatchRequest {
             request_id: self.allocate_request_id(),
             cluster_id,
-            kind: ResourceLoadKind::ConfigMaps {
+            kind: ResourceLoadKind::ResourceQuotas {
                 namespace: self.namespace_filter.clone(),
             },
         };
@@ -409,39 +392,38 @@ impl ConfigMapResourcePanel {
             .collect()
     }
 
-    fn row_by_key(&self, key: &str) -> Option<&ConfigMapRow> {
+    fn row_by_key(&self, key: &str) -> Option<&ResourceQuotaRow> {
         self.rows.iter().find(|row| row.key == key)
     }
 }
 
-fn show_config_map_table(
+fn show_resource_quota_table(
     ui: &mut egui::Ui,
-    rows: &[ConfigMapRow],
+    rows: &[ResourceQuotaRow],
     row_indices: Vec<usize>,
-) -> Option<ConfigMapTableAction> {
+) -> Option<ResourceQuotaTableAction> {
     let row_height = ui.spacing().interact_size.y;
-    let table_width: f32 = COLUMN_WIDTHS.iter().sum::<f32>()
-        + ui.spacing().item_spacing.x * COLUMN_WIDTHS.len().saturating_sub(1) as f32;
+    let widths = [240.0, 160.0, 180.0, 360.0, 360.0, 90.0];
+    let table_width = widths.iter().sum::<f32>() + ui.spacing().item_spacing.x * 5.0;
     let mut action = None;
-
     egui::ScrollArea::horizontal()
-        .id_salt("config_map_resource_table_horizontal")
+        .id_salt("resource_quota_table_horizontal")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.set_min_width(table_width);
             let mut table = TableBuilder::new(ui)
-                .id_salt("config_map_resource_table")
+                .id_salt("resource_quota_table")
                 .striped(true)
                 .resizable(false)
                 .sense(egui::Sense::click())
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .min_scrolled_height(0.0);
-            for width in COLUMN_WIDTHS {
+            for width in widths {
                 table = table.column(Column::exact(width));
             }
             table
                 .header(row_height, |mut header| {
-                    for label in COLUMNS {
+                    for label in ["Name", "Namespace", "Scopes", "Hard", "Used", "Age"] {
                         header.col(|ui| {
                             ui.strong(label);
                         });
@@ -455,7 +437,6 @@ fn show_config_map_table(
                         else {
                             return;
                         };
-
                         table_row.col(|ui| {
                             ui.label(&row.name);
                         });
@@ -463,27 +444,23 @@ fn show_config_map_table(
                             ui.label(&row.namespace);
                         });
                         table_row.col(|ui| {
-                            ui.label(&row.data_count);
+                            ui.label(&row.scopes);
                         });
                         table_row.col(|ui| {
-                            ui.label(&row.binary_data_count);
+                            ui.label(&row.hard);
                         });
                         table_row.col(|ui| {
-                            ui.label(&row.immutable);
-                        });
-                        table_row.col(|ui| {
-                            ui.label(&row.keys);
+                            ui.label(&row.used);
                         });
                         table_row.col(|ui| {
                             ui.label(&row.age);
                         });
-
                         table_row.response().context_menu(|ui| {
                             if ui
                                 .button(format!("{} Describe", egui_phosphor::regular::INFO))
                                 .clicked()
                             {
-                                action = Some(ConfigMapTableAction::Describe {
+                                action = Some(ResourceQuotaTableAction::Describe {
                                     key: row.key.clone(),
                                 });
                                 ui.close();
@@ -492,7 +469,7 @@ fn show_config_map_table(
                                 .button(format!("{} View", egui_phosphor::regular::EYE))
                                 .clicked()
                             {
-                                action = Some(ConfigMapTableAction::View {
+                                action = Some(ResourceQuotaTableAction::View {
                                     key: row.key.clone(),
                                 });
                                 ui.close();
@@ -501,51 +478,33 @@ fn show_config_map_table(
                     });
                 });
         });
-
     action
 }
 
-const COLUMNS: [&str; 7] = [
-    "Name",
-    "Namespace",
-    "Data",
-    "Binary Data",
-    "Immutable",
-    "Keys",
-    "Age",
-];
-const COLUMN_WIDTHS: [f32; 7] = [240.0, 160.0, 80.0, 110.0, 100.0, 360.0, 90.0];
-const DESCRIBE_DIALOG_WIDTH: f32 = 820.0;
-const DESCRIBE_DIALOG_HEIGHT: f32 = 560.0;
-const DESCRIBE_CONTENT_HEIGHT: f32 = 500.0;
-const DESCRIBE_CONTENT_WIDTH: f32 = 1080.0;
-const DESCRIBE_SECTION_WIDTH: f32 = 1048.0;
-const DESCRIBE_FIELD_LABEL_WIDTH: f32 = 130.0;
-const DESCRIBE_FIELD_VALUE_WIDTH: f32 = 360.0;
+fn row_matches_search(row: &ResourceQuotaRow, search_text: &str) -> bool {
+    let needle = search_text.trim().to_lowercase();
+    needle.is_empty()
+        || row.name.to_lowercase().contains(&needle)
+        || row.namespace.to_lowercase().contains(&needle)
+        || row.scopes.to_lowercase().contains(&needle)
+        || row.hard.to_lowercase().contains(&needle)
+        || row.used.to_lowercase().contains(&needle)
+}
 
 #[cfg(test)]
-fn filter_config_map_rows<'a>(
-    rows: &'a [ConfigMapRow],
+fn filter_resource_quota_rows<'a>(
+    rows: &'a [ResourceQuotaRow],
     search_text: &str,
-) -> Vec<&'a ConfigMapRow> {
+) -> Vec<&'a ResourceQuotaRow> {
     rows.iter()
         .filter(|row| row_matches_search(row, search_text))
         .collect()
 }
 
-fn row_matches_search(row: &ConfigMapRow, search_text: &str) -> bool {
-    let needle = search_text.trim().to_lowercase();
-    needle.is_empty()
-        || row.name.to_lowercase().contains(&needle)
-        || row.namespace.to_lowercase().contains(&needle)
-        || row.keys.to_lowercase().contains(&needle)
-        || row.summary.to_lowercase().contains(&needle)
-}
-
-fn config_map_rows_from_list(items: &[ResourceSummary]) -> Vec<ConfigMapRow> {
+fn resource_quota_rows_from_list(items: &[ResourceSummary]) -> Vec<ResourceQuotaRow> {
     let mut rows = items
         .iter()
-        .map(ConfigMapRow::from_summary)
+        .map(ResourceQuotaRow::from_summary)
         .collect::<Vec<_>>();
     rows.sort_by(|left, right| {
         left.namespace
@@ -556,48 +515,33 @@ fn config_map_rows_from_list(items: &[ResourceSummary]) -> Vec<ConfigMapRow> {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct ConfigMapRow {
+struct ResourceQuotaRow {
     key: String,
     name: String,
     namespace: String,
-    data_count: String,
-    binary_data_count: String,
-    immutable: String,
-    keys: String,
-    summary: String,
+    scopes: String,
+    hard: String,
+    used: String,
     age: String,
     raw: serde_json::Value,
 }
 
-impl ConfigMapRow {
+impl ResourceQuotaRow {
     fn from_summary(summary: &ResourceSummary) -> Self {
         let raw = &summary.raw;
         let name = value_str(raw, &["metadata", "name"]).unwrap_or(&summary.name);
         let namespace = value_str(raw, &["metadata", "namespace"])
             .or(summary.namespace.as_deref())
             .unwrap_or("N/A");
-        let data_count = object_key_count(raw.pointer("/data"));
-        let binary_data_count = object_key_count(raw.pointer("/binaryData"));
-        let keys = sorted_keys(&[raw.pointer("/data"), raw.pointer("/binaryData")]);
-        let keys_label = if keys.is_empty() {
-            "N/A".to_owned()
-        } else {
-            keys.join(", ")
-        };
-        let immutable = value_bool(raw, &["immutable"])
-            .map_or_else(|| "N/A".to_owned(), |value| value.to_string());
-
         Self {
-            key: namespaced_key(namespace, name),
+            key: format!("{namespace}/{name}"),
             name: name.to_owned(),
             namespace: namespace.to_owned(),
-            data_count: data_count.to_string(),
-            binary_data_count: binary_data_count.to_string(),
-            immutable,
-            keys: keys_label.clone(),
-            summary: format!(
-                "data={data_count}, binaryData={binary_data_count}, keys={keys_label}"
-            ),
+            scopes: string_array(raw.pointer("/spec/scopes")),
+            hard: resource_map(raw.pointer("/status/hard"))
+                .or_else(|| resource_map(raw.pointer("/spec/hard")))
+                .unwrap_or_else(|| "N/A".to_owned()),
+            used: resource_map(raw.pointer("/status/used")).unwrap_or_else(|| "N/A".to_owned()),
             age: value_str(raw, &["metadata", "creationTimestamp"])
                 .map(|timestamp| {
                     human_age_from_rfc3339(timestamp).unwrap_or_else(|| timestamp.to_owned())
@@ -609,234 +553,114 @@ impl ConfigMapRow {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum ConfigMapTableAction {
+enum ResourceQuotaTableAction {
     Describe { key: String },
     View { key: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct ConfigMapDescribeDialog {
+struct ResourceQuotaDescribeDialog {
     key: String,
     name: String,
-    describe: ConfigMapDescribe,
+    describe: ResourceQuotaDescribe,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct ConfigMapViewDialog {
+struct ResourceQuotaViewDialog {
     key: String,
     name: String,
     yaml: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct ConfigMapDescribe {
-    summary: Vec<DescribeField>,
-    data_keys: Vec<ResourceMapEntry>,
-    binary_data_keys: Vec<ResourceMapEntry>,
-    labels: Vec<ResourceMapEntry>,
-    annotations: Vec<ResourceMapEntry>,
+struct ResourceQuotaDescribe {
+    summary: Vec<(String, String)>,
+    hard: String,
+    used: String,
+    labels: String,
+    annotations: String,
     raw_yaml: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-struct DescribeField {
-    label: String,
-    value: String,
-}
-
-impl DescribeField {
-    fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
-        Self {
-            label: label.into(),
-            value: value.into(),
-        }
-    }
-}
-
-fn show_config_map_describe(ui: &mut egui::Ui, describe: &ConfigMapDescribe) {
-    describe_group(ui, egui_phosphor::regular::GEAR, "ConfigMap", |ui| {
-        describe_fields(ui, &describe.summary);
-    });
-
-    ui.add_space(10.0);
-    describe_group(ui, egui_phosphor::regular::KEY, "Keys", |ui| {
-        ResourceMapView {
-            id_salt: "config_map-describe-data-keys",
-            icon: egui_phosphor::regular::KEY,
-            title: "Data",
-            entries: &describe.data_keys,
-            empty_label: "No data keys.",
-        }
-        .show(ui);
-        ui.add_space(8.0);
-        ResourceMapView {
-            id_salt: "config_map-describe-binary-data-keys",
-            icon: egui_phosphor::regular::KEY,
-            title: "Binary data",
-            entries: &describe.binary_data_keys,
-            empty_label: "No binary data keys.",
-        }
-        .show(ui);
-    });
-
-    ui.add_space(10.0);
-    describe_group(ui, egui_phosphor::regular::TAG, "Metadata", |ui| {
-        ResourceMapView {
-            id_salt: "config_map-describe-labels",
-            icon: egui_phosphor::regular::TAG,
-            title: "Labels",
-            entries: &describe.labels,
-            empty_label: "No labels.",
-        }
-        .show(ui);
-        ui.add_space(8.0);
-        ResourceMapView {
-            id_salt: "config_map-describe-annotations",
-            icon: egui_phosphor::regular::NOTE,
-            title: "Annotations",
-            entries: &describe.annotations,
-            empty_label: "No annotations.",
-        }
-        .show(ui);
-    });
-
-    ui.add_space(10.0);
-    describe_group(ui, egui_phosphor::regular::CODE, "Raw manifest", |ui| {
-        egui::ScrollArea::both()
-            .id_salt("config_map-describe-raw-manifest-content")
-            .max_height(180.0)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(&describe.raw_yaml).monospace())
-                        .wrap_mode(TextWrapMode::Extend)
-                        .selectable(true),
-                );
-            });
-    });
-}
-
-fn describe_group(
-    ui: &mut egui::Ui,
-    icon: &str,
-    title: &str,
-    contents: impl FnOnce(&mut egui::Ui),
-) {
-    egui::Frame::new()
-        .fill(ui.visuals().extreme_bg_color)
-        .stroke(egui::Stroke::new(
-            1.0,
-            ui.visuals().widgets.noninteractive.bg_stroke.color,
-        ))
-        .corner_radius(egui::CornerRadius::same(4))
-        .inner_margin(egui::Margin::symmetric(10, 8))
-        .show(ui, |ui| {
-            ui.set_min_width(DESCRIBE_SECTION_WIDTH);
-            ui.horizontal(|ui| {
-                ui.label(icon);
-                ui.strong(title);
-            });
-            ui.separator();
-            contents(ui);
-        });
-}
-
-fn describe_fields(ui: &mut egui::Ui, fields: &[DescribeField]) {
-    egui::Grid::new(ui.next_auto_id())
-        .num_columns(4)
-        .spacing([16.0, 4.0])
-        .show(ui, |ui| {
-            for chunk in fields.chunks(2) {
-                for field in chunk {
-                    ui.add_sized(
-                        [DESCRIBE_FIELD_LABEL_WIDTH, 0.0],
-                        egui::Label::new(egui::RichText::new(&field.label).weak())
-                            .wrap_mode(TextWrapMode::Extend),
-                    );
-                    ui.add_sized(
-                        [DESCRIBE_FIELD_VALUE_WIDTH, 0.0],
-                        egui::Label::new(&field.value)
-                            .wrap_mode(TextWrapMode::Extend)
-                            .selectable(true),
-                    );
-                }
-                if chunk.len() == 1 {
-                    ui.label("");
-                    ui.label("");
-                }
-                ui.end_row();
-            }
-        });
-}
-
-fn config_map_describe_from_row(row: &ConfigMapRow) -> ConfigMapDescribe {
+fn resource_quota_describe_from_row(row: &ResourceQuotaRow) -> ResourceQuotaDescribe {
     let raw = &row.raw;
-    ConfigMapDescribe {
+    ResourceQuotaDescribe {
         summary: vec![
-            DescribeField::new("Name", row.name.clone()),
-            DescribeField::new("Namespace", row.namespace.clone()),
-            DescribeField::new("Age", row.age.clone()),
-            DescribeField::new("Immutable", row.immutable.clone()),
-            DescribeField::new("Data", row.data_count.clone()),
-            DescribeField::new("Binary data", row.binary_data_count.clone()),
-            DescribeField::new("Keys", row.keys.clone()),
+            ("Name".to_owned(), row.name.clone()),
+            ("Namespace".to_owned(), row.namespace.clone()),
+            ("Scopes".to_owned(), row.scopes.clone()),
+            ("Age".to_owned(), row.age.clone()),
         ],
-        data_keys: key_entries(raw.pointer("/data")),
-        binary_data_keys: key_entries(raw.pointer("/binaryData")),
-        labels: string_map_entries(raw.pointer("/metadata/labels")),
-        annotations: string_map_entries(raw.pointer("/metadata/annotations")),
+        hard: resource_map(raw.pointer("/status/hard"))
+            .or_else(|| resource_map(raw.pointer("/spec/hard")))
+            .unwrap_or_else(|| "N/A".to_owned()),
+        used: resource_map(raw.pointer("/status/used")).unwrap_or_else(|| "N/A".to_owned()),
+        labels: resource_map(raw.pointer("/metadata/labels")).unwrap_or_else(|| "N/A".to_owned()),
+        annotations: resource_map(raw.pointer("/metadata/annotations"))
+            .unwrap_or_else(|| "N/A".to_owned()),
         raw_yaml: full_manifest_yaml(raw),
     }
 }
 
-fn namespaced_key(namespace: &str, name: &str) -> String {
-    format!("{namespace}/{name}")
+fn show_resource_quota_describe(ui: &mut egui::Ui, describe: &ResourceQuotaDescribe) {
+    ui.heading("ResourceQuota");
+    ui.separator();
+    egui::Grid::new("resource_quota_summary")
+        .num_columns(2)
+        .spacing([16.0, 4.0])
+        .show(ui, |ui| {
+            for (label, value) in &describe.summary {
+                ui.weak(label);
+                ui.label(value);
+                ui.end_row();
+            }
+        });
+    ui.add_space(10.0);
+    describe_block(ui, "Hard", &describe.hard);
+    describe_block(ui, "Used", &describe.used);
+    describe_block(ui, "Labels", &describe.labels);
+    describe_block(ui, "Annotations", &describe.annotations);
+    describe_block(ui, "Raw manifest", &describe.raw_yaml);
 }
 
-fn object_key_count(value: Option<&serde_json::Value>) -> usize {
-    value
-        .and_then(serde_json::Value::as_object)
-        .map_or(0, |object| object.len())
+fn describe_block(ui: &mut egui::Ui, title: &str, value: &str) {
+    ui.strong(title);
+    ui.add(
+        egui::Label::new(egui::RichText::new(value).monospace())
+            .wrap_mode(TextWrapMode::Extend)
+            .selectable(true),
+    );
+    ui.add_space(8.0);
 }
 
-fn sorted_keys(values: &[Option<&serde_json::Value>]) -> Vec<String> {
-    let mut keys = BTreeSet::new();
-    for value in values {
-        if let Some(object) = value.and_then(serde_json::Value::as_object) {
-            keys.extend(object.keys().cloned());
-        }
+fn string_array(value: Option<&serde_json::Value>) -> String {
+    let values = value
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        "N/A".to_owned()
+    } else {
+        values.join(", ")
     }
-    keys.into_iter().collect()
 }
 
-fn key_entries(value: Option<&serde_json::Value>) -> Vec<ResourceMapEntry> {
-    sorted_keys(&[value])
-        .into_iter()
-        .map(|key| ResourceMapEntry::new(key, "present"))
-        .collect()
-}
-
-fn string_map_entries(value: Option<&serde_json::Value>) -> Vec<ResourceMapEntry> {
+fn resource_map(value: Option<&serde_json::Value>) -> Option<String> {
     let mut entries = value
-        .and_then(serde_json::Value::as_object)
-        .into_iter()
-        .flat_map(|object| {
-            object.iter().map(|(key, value)| {
-                let value = value
-                    .as_str()
-                    .map_or_else(|| value.to_string(), ToOwned::to_owned);
-                ResourceMapEntry::new(key, value)
-            })
+        .and_then(serde_json::Value::as_object)?
+        .iter()
+        .map(|(key, value)| {
+            let value = value
+                .as_str()
+                .map_or_else(|| value.to_string(), ToOwned::to_owned);
+            format!("{key}={value}")
         })
         .collect::<Vec<_>>();
-    entries.sort_by(|left, right| left.key.cmp(&right.key));
-    entries
-}
-
-fn full_manifest_yaml(raw: &serde_json::Value) -> String {
-    serde_yaml::to_string(raw)
-        .or_else(|_| serde_json::to_string_pretty(raw))
-        .unwrap_or_default()
+    entries.sort();
+    (!entries.is_empty()).then(|| entries.join(", "))
 }
 
 fn value_str<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a str> {
@@ -847,12 +671,10 @@ fn value_str<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a str>
     current.as_str()
 }
 
-fn value_bool(value: &serde_json::Value, path: &[&str]) -> Option<bool> {
-    let mut current = value;
-    for key in path {
-        current = current.get(*key)?;
-    }
-    current.as_bool()
+fn full_manifest_yaml(raw: &serde_json::Value) -> String {
+    serde_yaml::to_string(raw)
+        .or_else(|_| serde_json::to_string_pretty(raw))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -861,144 +683,87 @@ mod tests {
     use miku_api::ResourceList;
 
     #[test]
-    fn config_map_request_query_uses_selected_namespace() {
-        let mut panel = ConfigMapResourcePanel {
+    fn resource_quota_request_query_uses_selected_namespace() {
+        let mut panel = ResourceQuotaResourcePanel {
             namespace_filter: Some("production".to_owned()),
-            ..ConfigMapResourcePanel::default()
+            ..ResourceQuotaResourcePanel::default()
         };
-
-        let request = panel.request_config_maps(ClusterId::new("local"));
-        let query = request.query();
-
-        assert_eq!(query.resource.plural, "configmaps");
-        assert_eq!(query.resource.group, None);
+        let query = panel
+            .request_resource_quotas(ClusterId::new("local"))
+            .query();
+        assert_eq!(query.resource.plural, "resourcequotas");
         assert_eq!(query.namespace.as_deref(), Some("production"));
     }
 
     #[test]
-    fn config_map_row_extracts_table_fields_from_raw_summary() {
-        let row = ConfigMapRow::from_summary(&config_map_summary());
-
-        assert_eq!(row.name, "app-config");
+    fn resource_quota_row_extracts_fields() {
+        let row = ResourceQuotaRow::from_summary(&quota_summary());
+        assert_eq!(row.name, "compute");
         assert_eq!(row.namespace, "default");
-        assert_eq!(row.data_count, "2");
-        assert_eq!(row.binary_data_count, "1");
-        assert_eq!(row.immutable, "true");
-        assert_eq!(row.keys, "app.toml, cert.bin, log-level");
+        assert_eq!(row.scopes, "BestEffort, NotTerminating");
+        assert_eq!(row.hard, "limits.cpu=4, pods=10, requests.memory=8Gi");
+        assert_eq!(row.used, "limits.cpu=2, pods=4, requests.memory=2Gi");
         assert!(row.age.ends_with(" ago"));
     }
 
     #[test]
-    fn config_map_row_handles_missing_optional_fields() {
-        let row = ConfigMapRow::from_summary(&ResourceSummary {
+    fn resource_quota_row_handles_missing_fields() {
+        let row = ResourceQuotaRow::from_summary(&ResourceSummary {
             name: "minimal".to_owned(),
             namespace: Some("default".to_owned()),
-            kind: "ConfigMap".to_owned(),
+            kind: "ResourceQuota".to_owned(),
             status: None,
             raw: serde_json::json!({"metadata": {"name": "minimal", "namespace": "default"}}),
         });
-
-        assert_eq!(row.data_count, "0");
-        assert_eq!(row.binary_data_count, "0");
-        assert_eq!(row.immutable, "N/A");
-        assert_eq!(row.keys, "N/A");
+        assert_eq!(row.scopes, "N/A");
+        assert_eq!(row.hard, "N/A");
+        assert_eq!(row.used, "N/A");
         assert_eq!(row.age, "N/A");
     }
 
     #[test]
-    fn config_map_rows_filter_by_fields_case_insensitively() {
-        let rows = vec![
-            ConfigMapRow::from_summary(&config_map_summary()),
-            ConfigMapRow::from_summary(&config_map_summary_with_name("production", "worker-conf")),
-        ];
-
-        assert_eq!(filter_config_map_rows(&rows, "APP-CONFIG").len(), 1);
-        assert_eq!(filter_config_map_rows(&rows, "PRODUCTION").len(), 1);
-        assert_eq!(filter_config_map_rows(&rows, "log-level").len(), 2);
-        assert_eq!(filter_config_map_rows(&rows, "binarydata=1").len(), 2);
-    }
-
-    #[test]
-    fn config_map_rows_are_sorted_by_namespace_and_name() {
-        let rows = config_map_rows_from_list(&[
-            config_map_summary_with_name("zeta", "worker"),
-            config_map_summary_with_name("default", "api-b"),
-            config_map_summary_with_name("default", "api-a"),
+    fn resource_quota_rows_filter_and_sort() {
+        let rows = resource_quota_rows_from_list(&[
+            quota_summary_with_name("zeta", "worker"),
+            quota_summary_with_name("default", "api-b"),
+            quota_summary_with_name("default", "api-a"),
         ]);
-
-        let keys = rows.into_iter().map(|row| row.key).collect::<Vec<_>>();
+        let keys = rows.iter().map(|row| row.key.as_str()).collect::<Vec<_>>();
         assert_eq!(keys, vec!["default/api-a", "default/api-b", "zeta/worker"]);
-    }
-
-    #[test]
-    fn config_map_describe_extracts_metadata_and_key_lists() {
-        let row = ConfigMapRow::from_summary(&config_map_summary());
-        let describe = config_map_describe_from_row(&row);
-
-        assert_eq!(describe.data_keys.len(), 2);
-        assert_eq!(describe.binary_data_keys.len(), 1);
-        assert_eq!(describe.labels.len(), 1);
-        assert_eq!(describe.annotations.len(), 1);
-        assert!(describe.raw_yaml.contains("app.toml"));
-    }
-
-    #[test]
-    fn stale_resource_events_do_not_replace_current_rows() {
-        let mut panel = ConfigMapResourcePanel::default();
-        let cluster_id = ClusterId::new("local");
-        let first = panel.request_config_maps(cluster_id.clone());
-        let second = panel.request_config_maps(cluster_id);
-
-        panel.apply_event(ResourceUiEvent::ResourcesLoaded {
-            request: first,
-            result: Ok(ResourceList {
-                items: vec![config_map_summary_with_name("default", "stale")],
-                continue_token: None,
-            }),
-        });
-        assert!(panel.rows.is_empty());
-
-        panel.apply_event(ResourceUiEvent::ResourcesLoaded {
-            request: second,
-            result: Ok(ResourceList {
-                items: vec![config_map_summary()],
-                continue_token: None,
-            }),
-        });
-
-        assert_eq!(panel.rows[0].name, "app-config");
+        assert_eq!(
+            filter_resource_quota_rows(&rows, "REQUESTS.MEMORY").len(),
+            3
+        );
+        assert_eq!(filter_resource_quota_rows(&rows, "ZETA").len(), 1);
     }
 
     #[test]
     fn stale_watch_events_do_not_replace_current_rows() {
-        let mut panel = ConfigMapResourcePanel::default();
+        let mut panel = ResourceQuotaResourcePanel::default();
         let cluster_id = ClusterId::new("local");
-        let first = panel.request_config_map_watch(cluster_id.clone());
-        let second = panel.request_config_map_watch(cluster_id);
-
+        let first = panel.request_resource_quota_watch(cluster_id.clone());
+        let second = panel.request_resource_quota_watch(cluster_id);
         panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
             request: first,
             result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
-                items: vec![config_map_summary_with_name("default", "stale")],
+                items: vec![quota_summary_with_name("default", "stale")],
                 continue_token: None,
             })),
         });
         assert!(panel.rows.is_empty());
-
         panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
             request: second,
             result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
-                items: vec![config_map_summary()],
+                items: vec![quota_summary()],
                 continue_token: None,
             })),
         });
-
-        assert_eq!(panel.rows[0].name, "app-config");
+        assert_eq!(panel.rows[0].name, "compute");
     }
 
     #[test]
     fn namespace_watch_events_from_shared_request_update_selector() {
-        let mut panel = ConfigMapResourcePanel::default();
+        let mut panel = ResourceQuotaResourcePanel::default();
         panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
             request: ResourceWatchRequest {
                 request_id: 42,
@@ -1010,35 +775,32 @@ mod tests {
                 continue_token: None,
             })),
         });
-
         assert_eq!(panel.namespaces, vec!["production".to_owned()]);
     }
 
-    fn config_map_summary() -> ResourceSummary {
-        config_map_summary_with_name("default", "app-config")
+    fn quota_summary() -> ResourceSummary {
+        quota_summary_with_name("default", "compute")
     }
 
-    fn config_map_summary_with_name(namespace: &str, name: &str) -> ResourceSummary {
+    fn quota_summary_with_name(namespace: &str, name: &str) -> ResourceSummary {
         ResourceSummary {
             name: name.to_owned(),
             namespace: Some(namespace.to_owned()),
-            kind: "ConfigMap".to_owned(),
+            kind: "ResourceQuota".to_owned(),
             status: None,
             raw: serde_json::json!({
                 "metadata": {
                     "name": name,
                     "namespace": namespace,
-                    "creationTimestamp": "2026-05-18T10:00:00Z",
-                    "labels": {"app": "api"},
-                    "annotations": {"owner": "platform"}
+                    "creationTimestamp": "2026-05-18T10:00:00Z"
                 },
-                "immutable": true,
-                "data": {
-                    "app.toml": "port = 8080",
-                    "log-level": "info"
+                "spec": {
+                    "scopes": ["BestEffort", "NotTerminating"],
+                    "hard": {"pods": "10"}
                 },
-                "binaryData": {
-                    "cert.bin": "AA=="
+                "status": {
+                    "hard": {"pods": "10", "limits.cpu": "4", "requests.memory": "8Gi"},
+                    "used": {"pods": "4", "limits.cpu": "2", "requests.memory": "2Gi"}
                 }
             }),
         }

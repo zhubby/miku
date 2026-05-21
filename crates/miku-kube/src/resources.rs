@@ -36,6 +36,8 @@ fn kind_for_plural(plural: &str) -> String {
         "statefulsets" => "StatefulSet".to_owned(),
         "namespaces" => "Namespace".to_owned(),
         "configmaps" => "ConfigMap".to_owned(),
+        "limitranges" => "LimitRange".to_owned(),
+        "resourcequotas" => "ResourceQuota".to_owned(),
         "secrets" => "Secret".to_owned(),
         "customresourcedefinitions" => "CustomResourceDefinition".to_owned(),
         value => value
@@ -292,6 +294,26 @@ mod tests {
 
         assert_eq!(api_resource.kind, "Job");
         assert_eq!(api_resource.plural, "jobs");
+    }
+
+    #[test]
+    fn api_resource_uses_known_kind_for_resource_quotas() {
+        let resource = miku_core::ResourceRef::core("v1", "resourcequotas");
+
+        let api_resource = api_resource(&resource);
+
+        assert_eq!(api_resource.kind, "ResourceQuota");
+        assert_eq!(api_resource.plural, "resourcequotas");
+    }
+
+    #[test]
+    fn api_resource_uses_known_kind_for_limit_ranges() {
+        let resource = miku_core::ResourceRef::core("v1", "limitranges");
+
+        let api_resource = api_resource(&resource);
+
+        assert_eq!(api_resource.kind, "LimitRange");
+        assert_eq!(api_resource.plural, "limitranges");
     }
 
     #[test]

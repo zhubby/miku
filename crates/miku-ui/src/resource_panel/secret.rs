@@ -104,7 +104,9 @@ impl SecretResourcePanel {
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::Jobs { .. }
+                | ResourceLoadKind::LimitRanges { .. }
                 | ResourceLoadKind::ReplicaSets { .. }
+                | ResourceLoadKind::ResourceQuotas { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
@@ -143,7 +145,9 @@ impl SecretResourcePanel {
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::Jobs { .. }
+                | ResourceLoadKind::LimitRanges { .. }
                 | ResourceLoadKind::ReplicaSets { .. }
+                | ResourceLoadKind::ResourceQuotas { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}

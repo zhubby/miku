@@ -100,7 +100,9 @@ impl ReplicaSetResourcePanel {
                 | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::Jobs { .. }
+                | ResourceLoadKind::LimitRanges { .. }
                 | ResourceLoadKind::Secrets { .. }
+                | ResourceLoadKind::ResourceQuotas { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
@@ -139,7 +141,9 @@ impl ReplicaSetResourcePanel {
                 | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::Jobs { .. }
+                | ResourceLoadKind::LimitRanges { .. }
                 | ResourceLoadKind::Secrets { .. }
+                | ResourceLoadKind::ResourceQuotas { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}

@@ -8,10 +8,11 @@ use miku_api::{
 
 use crate::resource_panel::{
     ConfigMapResourcePanel, CronJobResourcePanel, CustomResourcesPanel, DaemonSetResourcePanel,
-    DeploymentResourcePanel, EventResourcePanel, JobResourcePanel, NamespaceResourcePanel,
-    NodeResourcePanel, PodAttachInputRequest, PodAttachRequest, PodLogRequest, PodResourcePanel,
-    ReplicaSetResourcePanel, ResourceActionRequest, ResourceLoadRequest, ResourceWatchRequest,
-    SecretResourcePanel, StatefulSetResourcePanel,
+    DeploymentResourcePanel, EventResourcePanel, JobResourcePanel, LimitRangeResourcePanel,
+    NamespaceResourcePanel, NodeResourcePanel, PodAttachInputRequest, PodAttachRequest,
+    PodLogRequest, PodResourcePanel, ReplicaSetResourcePanel, ResourceActionRequest,
+    ResourceLoadRequest, ResourceQuotaResourcePanel, ResourceWatchRequest, SecretResourcePanel,
+    StatefulSetResourcePanel,
 };
 use crate::resources::{RESOURCE_CATEGORIES, ResourceNavItem};
 use crate::state::{AppState, ClusterConnectionState};
@@ -47,10 +48,12 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) deployment_resource_panel: Option<&'a mut DeploymentResourcePanel>,
     pub(crate) event_resource_panel: Option<&'a mut EventResourcePanel>,
     pub(crate) job_resource_panel: Option<&'a mut JobResourcePanel>,
+    pub(crate) limit_range_resource_panel: Option<&'a mut LimitRangeResourcePanel>,
     pub(crate) namespace_resource_panel: Option<&'a mut NamespaceResourcePanel>,
     pub(crate) node_resource_panel: Option<&'a mut NodeResourcePanel>,
     pub(crate) pod_resource_panel: Option<&'a mut PodResourcePanel>,
     pub(crate) replica_set_resource_panel: Option<&'a mut ReplicaSetResourcePanel>,
+    pub(crate) resource_quota_resource_panel: Option<&'a mut ResourceQuotaResourcePanel>,
     pub(crate) secret_resource_panel: Option<&'a mut SecretResourcePanel>,
     pub(crate) stateful_set_resource_panel: Option<&'a mut StatefulSetResourcePanel>,
     pub(crate) custom_resources_panel: Option<&'a mut CustomResourcesPanel>,
@@ -213,6 +216,16 @@ impl TabViewer for AppTabViewer<'_> {
                             ui.label("Job resource panel is unavailable.");
                         });
                     }
+                } else if resource.name == "Limit Ranges" {
+                    if let Some(panel) = self.limit_range_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("LimitRange resource panel is unavailable.");
+                        });
+                    }
                 } else if resource.name == "Namespaces" {
                     if let Some(panel) = self.namespace_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
@@ -256,6 +269,16 @@ impl TabViewer for AppTabViewer<'_> {
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("ReplicaSet resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Resource Quotas" {
+                    if let Some(panel) = self.resource_quota_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("ResourceQuota resource panel is unavailable.");
                         });
                     }
                 } else if resource.name == "Secrets" {

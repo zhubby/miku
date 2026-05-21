@@ -128,7 +128,9 @@ impl PodResourcePanel {
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::Jobs { .. }
+                | ResourceLoadKind::LimitRanges { .. }
                 | ResourceLoadKind::ReplicaSets { .. }
+                | ResourceLoadKind::ResourceQuotas { .. }
                 | ResourceLoadKind::Secrets { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
@@ -266,7 +268,9 @@ impl PodResourcePanel {
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::Jobs { .. }
+                | ResourceLoadKind::LimitRanges { .. }
                 | ResourceLoadKind::ReplicaSets { .. }
+                | ResourceLoadKind::ResourceQuotas { .. }
                 | ResourceLoadKind::Secrets { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
