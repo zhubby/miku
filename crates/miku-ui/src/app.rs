@@ -12,15 +12,17 @@ use crate::forms::NewClusterForm;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::resource_panel::ResourceWatchKey;
 use crate::resource_panel::{
-    ConfigMapResourcePanel, CronJobResourcePanel, CustomResourcesPanel, DaemonSetResourcePanel,
-    DeploymentResourcePanel, EndpointSliceResourcePanel, EndpointsResourcePanel,
-    EventResourcePanel, IngressClassResourcePanel, IngressResourcePanel, JobResourcePanel,
-    LimitRangeResourcePanel, NamespaceResourcePanel, NetworkPolicyResourcePanel, NodeResourcePanel,
+    ClusterRoleBindingResourcePanel, ClusterRoleResourcePanel, ConfigMapResourcePanel,
+    CronJobResourcePanel, CustomResourcesPanel, DaemonSetResourcePanel, DeploymentResourcePanel,
+    EndpointSliceResourcePanel, EndpointsResourcePanel, EventResourcePanel,
+    IngressClassResourcePanel, IngressResourcePanel, JobResourcePanel, LimitRangeResourcePanel,
+    NamespaceResourcePanel, NetworkPolicyResourcePanel, NodeResourcePanel,
     PersistentVolumeClaimResourcePanel, PersistentVolumeResourcePanel, PodAttachInputRequest,
     PodAttachRequest, PodLogRequest, PodResourcePanel, ReplicaSetResourcePanel, ResourceActionKind,
     ResourceActionOutcome, ResourceActionRequest, ResourceLoadKind, ResourceLoadRequest,
-    ResourceQuotaResourcePanel, ResourceUiEvent, ResourceWatchRequest, SecretResourcePanel,
-    ServiceResourcePanel, StatefulSetResourcePanel, StorageClassResourcePanel,
+    ResourceQuotaResourcePanel, ResourceUiEvent, ResourceWatchRequest, RoleBindingResourcePanel,
+    RoleResourcePanel, SecretResourcePanel, ServiceAccountResourcePanel, ServiceResourcePanel,
+    StatefulSetResourcePanel, StorageClassResourcePanel,
 };
 use crate::resources::ResourceNavItem;
 use crate::state::{AppState, ClusterConnectionState, RuntimeMode};
@@ -61,6 +63,8 @@ pub(crate) struct ClusterWorkspace {
     pub(crate) dock_state: DockState<AppTab>,
     pub(crate) selected_resource: Option<ResourceNavItem>,
     pub(crate) status_panel: ClusterStatusPanel,
+    pub(crate) cluster_role_binding_resource_panel: ClusterRoleBindingResourcePanel,
+    pub(crate) cluster_role_resource_panel: ClusterRoleResourcePanel,
     pub(crate) config_map_resource_panel: ConfigMapResourcePanel,
     pub(crate) daemon_set_resource_panel: DaemonSetResourcePanel,
     pub(crate) deployment_resource_panel: DeploymentResourcePanel,
@@ -80,7 +84,10 @@ pub(crate) struct ClusterWorkspace {
     pub(crate) pod_resource_panel: PodResourcePanel,
     pub(crate) replica_set_resource_panel: ReplicaSetResourcePanel,
     pub(crate) resource_quota_resource_panel: ResourceQuotaResourcePanel,
+    pub(crate) role_binding_resource_panel: RoleBindingResourcePanel,
+    pub(crate) role_resource_panel: RoleResourcePanel,
     pub(crate) secret_resource_panel: SecretResourcePanel,
+    pub(crate) service_account_resource_panel: ServiceAccountResourcePanel,
     pub(crate) service_resource_panel: ServiceResourcePanel,
     pub(crate) storage_class_resource_panel: StorageClassResourcePanel,
     pub(crate) stateful_set_resource_panel: StatefulSetResourcePanel,
@@ -93,6 +100,8 @@ impl Default for ClusterWorkspace {
             dock_state: DockState::new(vec![AppTab::Workspace(1)]),
             selected_resource: None,
             status_panel: ClusterStatusPanel::default(),
+            cluster_role_binding_resource_panel: ClusterRoleBindingResourcePanel::default(),
+            cluster_role_resource_panel: ClusterRoleResourcePanel::default(),
             config_map_resource_panel: ConfigMapResourcePanel::default(),
             daemon_set_resource_panel: DaemonSetResourcePanel::default(),
             deployment_resource_panel: DeploymentResourcePanel::default(),
@@ -112,7 +121,10 @@ impl Default for ClusterWorkspace {
             pod_resource_panel: PodResourcePanel::default(),
             replica_set_resource_panel: ReplicaSetResourcePanel::default(),
             resource_quota_resource_panel: ResourceQuotaResourcePanel::default(),
+            role_binding_resource_panel: RoleBindingResourcePanel::default(),
+            role_resource_panel: RoleResourcePanel::default(),
             secret_resource_panel: SecretResourcePanel::default(),
+            service_account_resource_panel: ServiceAccountResourcePanel::default(),
             service_resource_panel: ServiceResourcePanel::default(),
             storage_class_resource_panel: StorageClassResourcePanel::default(),
             stateful_set_resource_panel: StatefulSetResourcePanel::default(),
@@ -247,6 +259,8 @@ impl eframe::App for MikuApp {
                     selected_resource: None,
                     selected_cluster_id: self.selected_cluster_id(),
                     cluster_status_panel: None,
+                    cluster_role_binding_resource_panel: None,
+                    cluster_role_resource_panel: None,
                     config_map_resource_panel: None,
                     cron_job_resource_panel: None,
                     daemon_set_resource_panel: None,
@@ -266,7 +280,10 @@ impl eframe::App for MikuApp {
                     pod_resource_panel: None,
                     replica_set_resource_panel: None,
                     resource_quota_resource_panel: None,
+                    role_binding_resource_panel: None,
+                    role_resource_panel: None,
                     secret_resource_panel: None,
+                    service_account_resource_panel: None,
                     service_resource_panel: None,
                     storage_class_resource_panel: None,
                     stateful_set_resource_panel: None,
@@ -327,6 +344,8 @@ impl eframe::App for MikuApp {
                     selected_resource: None,
                     selected_cluster_id: self.selected_cluster_id(),
                     cluster_status_panel: None,
+                    cluster_role_binding_resource_panel: None,
+                    cluster_role_resource_panel: None,
                     config_map_resource_panel: None,
                     cron_job_resource_panel: None,
                     daemon_set_resource_panel: None,
@@ -346,7 +365,10 @@ impl eframe::App for MikuApp {
                     pod_resource_panel: None,
                     replica_set_resource_panel: None,
                     resource_quota_resource_panel: None,
+                    role_binding_resource_panel: None,
+                    role_resource_panel: None,
                     secret_resource_panel: None,
+                    service_account_resource_panel: None,
                     service_resource_panel: None,
                     storage_class_resource_panel: None,
                     stateful_set_resource_panel: None,
@@ -415,6 +437,10 @@ impl eframe::App for MikuApp {
                 selected_resource: None,
                 selected_cluster_id: Some(selected_cluster_id),
                 cluster_status_panel: Some(&mut workspace.status_panel),
+                cluster_role_binding_resource_panel: Some(
+                    &mut workspace.cluster_role_binding_resource_panel,
+                ),
+                cluster_role_resource_panel: Some(&mut workspace.cluster_role_resource_panel),
                 config_map_resource_panel: Some(&mut workspace.config_map_resource_panel),
                 cron_job_resource_panel: Some(&mut workspace.cron_job_resource_panel),
                 daemon_set_resource_panel: Some(&mut workspace.daemon_set_resource_panel),
@@ -438,7 +464,10 @@ impl eframe::App for MikuApp {
                 pod_resource_panel: Some(&mut workspace.pod_resource_panel),
                 replica_set_resource_panel: Some(&mut workspace.replica_set_resource_panel),
                 resource_quota_resource_panel: Some(&mut workspace.resource_quota_resource_panel),
+                role_binding_resource_panel: Some(&mut workspace.role_binding_resource_panel),
+                role_resource_panel: Some(&mut workspace.role_resource_panel),
                 secret_resource_panel: Some(&mut workspace.secret_resource_panel),
+                service_account_resource_panel: Some(&mut workspace.service_account_resource_panel),
                 service_resource_panel: Some(&mut workspace.service_resource_panel),
                 storage_class_resource_panel: Some(&mut workspace.storage_class_resource_panel),
                 stateful_set_resource_panel: Some(&mut workspace.stateful_set_resource_panel),
@@ -661,6 +690,13 @@ impl MikuApp {
                 }
                 ResourceLoadKind::Namespaces => {
                     workspace
+                        .service_account_resource_panel
+                        .apply_event(event.clone());
+                    workspace.role_resource_panel.apply_event(event.clone());
+                    workspace
+                        .role_binding_resource_panel
+                        .apply_event(event.clone());
+                    workspace
                         .config_map_resource_panel
                         .apply_event(event.clone());
                     workspace.cron_job_resource_panel.apply_event(event.clone());
@@ -703,6 +739,14 @@ impl MikuApp {
                         .stateful_set_resource_panel
                         .apply_event(event.clone());
                     workspace.pod_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::ClusterRoleBindings => {
+                    workspace
+                        .cluster_role_binding_resource_panel
+                        .apply_event(event);
+                }
+                ResourceLoadKind::ClusterRoles => {
+                    workspace.cluster_role_resource_panel.apply_event(event);
                 }
                 ResourceLoadKind::Nodes => {
                     workspace.node_resource_panel.apply_event(event);
@@ -762,8 +806,17 @@ impl MikuApp {
                 ResourceLoadKind::ResourceQuotas { .. } => {
                     workspace.resource_quota_resource_panel.apply_event(event);
                 }
+                ResourceLoadKind::RoleBindings { .. } => {
+                    workspace.role_binding_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::Roles { .. } => {
+                    workspace.role_resource_panel.apply_event(event);
+                }
                 ResourceLoadKind::Secrets { .. } => {
                     workspace.secret_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::ServiceAccounts { .. } => {
+                    workspace.service_account_resource_panel.apply_event(event);
                 }
                 ResourceLoadKind::Services { .. } => {
                     workspace.service_resource_panel.apply_event(event);
@@ -781,6 +834,13 @@ impl MikuApp {
                 }
                 ResourceLoadKind::Namespaces => {
                     workspace
+                        .service_account_resource_panel
+                        .apply_event(event.clone());
+                    workspace.role_resource_panel.apply_event(event.clone());
+                    workspace
+                        .role_binding_resource_panel
+                        .apply_event(event.clone());
+                    workspace
                         .config_map_resource_panel
                         .apply_event(event.clone());
                     workspace.cron_job_resource_panel.apply_event(event.clone());
@@ -823,6 +883,14 @@ impl MikuApp {
                         .stateful_set_resource_panel
                         .apply_event(event.clone());
                     workspace.pod_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::ClusterRoleBindings => {
+                    workspace
+                        .cluster_role_binding_resource_panel
+                        .apply_event(event);
+                }
+                ResourceLoadKind::ClusterRoles => {
+                    workspace.cluster_role_resource_panel.apply_event(event);
                 }
                 ResourceLoadKind::Nodes => {
                     workspace.node_resource_panel.apply_event(event);
@@ -882,8 +950,17 @@ impl MikuApp {
                 ResourceLoadKind::ResourceQuotas { .. } => {
                     workspace.resource_quota_resource_panel.apply_event(event);
                 }
+                ResourceLoadKind::RoleBindings { .. } => {
+                    workspace.role_binding_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::Roles { .. } => {
+                    workspace.role_resource_panel.apply_event(event);
+                }
                 ResourceLoadKind::Secrets { .. } => {
                     workspace.secret_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::ServiceAccounts { .. } => {
+                    workspace.service_account_resource_panel.apply_event(event);
                 }
                 ResourceLoadKind::Services { .. } => {
                     workspace.service_resource_panel.apply_event(event);

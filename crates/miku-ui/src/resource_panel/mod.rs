@@ -5,6 +5,9 @@ use miku_api::{
 };
 use miku_core::{ClusterId, ResourceRef};
 
+mod access_control_shared;
+mod cluster_role;
+mod cluster_role_binding;
 mod components;
 mod config_map;
 mod cron_job;
@@ -27,12 +30,17 @@ mod persistent_volume_claim;
 mod pod;
 mod replica_set;
 mod resource_quota;
+mod role;
+mod role_binding;
 mod secret;
 mod service;
+mod service_account;
 mod stateful_set;
 mod storage_class;
 mod storage_shared;
 
+pub(crate) use cluster_role::ClusterRoleResourcePanel;
+pub(crate) use cluster_role_binding::ClusterRoleBindingResourcePanel;
 pub(crate) use config_map::ConfigMapResourcePanel;
 pub(crate) use cron_job::CronJobResourcePanel;
 pub(crate) use custom_resources::CustomResourcesPanel;
@@ -53,8 +61,11 @@ pub(crate) use persistent_volume_claim::PersistentVolumeClaimResourcePanel;
 pub(crate) use pod::PodResourcePanel;
 pub(crate) use replica_set::ReplicaSetResourcePanel;
 pub(crate) use resource_quota::ResourceQuotaResourcePanel;
+pub(crate) use role::RoleResourcePanel;
+pub(crate) use role_binding::RoleBindingResourcePanel;
 pub(crate) use secret::SecretResourcePanel;
 pub(crate) use service::ServiceResourcePanel;
+pub(crate) use service_account::ServiceAccountResourcePanel;
 pub(crate) use stateful_set::StatefulSetResourcePanel;
 pub(crate) use storage_class::StorageClassResourcePanel;
 
@@ -126,6 +137,8 @@ pub(crate) struct ResourcePanelRequests {
 pub(crate) enum ResourceLoadKind {
     Namespaces,
     Nodes,
+    ClusterRoleBindings,
+    ClusterRoles,
     ConfigMaps { namespace: Option<String> },
     EndpointSlices { namespace: Option<String> },
     Endpoints { namespace: Option<String> },
@@ -142,7 +155,10 @@ pub(crate) enum ResourceLoadKind {
     PersistentVolumes,
     ReplicaSets { namespace: Option<String> },
     ResourceQuotas { namespace: Option<String> },
+    RoleBindings { namespace: Option<String> },
+    Roles { namespace: Option<String> },
     Secrets { namespace: Option<String> },
+    ServiceAccounts { namespace: Option<String> },
     Services { namespace: Option<String> },
     StorageClasses,
     StatefulSets { namespace: Option<String> },
@@ -212,6 +228,8 @@ impl ResourceWatchRequest {
         let kind = match &self.kind {
             ResourceLoadKind::Namespaces => ResourceLoadKind::Namespaces,
             ResourceLoadKind::Nodes => ResourceLoadKind::Nodes,
+            ResourceLoadKind::ClusterRoleBindings => ResourceLoadKind::ClusterRoleBindings,
+            ResourceLoadKind::ClusterRoles => ResourceLoadKind::ClusterRoles,
             ResourceLoadKind::ConfigMaps { .. } => ResourceLoadKind::ConfigMaps { namespace: None },
             ResourceLoadKind::EndpointSlices { .. } => {
                 ResourceLoadKind::EndpointSlices { namespace: None }
@@ -245,7 +263,14 @@ impl ResourceWatchRequest {
             ResourceLoadKind::ResourceQuotas { .. } => {
                 ResourceLoadKind::ResourceQuotas { namespace: None }
             }
+            ResourceLoadKind::RoleBindings { .. } => {
+                ResourceLoadKind::RoleBindings { namespace: None }
+            }
+            ResourceLoadKind::Roles { .. } => ResourceLoadKind::Roles { namespace: None },
             ResourceLoadKind::Secrets { .. } => ResourceLoadKind::Secrets { namespace: None },
+            ResourceLoadKind::ServiceAccounts { .. } => {
+                ResourceLoadKind::ServiceAccounts { namespace: None }
+            }
             ResourceLoadKind::Services { .. } => ResourceLoadKind::Services { namespace: None },
             ResourceLoadKind::StorageClasses => ResourceLoadKind::StorageClasses,
             ResourceLoadKind::Pods { .. } => ResourceLoadKind::Pods { namespace: None },
@@ -413,6 +438,16 @@ fn resource_query_for_kind(
             cluster_id,
             ResourceRef::core("v1", "nodes").cluster_scoped(),
         ),
+        ResourceLoadKind::ClusterRoleBindings => miku_api::ResourceQuery::new(
+            cluster_id,
+            ResourceRef::grouped("rbac.authorization.k8s.io", "v1", "clusterrolebindings")
+                .cluster_scoped(),
+        ),
+        ResourceLoadKind::ClusterRoles => miku_api::ResourceQuery::new(
+            cluster_id,
+            ResourceRef::grouped("rbac.authorization.k8s.io", "v1", "clusterroles")
+                .cluster_scoped(),
+        ),
         ResourceLoadKind::ConfigMaps { namespace } => {
             let mut query =
                 miku_api::ResourceQuery::new(cluster_id, ResourceRef::core("v1", "configmaps"));
@@ -561,6 +596,26 @@ fn resource_query_for_kind(
             }
             query
         }
+        ResourceLoadKind::RoleBindings { namespace } => {
+            let mut query = miku_api::ResourceQuery::new(
+                cluster_id,
+                ResourceRef::grouped("rbac.authorization.k8s.io", "v1", "rolebindings"),
+            );
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
+        ResourceLoadKind::Roles { namespace } => {
+            let mut query = miku_api::ResourceQuery::new(
+                cluster_id,
+                ResourceRef::grouped("rbac.authorization.k8s.io", "v1", "roles"),
+            );
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
         ResourceLoadKind::Secrets { namespace } => {
             let mut query =
                 miku_api::ResourceQuery::new(cluster_id, ResourceRef::core("v1", "secrets"));
@@ -572,6 +627,16 @@ fn resource_query_for_kind(
         ResourceLoadKind::Services { namespace } => {
             let mut query =
                 miku_api::ResourceQuery::new(cluster_id, ResourceRef::core("v1", "services"));
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
+        ResourceLoadKind::ServiceAccounts { namespace } => {
+            let mut query = miku_api::ResourceQuery::new(
+                cluster_id,
+                ResourceRef::core("v1", "serviceaccounts"),
+            );
             if let Some(namespace) = namespace {
                 query = query.namespace(namespace.clone());
             }
@@ -623,6 +688,79 @@ mod tests {
         assert_eq!(
             query.resource,
             ResourceRef::core("v1", "nodes").cluster_scoped()
+        );
+        assert_eq!(query.namespace, None);
+    }
+
+    #[test]
+    fn service_accounts_query_uses_core_api_and_selected_namespace() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::ServiceAccounts {
+                namespace: Some("production".to_owned()),
+            },
+        );
+
+        assert_eq!(query.resource, ResourceRef::core("v1", "serviceaccounts"));
+        assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn roles_query_uses_rbac_api_and_selected_namespace() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::Roles {
+                namespace: Some("production".to_owned()),
+            },
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("rbac.authorization.k8s.io", "v1", "roles")
+        );
+        assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn role_bindings_query_uses_rbac_api_and_selected_namespace() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::RoleBindings {
+                namespace: Some("production".to_owned()),
+            },
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("rbac.authorization.k8s.io", "v1", "rolebindings")
+        );
+        assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn cluster_roles_query_uses_cluster_scoped_rbac_api() {
+        let query =
+            resource_query_for_kind(ClusterId::new("local"), &ResourceLoadKind::ClusterRoles);
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("rbac.authorization.k8s.io", "v1", "clusterroles")
+                .cluster_scoped()
+        );
+        assert_eq!(query.namespace, None);
+    }
+
+    #[test]
+    fn cluster_role_bindings_query_uses_cluster_scoped_rbac_api() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::ClusterRoleBindings,
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("rbac.authorization.k8s.io", "v1", "clusterrolebindings")
+                .cluster_scoped()
         );
         assert_eq!(query.namespace, None);
     }

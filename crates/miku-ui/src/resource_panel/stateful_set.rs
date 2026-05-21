@@ -114,6 +114,11 @@ impl StatefulSetResourcePanel {
                 | ResourceLoadKind::PersistentVolumeClaims { .. }
                 | ResourceLoadKind::PersistentVolumes
                 | ResourceLoadKind::StorageClasses
+                | ResourceLoadKind::ClusterRoleBindings
+                | ResourceLoadKind::ClusterRoles
+                | ResourceLoadKind::RoleBindings { .. }
+                | ResourceLoadKind::Roles { .. }
+                | ResourceLoadKind::ServiceAccounts { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
             ResourceUiEvent::ResourceWatchUpdated { request, result } => match request.kind {
@@ -164,6 +169,11 @@ impl StatefulSetResourcePanel {
                 | ResourceLoadKind::PersistentVolumeClaims { .. }
                 | ResourceLoadKind::PersistentVolumes
                 | ResourceLoadKind::StorageClasses
+                | ResourceLoadKind::ClusterRoleBindings
+                | ResourceLoadKind::ClusterRoles
+                | ResourceLoadKind::RoleBindings { .. }
+                | ResourceLoadKind::Roles { .. }
+                | ResourceLoadKind::ServiceAccounts { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
             ResourceUiEvent::ResourceActionCompleted { .. }

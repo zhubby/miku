@@ -27,6 +27,8 @@ pub fn api_resource(resource: &ResourceRef) -> ApiResource {
 fn kind_for_plural(plural: &str) -> String {
     match plural {
         "pods" => "Pod".to_owned(),
+        "clusterrolebindings" => "ClusterRoleBinding".to_owned(),
+        "clusterroles" => "ClusterRole".to_owned(),
         "services" => "Service".to_owned(),
         "endpoints" => "Endpoints".to_owned(),
         "endpointslices" => "EndpointSlice".to_owned(),
@@ -45,7 +47,10 @@ fn kind_for_plural(plural: &str) -> String {
         "persistentvolumeclaims" => "PersistentVolumeClaim".to_owned(),
         "persistentvolumes" => "PersistentVolume".to_owned(),
         "resourcequotas" => "ResourceQuota".to_owned(),
+        "rolebindings" => "RoleBinding".to_owned(),
+        "roles" => "Role".to_owned(),
         "secrets" => "Secret".to_owned(),
+        "serviceaccounts" => "ServiceAccount".to_owned(),
         "storageclasses" => "StorageClass".to_owned(),
         "customresourcedefinitions" => "CustomResourceDefinition".to_owned(),
         value => value
@@ -383,6 +388,47 @@ mod tests {
                 miku_core::ResourceRef::grouped("storage.k8s.io", "v1", "storageclasses"),
                 "StorageClass",
                 "storageclasses",
+            ),
+        ];
+
+        for (resource, kind, plural) in cases {
+            let api_resource = api_resource(&resource);
+            assert_eq!(api_resource.kind, kind);
+            assert_eq!(api_resource.plural, plural);
+        }
+    }
+
+    #[test]
+    fn api_resource_uses_known_kind_for_access_control_resources() {
+        let cases = [
+            (
+                miku_core::ResourceRef::core("v1", "serviceaccounts"),
+                "ServiceAccount",
+                "serviceaccounts",
+            ),
+            (
+                miku_core::ResourceRef::grouped("rbac.authorization.k8s.io", "v1", "roles"),
+                "Role",
+                "roles",
+            ),
+            (
+                miku_core::ResourceRef::grouped("rbac.authorization.k8s.io", "v1", "rolebindings"),
+                "RoleBinding",
+                "rolebindings",
+            ),
+            (
+                miku_core::ResourceRef::grouped("rbac.authorization.k8s.io", "v1", "clusterroles"),
+                "ClusterRole",
+                "clusterroles",
+            ),
+            (
+                miku_core::ResourceRef::grouped(
+                    "rbac.authorization.k8s.io",
+                    "v1",
+                    "clusterrolebindings",
+                ),
+                "ClusterRoleBinding",
+                "clusterrolebindings",
             ),
         ];
 

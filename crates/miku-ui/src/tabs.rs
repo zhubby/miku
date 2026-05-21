@@ -7,14 +7,16 @@ use miku_api::{
 };
 
 use crate::resource_panel::{
-    ConfigMapResourcePanel, CronJobResourcePanel, CustomResourcesPanel, DaemonSetResourcePanel,
-    DeploymentResourcePanel, EndpointSliceResourcePanel, EndpointsResourcePanel,
-    EventResourcePanel, IngressClassResourcePanel, IngressResourcePanel, JobResourcePanel,
-    LimitRangeResourcePanel, NamespaceResourcePanel, NetworkPolicyResourcePanel, NodeResourcePanel,
+    ClusterRoleBindingResourcePanel, ClusterRoleResourcePanel, ConfigMapResourcePanel,
+    CronJobResourcePanel, CustomResourcesPanel, DaemonSetResourcePanel, DeploymentResourcePanel,
+    EndpointSliceResourcePanel, EndpointsResourcePanel, EventResourcePanel,
+    IngressClassResourcePanel, IngressResourcePanel, JobResourcePanel, LimitRangeResourcePanel,
+    NamespaceResourcePanel, NetworkPolicyResourcePanel, NodeResourcePanel,
     PersistentVolumeClaimResourcePanel, PersistentVolumeResourcePanel, PodAttachInputRequest,
     PodAttachRequest, PodLogRequest, PodResourcePanel, ReplicaSetResourcePanel,
     ResourceActionRequest, ResourceLoadRequest, ResourceQuotaResourcePanel, ResourceWatchRequest,
-    SecretResourcePanel, ServiceResourcePanel, StatefulSetResourcePanel, StorageClassResourcePanel,
+    RoleBindingResourcePanel, RoleResourcePanel, SecretResourcePanel, ServiceAccountResourcePanel,
+    ServiceResourcePanel, StatefulSetResourcePanel, StorageClassResourcePanel,
 };
 use crate::resources::{RESOURCE_CATEGORIES, ResourceNavItem};
 use crate::state::{AppState, ClusterConnectionState};
@@ -44,6 +46,8 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) selected_resource: Option<ResourceNavItem>,
     pub(crate) selected_cluster_id: Option<miku_core::ClusterId>,
     pub(crate) cluster_status_panel: Option<&'a mut ClusterStatusPanel>,
+    pub(crate) cluster_role_binding_resource_panel: Option<&'a mut ClusterRoleBindingResourcePanel>,
+    pub(crate) cluster_role_resource_panel: Option<&'a mut ClusterRoleResourcePanel>,
     pub(crate) config_map_resource_panel: Option<&'a mut ConfigMapResourcePanel>,
     pub(crate) cron_job_resource_panel: Option<&'a mut CronJobResourcePanel>,
     pub(crate) daemon_set_resource_panel: Option<&'a mut DaemonSetResourcePanel>,
@@ -64,7 +68,10 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) pod_resource_panel: Option<&'a mut PodResourcePanel>,
     pub(crate) replica_set_resource_panel: Option<&'a mut ReplicaSetResourcePanel>,
     pub(crate) resource_quota_resource_panel: Option<&'a mut ResourceQuotaResourcePanel>,
+    pub(crate) role_binding_resource_panel: Option<&'a mut RoleBindingResourcePanel>,
+    pub(crate) role_resource_panel: Option<&'a mut RoleResourcePanel>,
     pub(crate) secret_resource_panel: Option<&'a mut SecretResourcePanel>,
+    pub(crate) service_account_resource_panel: Option<&'a mut ServiceAccountResourcePanel>,
     pub(crate) service_resource_panel: Option<&'a mut ServiceResourcePanel>,
     pub(crate) storage_class_resource_panel: Option<&'a mut StorageClassResourcePanel>,
     pub(crate) stateful_set_resource_panel: Option<&'a mut StatefulSetResourcePanel>,
@@ -168,7 +175,27 @@ impl TabViewer for AppTabViewer<'_> {
                 }
             }
             AppTab::Resource(resource) => {
-                if resource.name == "Config Maps" {
+                if resource.name == "Cluster Role Bindings" {
+                    if let Some(panel) = self.cluster_role_binding_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("ClusterRoleBinding resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Cluster Roles" {
+                    if let Some(panel) = self.cluster_role_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("ClusterRole resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Config Maps" {
                     if let Some(panel) = self.config_map_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
                         self.resource_load_requests.extend(requests.loads);
@@ -354,6 +381,26 @@ impl TabViewer for AppTabViewer<'_> {
                             ui.label("ResourceQuota resource panel is unavailable.");
                         });
                     }
+                } else if resource.name == "Role Bindings" {
+                    if let Some(panel) = self.role_binding_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("RoleBinding resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Roles" {
+                    if let Some(panel) = self.role_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("Role resource panel is unavailable.");
+                        });
+                    }
                 } else if resource.name == "Secrets" {
                     if let Some(panel) = self.secret_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
@@ -362,6 +409,16 @@ impl TabViewer for AppTabViewer<'_> {
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Secret resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Service Accounts" {
+                    if let Some(panel) = self.service_account_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("ServiceAccount resource panel is unavailable.");
                         });
                     }
                 } else if resource.name == "Services" {
