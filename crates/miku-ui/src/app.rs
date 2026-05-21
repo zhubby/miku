@@ -16,10 +16,11 @@ use crate::resource_panel::{
     DeploymentResourcePanel, EndpointSliceResourcePanel, EndpointsResourcePanel,
     EventResourcePanel, IngressClassResourcePanel, IngressResourcePanel, JobResourcePanel,
     LimitRangeResourcePanel, NamespaceResourcePanel, NetworkPolicyResourcePanel, NodeResourcePanel,
-    PodAttachInputRequest, PodAttachRequest, PodLogRequest, PodResourcePanel,
-    ReplicaSetResourcePanel, ResourceActionKind, ResourceActionOutcome, ResourceActionRequest,
-    ResourceLoadKind, ResourceLoadRequest, ResourceQuotaResourcePanel, ResourceUiEvent,
-    ResourceWatchRequest, SecretResourcePanel, ServiceResourcePanel, StatefulSetResourcePanel,
+    PersistentVolumeClaimResourcePanel, PersistentVolumeResourcePanel, PodAttachInputRequest,
+    PodAttachRequest, PodLogRequest, PodResourcePanel, ReplicaSetResourcePanel, ResourceActionKind,
+    ResourceActionOutcome, ResourceActionRequest, ResourceLoadKind, ResourceLoadRequest,
+    ResourceQuotaResourcePanel, ResourceUiEvent, ResourceWatchRequest, SecretResourcePanel,
+    ServiceResourcePanel, StatefulSetResourcePanel, StorageClassResourcePanel,
 };
 use crate::resources::ResourceNavItem;
 use crate::state::{AppState, ClusterConnectionState, RuntimeMode};
@@ -74,11 +75,14 @@ pub(crate) struct ClusterWorkspace {
     pub(crate) namespace_resource_panel: NamespaceResourcePanel,
     pub(crate) network_policy_resource_panel: NetworkPolicyResourcePanel,
     pub(crate) node_resource_panel: NodeResourcePanel,
+    pub(crate) persistent_volume_claim_resource_panel: PersistentVolumeClaimResourcePanel,
+    pub(crate) persistent_volume_resource_panel: PersistentVolumeResourcePanel,
     pub(crate) pod_resource_panel: PodResourcePanel,
     pub(crate) replica_set_resource_panel: ReplicaSetResourcePanel,
     pub(crate) resource_quota_resource_panel: ResourceQuotaResourcePanel,
     pub(crate) secret_resource_panel: SecretResourcePanel,
     pub(crate) service_resource_panel: ServiceResourcePanel,
+    pub(crate) storage_class_resource_panel: StorageClassResourcePanel,
     pub(crate) stateful_set_resource_panel: StatefulSetResourcePanel,
     pub(crate) custom_resources_panel: CustomResourcesPanel,
 }
@@ -103,11 +107,14 @@ impl Default for ClusterWorkspace {
             namespace_resource_panel: NamespaceResourcePanel::default(),
             network_policy_resource_panel: NetworkPolicyResourcePanel::default(),
             node_resource_panel: NodeResourcePanel::default(),
+            persistent_volume_claim_resource_panel: PersistentVolumeClaimResourcePanel::default(),
+            persistent_volume_resource_panel: PersistentVolumeResourcePanel::default(),
             pod_resource_panel: PodResourcePanel::default(),
             replica_set_resource_panel: ReplicaSetResourcePanel::default(),
             resource_quota_resource_panel: ResourceQuotaResourcePanel::default(),
             secret_resource_panel: SecretResourcePanel::default(),
             service_resource_panel: ServiceResourcePanel::default(),
+            storage_class_resource_panel: StorageClassResourcePanel::default(),
             stateful_set_resource_panel: StatefulSetResourcePanel::default(),
             custom_resources_panel: CustomResourcesPanel::default(),
         }
@@ -254,11 +261,14 @@ impl eframe::App for MikuApp {
                     namespace_resource_panel: None,
                     network_policy_resource_panel: None,
                     node_resource_panel: None,
+                    persistent_volume_claim_resource_panel: None,
+                    persistent_volume_resource_panel: None,
                     pod_resource_panel: None,
                     replica_set_resource_panel: None,
                     resource_quota_resource_panel: None,
                     secret_resource_panel: None,
                     service_resource_panel: None,
+                    storage_class_resource_panel: None,
                     stateful_set_resource_panel: None,
                     custom_resources_panel: None,
                     status_load_requests: Vec::new(),
@@ -331,11 +341,14 @@ impl eframe::App for MikuApp {
                     namespace_resource_panel: None,
                     network_policy_resource_panel: None,
                     node_resource_panel: None,
+                    persistent_volume_claim_resource_panel: None,
+                    persistent_volume_resource_panel: None,
                     pod_resource_panel: None,
                     replica_set_resource_panel: None,
                     resource_quota_resource_panel: None,
                     secret_resource_panel: None,
                     service_resource_panel: None,
+                    storage_class_resource_panel: None,
                     stateful_set_resource_panel: None,
                     custom_resources_panel: None,
                     status_load_requests: Vec::new(),
@@ -416,11 +429,18 @@ impl eframe::App for MikuApp {
                 namespace_resource_panel: Some(&mut workspace.namespace_resource_panel),
                 network_policy_resource_panel: Some(&mut workspace.network_policy_resource_panel),
                 node_resource_panel: Some(&mut workspace.node_resource_panel),
+                persistent_volume_claim_resource_panel: Some(
+                    &mut workspace.persistent_volume_claim_resource_panel,
+                ),
+                persistent_volume_resource_panel: Some(
+                    &mut workspace.persistent_volume_resource_panel,
+                ),
                 pod_resource_panel: Some(&mut workspace.pod_resource_panel),
                 replica_set_resource_panel: Some(&mut workspace.replica_set_resource_panel),
                 resource_quota_resource_panel: Some(&mut workspace.resource_quota_resource_panel),
                 secret_resource_panel: Some(&mut workspace.secret_resource_panel),
                 service_resource_panel: Some(&mut workspace.service_resource_panel),
+                storage_class_resource_panel: Some(&mut workspace.storage_class_resource_panel),
                 stateful_set_resource_panel: Some(&mut workspace.stateful_set_resource_panel),
                 custom_resources_panel: Some(&mut workspace.custom_resources_panel),
                 status_load_requests: Vec::new(),
@@ -669,6 +689,9 @@ impl MikuApp {
                         .network_policy_resource_panel
                         .apply_event(event.clone());
                     workspace
+                        .persistent_volume_claim_resource_panel
+                        .apply_event(event.clone());
+                    workspace
                         .replica_set_resource_panel
                         .apply_event(event.clone());
                     workspace
@@ -723,6 +746,16 @@ impl MikuApp {
                 ResourceLoadKind::NetworkPolicies { .. } => {
                     workspace.network_policy_resource_panel.apply_event(event);
                 }
+                ResourceLoadKind::PersistentVolumeClaims { .. } => {
+                    workspace
+                        .persistent_volume_claim_resource_panel
+                        .apply_event(event);
+                }
+                ResourceLoadKind::PersistentVolumes => {
+                    workspace
+                        .persistent_volume_resource_panel
+                        .apply_event(event);
+                }
                 ResourceLoadKind::ReplicaSets { .. } => {
                     workspace.replica_set_resource_panel.apply_event(event);
                 }
@@ -734,6 +767,9 @@ impl MikuApp {
                 }
                 ResourceLoadKind::Services { .. } => {
                     workspace.service_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::StorageClasses => {
+                    workspace.storage_class_resource_panel.apply_event(event);
                 }
                 ResourceLoadKind::Pods { .. } => {
                     workspace.pod_resource_panel.apply_event(event);
@@ -773,6 +809,9 @@ impl MikuApp {
                         .network_policy_resource_panel
                         .apply_event(event.clone());
                     workspace
+                        .persistent_volume_claim_resource_panel
+                        .apply_event(event.clone());
+                    workspace
                         .replica_set_resource_panel
                         .apply_event(event.clone());
                     workspace
@@ -827,6 +866,16 @@ impl MikuApp {
                 ResourceLoadKind::NetworkPolicies { .. } => {
                     workspace.network_policy_resource_panel.apply_event(event);
                 }
+                ResourceLoadKind::PersistentVolumeClaims { .. } => {
+                    workspace
+                        .persistent_volume_claim_resource_panel
+                        .apply_event(event);
+                }
+                ResourceLoadKind::PersistentVolumes => {
+                    workspace
+                        .persistent_volume_resource_panel
+                        .apply_event(event);
+                }
                 ResourceLoadKind::ReplicaSets { .. } => {
                     workspace.replica_set_resource_panel.apply_event(event);
                 }
@@ -838,6 +887,9 @@ impl MikuApp {
                 }
                 ResourceLoadKind::Services { .. } => {
                     workspace.service_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::StorageClasses => {
+                    workspace.storage_class_resource_panel.apply_event(event);
                 }
                 ResourceLoadKind::Pods { .. } => {
                     workspace.pod_resource_panel.apply_event(event);

@@ -22,12 +22,16 @@ mod namespace;
 mod network_policy;
 mod network_shared;
 mod node;
+mod persistent_volume;
+mod persistent_volume_claim;
 mod pod;
 mod replica_set;
 mod resource_quota;
 mod secret;
 mod service;
 mod stateful_set;
+mod storage_class;
+mod storage_shared;
 
 pub(crate) use config_map::ConfigMapResourcePanel;
 pub(crate) use cron_job::CronJobResourcePanel;
@@ -44,12 +48,15 @@ pub(crate) use limit_range::LimitRangeResourcePanel;
 pub(crate) use namespace::NamespaceResourcePanel;
 pub(crate) use network_policy::NetworkPolicyResourcePanel;
 pub(crate) use node::NodeResourcePanel;
+pub(crate) use persistent_volume::PersistentVolumeResourcePanel;
+pub(crate) use persistent_volume_claim::PersistentVolumeClaimResourcePanel;
 pub(crate) use pod::PodResourcePanel;
 pub(crate) use replica_set::ReplicaSetResourcePanel;
 pub(crate) use resource_quota::ResourceQuotaResourcePanel;
 pub(crate) use secret::SecretResourcePanel;
 pub(crate) use service::ServiceResourcePanel;
 pub(crate) use stateful_set::StatefulSetResourcePanel;
+pub(crate) use storage_class::StorageClassResourcePanel;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResourceLoadRequest {
@@ -131,10 +138,13 @@ pub(crate) enum ResourceLoadKind {
     IngressClasses,
     Ingresses { namespace: Option<String> },
     NetworkPolicies { namespace: Option<String> },
+    PersistentVolumeClaims { namespace: Option<String> },
+    PersistentVolumes,
     ReplicaSets { namespace: Option<String> },
     ResourceQuotas { namespace: Option<String> },
     Secrets { namespace: Option<String> },
     Services { namespace: Option<String> },
+    StorageClasses,
     StatefulSets { namespace: Option<String> },
     Pods { namespace: Option<String> },
     CustomResourceDefinitions,
@@ -225,6 +235,10 @@ impl ResourceWatchRequest {
             ResourceLoadKind::NetworkPolicies { .. } => {
                 ResourceLoadKind::NetworkPolicies { namespace: None }
             }
+            ResourceLoadKind::PersistentVolumeClaims { .. } => {
+                ResourceLoadKind::PersistentVolumeClaims { namespace: None }
+            }
+            ResourceLoadKind::PersistentVolumes => ResourceLoadKind::PersistentVolumes,
             ResourceLoadKind::ReplicaSets { .. } => {
                 ResourceLoadKind::ReplicaSets { namespace: None }
             }
@@ -233,6 +247,7 @@ impl ResourceWatchRequest {
             }
             ResourceLoadKind::Secrets { .. } => ResourceLoadKind::Secrets { namespace: None },
             ResourceLoadKind::Services { .. } => ResourceLoadKind::Services { namespace: None },
+            ResourceLoadKind::StorageClasses => ResourceLoadKind::StorageClasses,
             ResourceLoadKind::Pods { .. } => ResourceLoadKind::Pods { namespace: None },
             ResourceLoadKind::CustomResourceDefinitions => {
                 ResourceLoadKind::CustomResourceDefinitions
@@ -514,6 +529,20 @@ fn resource_query_for_kind(
             }
             query
         }
+        ResourceLoadKind::PersistentVolumeClaims { namespace } => {
+            let mut query = miku_api::ResourceQuery::new(
+                cluster_id,
+                ResourceRef::core("v1", "persistentvolumeclaims"),
+            );
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
+        ResourceLoadKind::PersistentVolumes => miku_api::ResourceQuery::new(
+            cluster_id,
+            ResourceRef::core("v1", "persistentvolumes").cluster_scoped(),
+        ),
         ResourceLoadKind::ReplicaSets { namespace } => {
             let mut query = miku_api::ResourceQuery::new(
                 cluster_id,
@@ -548,6 +577,10 @@ fn resource_query_for_kind(
             }
             query
         }
+        ResourceLoadKind::StorageClasses => miku_api::ResourceQuery::new(
+            cluster_id,
+            ResourceRef::grouped("storage.k8s.io", "v1", "storageclasses").cluster_scoped(),
+        ),
         ResourceLoadKind::Pods { namespace } => {
             let mut query =
                 miku_api::ResourceQuery::new(cluster_id, ResourceRef::core("v1", "pods"));
@@ -726,6 +759,62 @@ mod tests {
             ResourceRef::grouped("networking.k8s.io", "v1", "networkpolicies")
         );
         assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn persistent_volume_claims_query_uses_core_api_without_namespace_by_default() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::PersistentVolumeClaims { namespace: None },
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::core("v1", "persistentvolumeclaims")
+        );
+        assert_eq!(query.namespace, None);
+    }
+
+    #[test]
+    fn persistent_volume_claims_query_uses_selected_namespace() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::PersistentVolumeClaims {
+                namespace: Some("production".to_owned()),
+            },
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::core("v1", "persistentvolumeclaims")
+        );
+        assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn persistent_volumes_query_uses_cluster_scoped_core_api() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::PersistentVolumes,
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::core("v1", "persistentvolumes").cluster_scoped()
+        );
+        assert_eq!(query.namespace, None);
+    }
+
+    #[test]
+    fn storage_classes_query_uses_cluster_scoped_storage_api() {
+        let query =
+            resource_query_for_kind(ClusterId::new("local"), &ResourceLoadKind::StorageClasses);
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("storage.k8s.io", "v1", "storageclasses").cluster_scoped()
+        );
+        assert_eq!(query.namespace, None);
     }
 
     #[test]

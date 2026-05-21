@@ -11,10 +11,10 @@ use crate::resource_panel::{
     DeploymentResourcePanel, EndpointSliceResourcePanel, EndpointsResourcePanel,
     EventResourcePanel, IngressClassResourcePanel, IngressResourcePanel, JobResourcePanel,
     LimitRangeResourcePanel, NamespaceResourcePanel, NetworkPolicyResourcePanel, NodeResourcePanel,
-    PodAttachInputRequest, PodAttachRequest, PodLogRequest, PodResourcePanel,
-    ReplicaSetResourcePanel, ResourceActionRequest, ResourceLoadRequest,
-    ResourceQuotaResourcePanel, ResourceWatchRequest, SecretResourcePanel, ServiceResourcePanel,
-    StatefulSetResourcePanel,
+    PersistentVolumeClaimResourcePanel, PersistentVolumeResourcePanel, PodAttachInputRequest,
+    PodAttachRequest, PodLogRequest, PodResourcePanel, ReplicaSetResourcePanel,
+    ResourceActionRequest, ResourceLoadRequest, ResourceQuotaResourcePanel, ResourceWatchRequest,
+    SecretResourcePanel, ServiceResourcePanel, StatefulSetResourcePanel, StorageClassResourcePanel,
 };
 use crate::resources::{RESOURCE_CATEGORIES, ResourceNavItem};
 use crate::state::{AppState, ClusterConnectionState};
@@ -58,11 +58,15 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) namespace_resource_panel: Option<&'a mut NamespaceResourcePanel>,
     pub(crate) network_policy_resource_panel: Option<&'a mut NetworkPolicyResourcePanel>,
     pub(crate) node_resource_panel: Option<&'a mut NodeResourcePanel>,
+    pub(crate) persistent_volume_claim_resource_panel:
+        Option<&'a mut PersistentVolumeClaimResourcePanel>,
+    pub(crate) persistent_volume_resource_panel: Option<&'a mut PersistentVolumeResourcePanel>,
     pub(crate) pod_resource_panel: Option<&'a mut PodResourcePanel>,
     pub(crate) replica_set_resource_panel: Option<&'a mut ReplicaSetResourcePanel>,
     pub(crate) resource_quota_resource_panel: Option<&'a mut ResourceQuotaResourcePanel>,
     pub(crate) secret_resource_panel: Option<&'a mut SecretResourcePanel>,
     pub(crate) service_resource_panel: Option<&'a mut ServiceResourcePanel>,
+    pub(crate) storage_class_resource_panel: Option<&'a mut StorageClassResourcePanel>,
     pub(crate) stateful_set_resource_panel: Option<&'a mut StatefulSetResourcePanel>,
     pub(crate) custom_resources_panel: Option<&'a mut CustomResourcesPanel>,
     pub(crate) status_load_requests: Vec<ClusterStatusLoadRequest>,
@@ -294,6 +298,27 @@ impl TabViewer for AppTabViewer<'_> {
                             ui.label("Node resource panel is unavailable.");
                         });
                     }
+                } else if resource.name == "Persistent Volume Claims" {
+                    if let Some(panel) = self.persistent_volume_claim_resource_panel.as_deref_mut()
+                    {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("PersistentVolumeClaim resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Persistent Volumes" {
+                    if let Some(panel) = self.persistent_volume_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("PersistentVolume resource panel is unavailable.");
+                        });
+                    }
                 } else if resource.name == "Pods" {
                     if let Some(panel) = self.pod_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
@@ -347,6 +372,16 @@ impl TabViewer for AppTabViewer<'_> {
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Service resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Storage Classes" {
+                    if let Some(panel) = self.storage_class_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("StorageClass resource panel is unavailable.");
                         });
                     }
                 } else if resource.name == "Network Policies" {

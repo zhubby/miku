@@ -1,0 +1,1100 @@
+use eframe::egui::{self, TextWrapMode};
+use egui_extras::{Column, TableBuilder};
+use miku_api::ResourceSummary;
+use miku_core::ClusterId;
+
+#[cfg(test)]
+use super::ResourceLoadRequest;
+use super::components::ResourceYamlViewDialog;
+use super::{
+    LoadStatus, ResourceLoadKind, ResourcePanelRequests, ResourceUiEvent, ResourceWatchRequest,
+    namespaces_from_list,
+};
+use crate::time::human_age_from_rfc3339;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StorageResourceKind {
+    PersistentVolumeClaim,
+    PersistentVolume,
+    StorageClass,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct StorageResourcePanel {
+    kind: StorageResourceKind,
+    namespace_filter: Option<String>,
+    search_text: String,
+    namespaces: Vec<String>,
+    namespace_status: LoadStatus,
+    row_status: LoadStatus,
+    rows: Vec<StorageRow>,
+    next_request_id: u64,
+    namespace_request_id: Option<u64>,
+    row_request_id: Option<u64>,
+    namespace_watch_request_id: Option<u64>,
+    row_watch_request_id: Option<u64>,
+    last_cluster_id: Option<ClusterId>,
+    describe_dialog: Option<StorageDescribeDialog>,
+    view_dialog: Option<StorageViewDialog>,
+}
+
+impl StorageResourcePanel {
+    pub(crate) fn new(kind: StorageResourceKind) -> Self {
+        Self {
+            kind,
+            namespace_filter: None,
+            search_text: String::new(),
+            namespaces: Vec::new(),
+            namespace_status: LoadStatus::Idle,
+            row_status: LoadStatus::Idle,
+            rows: Vec::new(),
+            next_request_id: 0,
+            namespace_request_id: None,
+            row_request_id: None,
+            namespace_watch_request_id: None,
+            row_watch_request_id: None,
+            last_cluster_id: None,
+            describe_dialog: None,
+            view_dialog: None,
+        }
+    }
+
+    pub(crate) fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        cluster_id: Option<&ClusterId>,
+    ) -> ResourcePanelRequests {
+        let mut requests = ResourcePanelRequests::default();
+        let Some(cluster_id) = cluster_id else {
+            ui.centered_and_justified(|ui| {
+                ui.label(format!("Select a cluster to load {}.", self.kind.title()));
+            });
+            return requests;
+        };
+
+        self.reset_for_cluster_change(cluster_id);
+        if self.kind.is_namespaced() && matches!(self.namespace_status, LoadStatus::Idle) {
+            requests
+                .watches
+                .push(self.request_namespace_watch(cluster_id.clone()));
+        }
+        if matches!(self.row_status, LoadStatus::Idle) {
+            requests
+                .watches
+                .push(self.request_resource_watch(cluster_id.clone()));
+        }
+
+        self.show_toolbar(ui, cluster_id, &mut requests);
+        ui.separator();
+        self.show_body(ui);
+        self.show_describe_dialog(ui.ctx());
+        self.show_view_dialog(ui.ctx());
+        requests
+    }
+
+    pub(crate) fn apply_event(&mut self, event: ResourceUiEvent) {
+        match event {
+            ResourceUiEvent::ResourcesLoaded { request, result } => {
+                if matches!(request.kind, ResourceLoadKind::Namespaces) {
+                    self.apply_namespaces_load(request.request_id, result);
+                } else if self.kind.matches_load_kind(&request.kind) {
+                    self.apply_rows_load(request.request_id, result);
+                }
+            }
+            ResourceUiEvent::ResourceWatchUpdated { request, result } => {
+                if matches!(request.kind, ResourceLoadKind::Namespaces) {
+                    self.apply_namespaces_watch(request.request_id, result);
+                } else if self.kind.matches_load_kind(&request.kind) {
+                    self.apply_rows_watch(request.request_id, result);
+                }
+            }
+            ResourceUiEvent::ResourceActionCompleted { .. }
+            | ResourceUiEvent::PodLogsLoaded { .. }
+            | ResourceUiEvent::PodAttachConnected { .. }
+            | ResourceUiEvent::PodAttachOutput { .. } => {}
+        }
+    }
+
+    fn apply_namespaces_load(
+        &mut self,
+        request_id: u64,
+        result: Result<miku_api::ResourceList, String>,
+    ) {
+        if self.namespace_request_id == Some(request_id) {
+            self.namespace_request_id = None;
+        }
+        match result {
+            Ok(list) => {
+                self.namespaces = namespaces_from_list(&list);
+                self.namespace_status = LoadStatus::Loaded;
+            }
+            Err(error) => self.namespace_status = LoadStatus::Error(error),
+        }
+    }
+
+    fn apply_rows_load(&mut self, request_id: u64, result: Result<miku_api::ResourceList, String>) {
+        if self.row_request_id != Some(request_id) {
+            return;
+        }
+        self.row_request_id = None;
+        match result {
+            Ok(list) => {
+                self.rows = self.kind.rows_from_list(&list.items);
+                self.row_status = LoadStatus::Loaded;
+            }
+            Err(error) => self.row_status = LoadStatus::Error(error),
+        }
+    }
+
+    fn apply_namespaces_watch(
+        &mut self,
+        request_id: u64,
+        result: Result<miku_api::ResourceEvent, String>,
+    ) {
+        if self.namespace_watch_request_id == Some(request_id) {
+            self.namespace_watch_request_id = None;
+        }
+        match result {
+            Ok(miku_api::ResourceEvent::Snapshot(list)) => {
+                self.namespaces = namespaces_from_list(&list);
+                self.namespace_status = LoadStatus::Loaded;
+            }
+            Ok(_) => {}
+            Err(error) => self.namespace_status = LoadStatus::Error(error),
+        }
+    }
+
+    fn apply_rows_watch(
+        &mut self,
+        request_id: u64,
+        result: Result<miku_api::ResourceEvent, String>,
+    ) {
+        if self.row_watch_request_id != Some(request_id) {
+            return;
+        }
+        match result {
+            Ok(miku_api::ResourceEvent::Snapshot(list)) => {
+                self.rows = self.kind.rows_from_list(&list.items);
+                self.row_status = LoadStatus::Loaded;
+            }
+            Ok(_) => {}
+            Err(error) => self.row_status = LoadStatus::Error(error),
+        }
+    }
+
+    fn reset_for_cluster_change(&mut self, cluster_id: &ClusterId) {
+        if self.last_cluster_id.as_ref() == Some(cluster_id) {
+            return;
+        }
+        self.last_cluster_id = Some(cluster_id.clone());
+        self.namespace_filter = None;
+        self.search_text.clear();
+        self.namespaces.clear();
+        self.rows.clear();
+        self.namespace_status = LoadStatus::Idle;
+        self.row_status = LoadStatus::Idle;
+        self.namespace_request_id = None;
+        self.row_request_id = None;
+        self.namespace_watch_request_id = None;
+        self.row_watch_request_id = None;
+        self.describe_dialog = None;
+        self.view_dialog = None;
+    }
+
+    fn show_toolbar(
+        &mut self,
+        ui: &mut egui::Ui,
+        cluster_id: &ClusterId,
+        requests: &mut ResourcePanelRequests,
+    ) {
+        ui.horizontal(|ui| {
+            let mut namespace_changed = false;
+            if self.kind.is_namespaced() {
+                egui::ComboBox::from_id_salt((self.kind.id(), "namespace_filter"))
+                    .selected_text(
+                        self.namespace_filter
+                            .as_deref()
+                            .unwrap_or("All namespaces")
+                            .to_owned(),
+                    )
+                    .width(220.0)
+                    .show_ui(ui, |ui| {
+                        namespace_changed |= ui
+                            .selectable_value(&mut self.namespace_filter, None, "All namespaces")
+                            .changed();
+                        for namespace in &self.namespaces {
+                            namespace_changed |= ui
+                                .selectable_value(
+                                    &mut self.namespace_filter,
+                                    Some(namespace.clone()),
+                                    namespace,
+                                )
+                                .changed();
+                        }
+                    });
+            }
+            ui.add(
+                egui::TextEdit::singleline(&mut self.search_text)
+                    .hint_text(format!("Search {}...", self.kind.title()))
+                    .desired_width(280.0),
+            );
+            if ui
+                .button(egui_phosphor::regular::ARROWS_CLOCKWISE)
+                .on_hover_text("Refresh")
+                .clicked()
+            {
+                if self.kind.is_namespaced() {
+                    requests
+                        .watches
+                        .push(self.request_namespace_watch(cluster_id.clone()));
+                }
+                requests
+                    .watches
+                    .push(self.request_resource_watch(cluster_id.clone()));
+            }
+            ui.separator();
+            ui.label(format!("{} items", self.filtered_row_count()));
+            if matches!(self.row_status, LoadStatus::Loading) {
+                ui.label("Loading...");
+            }
+            if matches!(self.namespace_status, LoadStatus::Error(_)) && self.kind.is_namespaced() {
+                ui.colored_label(ui.visuals().error_fg_color, "Namespaces unavailable");
+            }
+            if namespace_changed {
+                requests
+                    .watches
+                    .push(self.request_resource_watch(cluster_id.clone()));
+            }
+        });
+    }
+
+    fn show_body(&mut self, ui: &mut egui::Ui) {
+        match &self.row_status {
+            LoadStatus::Idle | LoadStatus::Loading if self.rows.is_empty() => {
+                ui.centered_and_justified(|ui| {
+                    ui.label(format!("Loading {}...", self.kind.title()));
+                });
+            }
+            LoadStatus::Error(error) => {
+                ui.centered_and_justified(|ui| {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                });
+            }
+            _ => {
+                let indices = self.filtered_row_indices();
+                if indices.is_empty() {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(format!(
+                            "No {} match the current filters.",
+                            self.kind.title()
+                        ));
+                    });
+                    return;
+                }
+                let action = show_storage_table(ui, self.kind, &self.rows, indices);
+                self.apply_table_action(action);
+            }
+        }
+    }
+
+    fn apply_table_action(&mut self, action: Option<StorageTableAction>) {
+        match action {
+            Some(StorageTableAction::Describe { key }) => {
+                let Some((name, describe)) = self
+                    .row_by_key(&key)
+                    .map(|row| (row.name.clone(), describe_from_row(self.kind, row)))
+                else {
+                    return;
+                };
+                self.describe_dialog = Some(StorageDescribeDialog {
+                    key,
+                    name,
+                    describe,
+                });
+            }
+            Some(StorageTableAction::View { key }) => {
+                let Some((name, yaml)) = self
+                    .row_by_key(&key)
+                    .map(|row| (row.name.clone(), full_manifest_yaml(&row.raw)))
+                else {
+                    return;
+                };
+                self.view_dialog = Some(StorageViewDialog { key, name, yaml });
+            }
+            None => {}
+        }
+    }
+
+    fn show_describe_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.describe_dialog.as_ref() else {
+            return;
+        };
+        let mut open = true;
+        egui::Window::new(format!("Describe {}", dialog.name))
+            .id(egui::Id::new((self.kind.id(), "describe", &dialog.key)))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .open(&mut open)
+            .collapsible(false)
+            .fixed_size([860.0, 580.0])
+            .show(ctx, |ui| {
+                egui::ScrollArea::both()
+                    .id_salt((self.kind.id(), "describe_content", &dialog.key))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_min_width(1120.0);
+                        ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
+                        show_storage_describe(ui, &dialog.describe);
+                    });
+            });
+        if !open {
+            self.describe_dialog = None;
+        }
+    }
+
+    fn show_view_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.view_dialog.as_ref() else {
+            return;
+        };
+        let mut open = true;
+        let response = ResourceYamlViewDialog {
+            id: egui::Id::new((self.kind.id(), "view", &dialog.key)),
+            title: format!("View {}", dialog.name),
+            yaml: &dialog.yaml,
+            open: &mut open,
+        }
+        .show(ctx);
+        if !response.open {
+            self.view_dialog = None;
+        }
+    }
+
+    #[cfg(test)]
+    fn request_resources(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
+        let request = ResourceLoadRequest {
+            request_id: self.allocate_request_id(),
+            cluster_id,
+            kind: self.kind.load_kind(self.namespace_filter.clone()),
+        };
+        self.row_request_id = Some(request.request_id);
+        self.row_status = LoadStatus::Loading;
+        request
+    }
+
+    fn request_namespace_watch(&mut self, cluster_id: ClusterId) -> ResourceWatchRequest {
+        let request = ResourceWatchRequest {
+            request_id: self.allocate_request_id(),
+            cluster_id,
+            kind: ResourceLoadKind::Namespaces,
+        };
+        self.namespace_watch_request_id = Some(request.request_id);
+        self.namespace_status = LoadStatus::Loading;
+        request
+    }
+
+    fn request_resource_watch(&mut self, cluster_id: ClusterId) -> ResourceWatchRequest {
+        let request = ResourceWatchRequest {
+            request_id: self.allocate_request_id(),
+            cluster_id,
+            kind: self.kind.load_kind(self.namespace_filter.clone()),
+        };
+        self.row_watch_request_id = Some(request.request_id);
+        self.row_status = LoadStatus::Loading;
+        request
+    }
+
+    fn allocate_request_id(&mut self) -> u64 {
+        self.next_request_id += 1;
+        self.next_request_id
+    }
+
+    fn filtered_row_count(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|row| row_matches_search(row, &self.search_text))
+            .count()
+    }
+
+    fn filtered_row_indices(&self) -> Vec<usize> {
+        self.rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| row_matches_search(row, &self.search_text).then_some(index))
+            .collect()
+    }
+
+    fn row_by_key(&self, key: &str) -> Option<&StorageRow> {
+        self.rows.iter().find(|row| row.key == key)
+    }
+}
+
+impl StorageResourceKind {
+    fn id(self) -> &'static str {
+        match self {
+            Self::PersistentVolumeClaim => "persistent_volume_claim",
+            Self::PersistentVolume => "persistent_volume",
+            Self::StorageClass => "storage_class",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::PersistentVolumeClaim => "PersistentVolumeClaims",
+            Self::PersistentVolume => "PersistentVolumes",
+            Self::StorageClass => "StorageClasses",
+        }
+    }
+
+    fn is_namespaced(self) -> bool {
+        matches!(self, Self::PersistentVolumeClaim)
+    }
+
+    fn columns(self) -> &'static [&'static str] {
+        match self {
+            Self::PersistentVolumeClaim => &[
+                "Name",
+                "Namespace",
+                "Status",
+                "Volume",
+                "Class",
+                "Capacity",
+                "Access Modes",
+                "Age",
+            ],
+            Self::PersistentVolume => &[
+                "Name",
+                "Status",
+                "Claim",
+                "Class",
+                "Capacity",
+                "Access Modes",
+                "Reclaim Policy",
+                "Age",
+            ],
+            Self::StorageClass => &[
+                "Name",
+                "Provisioner",
+                "Reclaim Policy",
+                "Binding Mode",
+                "Expansion",
+                "Default",
+                "Age",
+            ],
+        }
+    }
+
+    fn widths(self) -> &'static [f32] {
+        match self {
+            Self::PersistentVolumeClaim => &[240.0, 160.0, 120.0, 220.0, 180.0, 120.0, 180.0, 90.0],
+            Self::PersistentVolume => &[260.0, 120.0, 240.0, 180.0, 120.0, 180.0, 140.0, 90.0],
+            Self::StorageClass => &[240.0, 300.0, 140.0, 160.0, 110.0, 90.0, 90.0],
+        }
+    }
+
+    fn load_kind(self, namespace: Option<String>) -> ResourceLoadKind {
+        match self {
+            Self::PersistentVolumeClaim => ResourceLoadKind::PersistentVolumeClaims { namespace },
+            Self::PersistentVolume => ResourceLoadKind::PersistentVolumes,
+            Self::StorageClass => ResourceLoadKind::StorageClasses,
+        }
+    }
+
+    fn matches_load_kind(self, kind: &ResourceLoadKind) -> bool {
+        matches!(
+            (self, kind),
+            (
+                Self::PersistentVolumeClaim,
+                ResourceLoadKind::PersistentVolumeClaims { .. }
+            ) | (Self::PersistentVolume, ResourceLoadKind::PersistentVolumes)
+                | (Self::StorageClass, ResourceLoadKind::StorageClasses)
+        )
+    }
+
+    fn rows_from_list(self, items: &[ResourceSummary]) -> Vec<StorageRow> {
+        let mut rows = items
+            .iter()
+            .map(|summary| row_from_summary(self, summary))
+            .collect::<Vec<_>>();
+        if self.is_namespaced() {
+            rows.sort_by(|left, right| {
+                left.namespace
+                    .cmp(&right.namespace)
+                    .then(left.name.cmp(&right.name))
+            });
+        } else {
+            rows.sort_by(|left, right| left.name.cmp(&right.name));
+        }
+        rows
+    }
+}
+
+fn show_storage_table(
+    ui: &mut egui::Ui,
+    kind: StorageResourceKind,
+    rows: &[StorageRow],
+    row_indices: Vec<usize>,
+) -> Option<StorageTableAction> {
+    let row_height = ui.spacing().interact_size.y;
+    let widths = kind.widths();
+    let table_width = widths.iter().sum::<f32>()
+        + ui.spacing().item_spacing.x * widths.len().saturating_sub(1) as f32;
+    let mut action = None;
+    egui::ScrollArea::horizontal()
+        .id_salt((kind.id(), "table_horizontal"))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.set_min_width(table_width);
+            let mut table = TableBuilder::new(ui)
+                .id_salt((kind.id(), "table"))
+                .striped(true)
+                .resizable(false)
+                .sense(egui::Sense::click())
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .min_scrolled_height(0.0);
+            for width in widths {
+                table = table.column(Column::exact(*width));
+            }
+            table
+                .header(row_height, |mut header| {
+                    for label in kind.columns() {
+                        header.col(|ui| {
+                            ui.strong(*label);
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(row_height, row_indices.len(), |mut table_row| {
+                        let Some(row) = row_indices
+                            .get(table_row.index())
+                            .and_then(|index| rows.get(*index))
+                        else {
+                            return;
+                        };
+                        for cell in &row.cells {
+                            table_row.col(|ui| {
+                                ui.label(cell);
+                            });
+                        }
+                        table_row.response().context_menu(|ui| {
+                            if ui
+                                .button(format!("{} Describe", egui_phosphor::regular::INFO))
+                                .clicked()
+                            {
+                                action = Some(StorageTableAction::Describe {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
+                            if ui
+                                .button(format!("{} View", egui_phosphor::regular::EYE))
+                                .clicked()
+                            {
+                                action = Some(StorageTableAction::View {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
+                        });
+                    });
+                });
+        });
+    action
+}
+
+fn row_matches_search(row: &StorageRow, search_text: &str) -> bool {
+    let needle = search_text.trim().to_lowercase();
+    needle.is_empty() || row.search_text.contains(&needle)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct StorageRow {
+    key: String,
+    name: String,
+    namespace: String,
+    cells: Vec<String>,
+    details: Vec<(String, String)>,
+    search_text: String,
+    raw: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum StorageTableAction {
+    Describe { key: String },
+    View { key: String },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct StorageDescribeDialog {
+    key: String,
+    name: String,
+    describe: StorageDescribe,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct StorageViewDialog {
+    key: String,
+    name: String,
+    yaml: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct StorageDescribe {
+    title: &'static str,
+    summary: Vec<(String, String)>,
+    labels: String,
+    annotations: String,
+    raw_yaml: String,
+}
+
+fn row_from_summary(kind: StorageResourceKind, summary: &ResourceSummary) -> StorageRow {
+    let raw = &summary.raw;
+    let name = value_str(raw, &["metadata", "name"])
+        .unwrap_or(&summary.name)
+        .to_owned();
+    let namespace = value_str(raw, &["metadata", "namespace"])
+        .or(summary.namespace.as_deref())
+        .unwrap_or("N/A")
+        .to_owned();
+    let age = value_str(raw, &["metadata", "creationTimestamp"])
+        .map(|timestamp| human_age_from_rfc3339(timestamp).unwrap_or_else(|| timestamp.to_owned()))
+        .unwrap_or_else(|| "N/A".to_owned());
+    let cells = match kind {
+        StorageResourceKind::PersistentVolumeClaim => pvc_cells(raw, &name, &namespace, &age),
+        StorageResourceKind::PersistentVolume => pv_cells(raw, &name, &age),
+        StorageResourceKind::StorageClass => storage_class_cells(raw, &name, &age),
+    };
+    let details = kind
+        .columns()
+        .iter()
+        .zip(cells.iter())
+        .map(|(label, value)| ((*label).to_owned(), value.clone()))
+        .collect::<Vec<_>>();
+    let key = if kind.is_namespaced() {
+        format!("{namespace}/{name}")
+    } else {
+        name.clone()
+    };
+    let search_text = cells.join(" ").to_lowercase();
+    StorageRow {
+        key,
+        name,
+        namespace,
+        cells,
+        details,
+        search_text,
+        raw: summary.raw.clone(),
+    }
+}
+
+fn pvc_cells(raw: &serde_json::Value, name: &str, namespace: &str, age: &str) -> Vec<String> {
+    vec![
+        name.to_owned(),
+        namespace.to_owned(),
+        value_str(raw, &["status", "phase"])
+            .unwrap_or("N/A")
+            .to_owned(),
+        value_str(raw, &["spec", "volumeName"])
+            .unwrap_or("N/A")
+            .to_owned(),
+        value_str(raw, &["spec", "storageClassName"])
+            .unwrap_or("N/A")
+            .to_owned(),
+        value_str(raw, &["status", "capacity", "storage"])
+            .or_else(|| value_str(raw, &["spec", "resources", "requests", "storage"]))
+            .unwrap_or("N/A")
+            .to_owned(),
+        string_array(raw.pointer("/spec/accessModes")),
+        age.to_owned(),
+    ]
+}
+
+fn pv_cells(raw: &serde_json::Value, name: &str, age: &str) -> Vec<String> {
+    vec![
+        name.to_owned(),
+        value_str(raw, &["status", "phase"])
+            .unwrap_or("N/A")
+            .to_owned(),
+        claim_ref(raw),
+        value_str(raw, &["spec", "storageClassName"])
+            .unwrap_or("N/A")
+            .to_owned(),
+        value_str(raw, &["spec", "capacity", "storage"])
+            .unwrap_or("N/A")
+            .to_owned(),
+        string_array(raw.pointer("/spec/accessModes")),
+        value_str(raw, &["spec", "persistentVolumeReclaimPolicy"])
+            .unwrap_or("N/A")
+            .to_owned(),
+        age.to_owned(),
+    ]
+}
+
+fn storage_class_cells(raw: &serde_json::Value, name: &str, age: &str) -> Vec<String> {
+    vec![
+        name.to_owned(),
+        value_str(raw, &["provisioner"]).unwrap_or("N/A").to_owned(),
+        value_str(raw, &["reclaimPolicy"])
+            .unwrap_or("N/A")
+            .to_owned(),
+        value_str(raw, &["volumeBindingMode"])
+            .unwrap_or("N/A")
+            .to_owned(),
+        value_bool(raw, &["allowVolumeExpansion"])
+            .map_or_else(|| "N/A".to_owned(), |value| value.to_string()),
+        value_str(
+            raw,
+            &[
+                "metadata",
+                "annotations",
+                "storageclass.kubernetes.io/is-default-class",
+            ],
+        )
+        .or_else(|| {
+            value_str(
+                raw,
+                &[
+                    "metadata",
+                    "annotations",
+                    "storageclass.beta.kubernetes.io/is-default-class",
+                ],
+            )
+        })
+        .unwrap_or("false")
+        .to_owned(),
+        age.to_owned(),
+    ]
+}
+
+fn claim_ref(raw: &serde_json::Value) -> String {
+    let namespace = value_str(raw, &["spec", "claimRef", "namespace"]);
+    let name = value_str(raw, &["spec", "claimRef", "name"]);
+    match (namespace, name) {
+        (Some(namespace), Some(name)) => format!("{namespace}/{name}"),
+        (_, Some(name)) => name.to_owned(),
+        _ => "N/A".to_owned(),
+    }
+}
+
+fn describe_from_row(kind: StorageResourceKind, row: &StorageRow) -> StorageDescribe {
+    StorageDescribe {
+        title: kind.title(),
+        summary: row.details.clone(),
+        labels: resource_map(row.raw.pointer("/metadata/labels"))
+            .unwrap_or_else(|| "N/A".to_owned()),
+        annotations: resource_map(row.raw.pointer("/metadata/annotations"))
+            .unwrap_or_else(|| "N/A".to_owned()),
+        raw_yaml: full_manifest_yaml(&row.raw),
+    }
+}
+
+fn show_storage_describe(ui: &mut egui::Ui, describe: &StorageDescribe) {
+    ui.heading(describe.title);
+    ui.separator();
+    egui::Grid::new("storage_describe_summary")
+        .num_columns(2)
+        .spacing([16.0, 4.0])
+        .show(ui, |ui| {
+            for (label, value) in &describe.summary {
+                ui.weak(label);
+                ui.label(value);
+                ui.end_row();
+            }
+        });
+    ui.add_space(10.0);
+    describe_block(ui, "Labels", &describe.labels);
+    describe_block(ui, "Annotations", &describe.annotations);
+    describe_block(ui, "Raw manifest", &describe.raw_yaml);
+}
+
+fn describe_block(ui: &mut egui::Ui, title: &str, value: &str) {
+    ui.strong(title);
+    ui.add(
+        egui::Label::new(egui::RichText::new(value).monospace())
+            .wrap_mode(TextWrapMode::Extend)
+            .selectable(true),
+    );
+    ui.add_space(8.0);
+}
+
+fn resource_map(value: Option<&serde_json::Value>) -> Option<String> {
+    let mut entries = value
+        .and_then(serde_json::Value::as_object)?
+        .iter()
+        .map(|(key, value)| {
+            let value = value
+                .as_str()
+                .map_or_else(|| value.to_string(), ToOwned::to_owned);
+            format!("{key}={value}")
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+    (!entries.is_empty()).then(|| entries.join(", "))
+}
+
+fn string_array(value: Option<&serde_json::Value>) -> String {
+    let values = value
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        "N/A".to_owned()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn value_str<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a str> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_str()
+}
+
+fn value_bool(value: &serde_json::Value, path: &[&str]) -> Option<bool> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_bool()
+}
+
+fn full_manifest_yaml(raw: &serde_json::Value) -> String {
+    serde_yaml::to_string(raw)
+        .or_else(|_| serde_json::to_string_pretty(raw))
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use miku_api::ResourceList;
+
+    #[test]
+    fn pvc_request_query_uses_selected_namespace() {
+        let mut panel = StorageResourcePanel::new(StorageResourceKind::PersistentVolumeClaim);
+        panel.namespace_filter = Some("production".to_owned());
+        let query = panel.request_resources(ClusterId::new("local")).query();
+        assert_eq!(query.resource.plural, "persistentvolumeclaims");
+        assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn pv_and_storage_class_queries_are_cluster_scoped() {
+        let mut pv_panel = StorageResourcePanel::new(StorageResourceKind::PersistentVolume);
+        let pv_query = pv_panel.request_resources(ClusterId::new("local")).query();
+        assert_eq!(pv_query.resource.plural, "persistentvolumes");
+        assert_eq!(pv_query.namespace, None);
+        assert!(matches!(
+            pv_query.resource.scope,
+            miku_core::ResourceScope::Cluster
+        ));
+
+        let mut class_panel = StorageResourcePanel::new(StorageResourceKind::StorageClass);
+        let class_query = class_panel
+            .request_resources(ClusterId::new("local"))
+            .query();
+        assert_eq!(class_query.resource.plural, "storageclasses");
+        assert_eq!(class_query.namespace, None);
+        assert!(matches!(
+            class_query.resource.scope,
+            miku_core::ResourceScope::Cluster
+        ));
+    }
+
+    #[test]
+    fn storage_rows_extract_fields() {
+        let pvc = row_from_summary(StorageResourceKind::PersistentVolumeClaim, &pvc_summary());
+        assert_eq!(pvc.cells[2], "Bound");
+        assert_eq!(pvc.cells[3], "pv-api");
+        assert_eq!(pvc.cells[4], "fast");
+        assert_eq!(pvc.cells[5], "10Gi");
+        assert_eq!(pvc.cells[6], "ReadWriteOnce");
+
+        let pv = row_from_summary(StorageResourceKind::PersistentVolume, &pv_summary());
+        assert_eq!(pv.cells[1], "Bound");
+        assert_eq!(pv.cells[2], "default/data");
+        assert_eq!(pv.cells[3], "fast");
+        assert_eq!(pv.cells[4], "10Gi");
+        assert_eq!(pv.cells[6], "Delete");
+
+        let class = row_from_summary(StorageResourceKind::StorageClass, &storage_class_summary());
+        assert_eq!(class.cells[1], "kubernetes.io/no-provisioner");
+        assert_eq!(class.cells[2], "Retain");
+        assert_eq!(class.cells[3], "WaitForFirstConsumer");
+        assert_eq!(class.cells[4], "true");
+        assert_eq!(class.cells[5], "true");
+    }
+
+    #[test]
+    fn storage_rows_handle_missing_fields() {
+        let pvc = row_from_summary(
+            StorageResourceKind::PersistentVolumeClaim,
+            &minimal_summary("PersistentVolumeClaim"),
+        );
+        assert_eq!(pvc.cells[2], "N/A");
+        assert_eq!(pvc.cells[3], "N/A");
+        assert_eq!(pvc.cells[4], "N/A");
+        assert_eq!(pvc.cells[5], "N/A");
+        assert_eq!(pvc.cells[6], "N/A");
+
+        let class = row_from_summary(
+            StorageResourceKind::StorageClass,
+            &minimal_summary("StorageClass"),
+        );
+        assert_eq!(class.cells[1], "N/A");
+        assert_eq!(class.cells[5], "false");
+    }
+
+    #[test]
+    fn storage_rows_sort_and_filter_case_insensitively() {
+        let rows = StorageResourceKind::PersistentVolumeClaim.rows_from_list(&[
+            pvc_summary_with_name("zeta", "worker"),
+            pvc_summary_with_name("default", "api-b"),
+            pvc_summary_with_name("default", "api-a"),
+        ]);
+        let keys = rows.iter().map(|row| row.key.as_str()).collect::<Vec<_>>();
+        assert_eq!(keys, vec!["default/api-a", "default/api-b", "zeta/worker"]);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row_matches_search(row, "READWRITEONCE"))
+                .count(),
+            3
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row_matches_search(row, "ZETA"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn stale_watch_events_do_not_replace_current_rows() {
+        let mut panel = StorageResourcePanel::new(StorageResourceKind::PersistentVolumeClaim);
+        let cluster_id = ClusterId::new("local");
+        let first = panel.request_resource_watch(cluster_id.clone());
+        let second = panel.request_resource_watch(cluster_id);
+        panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
+            request: first,
+            result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
+                items: vec![pvc_summary_with_name("default", "stale")],
+                continue_token: None,
+            })),
+        });
+        assert!(panel.rows.is_empty());
+        panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
+            request: second,
+            result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
+                items: vec![pvc_summary()],
+                continue_token: None,
+            })),
+        });
+        assert_eq!(panel.rows[0].name, "data");
+    }
+
+    #[test]
+    fn namespace_watch_events_update_pvc_selector() {
+        let mut panel = StorageResourcePanel::new(StorageResourceKind::PersistentVolumeClaim);
+        panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
+            request: ResourceWatchRequest {
+                request_id: 42,
+                cluster_id: ClusterId::new("local"),
+                kind: ResourceLoadKind::Namespaces,
+            },
+            result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
+                items: vec![namespace_summary("production")],
+                continue_token: None,
+            })),
+        });
+        assert_eq!(panel.namespaces, vec!["production".to_owned()]);
+    }
+
+    fn pvc_summary() -> ResourceSummary {
+        pvc_summary_with_name("default", "data")
+    }
+
+    fn pvc_summary_with_name(namespace: &str, name: &str) -> ResourceSummary {
+        ResourceSummary {
+            name: name.to_owned(),
+            namespace: Some(namespace.to_owned()),
+            kind: "PersistentVolumeClaim".to_owned(),
+            status: None,
+            raw: serde_json::json!({
+                "metadata": {"name": name, "namespace": namespace, "creationTimestamp": "2026-05-18T10:00:00Z"},
+                "spec": {
+                    "volumeName": "pv-api",
+                    "storageClassName": "fast",
+                    "accessModes": ["ReadWriteOnce"],
+                    "resources": {"requests": {"storage": "10Gi"}}
+                },
+                "status": {
+                    "phase": "Bound",
+                    "capacity": {"storage": "10Gi"}
+                }
+            }),
+        }
+    }
+
+    fn pv_summary() -> ResourceSummary {
+        ResourceSummary {
+            name: "pv-api".to_owned(),
+            namespace: None,
+            kind: "PersistentVolume".to_owned(),
+            status: None,
+            raw: serde_json::json!({
+                "metadata": {"name": "pv-api", "creationTimestamp": "2026-05-18T10:00:00Z"},
+                "spec": {
+                    "storageClassName": "fast",
+                    "capacity": {"storage": "10Gi"},
+                    "accessModes": ["ReadWriteOnce"],
+                    "persistentVolumeReclaimPolicy": "Delete",
+                    "claimRef": {"namespace": "default", "name": "data"}
+                },
+                "status": {"phase": "Bound"}
+            }),
+        }
+    }
+
+    fn storage_class_summary() -> ResourceSummary {
+        ResourceSummary {
+            name: "fast".to_owned(),
+            namespace: None,
+            kind: "StorageClass".to_owned(),
+            status: None,
+            raw: serde_json::json!({
+                "metadata": {
+                    "name": "fast",
+                    "creationTimestamp": "2026-05-18T10:00:00Z",
+                    "annotations": {"storageclass.kubernetes.io/is-default-class": "true"}
+                },
+                "provisioner": "kubernetes.io/no-provisioner",
+                "reclaimPolicy": "Retain",
+                "volumeBindingMode": "WaitForFirstConsumer",
+                "allowVolumeExpansion": true
+            }),
+        }
+    }
+
+    fn minimal_summary(kind: &str) -> ResourceSummary {
+        ResourceSummary {
+            name: "minimal".to_owned(),
+            namespace: Some("default".to_owned()),
+            kind: kind.to_owned(),
+            status: None,
+            raw: serde_json::json!({"metadata": {"name": "minimal", "namespace": "default"}}),
+        }
+    }
+
+    fn namespace_summary(name: &str) -> ResourceSummary {
+        ResourceSummary {
+            name: name.to_owned(),
+            namespace: None,
+            kind: "Namespace".to_owned(),
+            status: Some("Active".to_owned()),
+            raw: serde_json::json!({"metadata": {"name": name}}),
+        }
+    }
+}

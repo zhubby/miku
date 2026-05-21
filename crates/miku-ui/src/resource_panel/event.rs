@@ -111,6 +111,9 @@ impl EventResourcePanel {
                 | ResourceLoadKind::Secrets { .. }
                 | ResourceLoadKind::Services { .. }
                 | ResourceLoadKind::Pods { .. }
+                | ResourceLoadKind::PersistentVolumeClaims { .. }
+                | ResourceLoadKind::PersistentVolumes
+                | ResourceLoadKind::StorageClasses
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
             ResourceUiEvent::ResourceWatchUpdated { request, result } => match request.kind {
@@ -158,6 +161,9 @@ impl EventResourcePanel {
                 | ResourceLoadKind::Secrets { .. }
                 | ResourceLoadKind::Services { .. }
                 | ResourceLoadKind::Pods { .. }
+                | ResourceLoadKind::PersistentVolumeClaims { .. }
+                | ResourceLoadKind::PersistentVolumes
+                | ResourceLoadKind::StorageClasses
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
             ResourceUiEvent::ResourceActionCompleted { .. }

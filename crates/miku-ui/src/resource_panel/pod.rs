@@ -139,6 +139,9 @@ impl PodResourcePanel {
                 | ResourceLoadKind::Secrets { .. }
                 | ResourceLoadKind::Services { .. }
                 | ResourceLoadKind::StatefulSets { .. }
+                | ResourceLoadKind::PersistentVolumeClaims { .. }
+                | ResourceLoadKind::PersistentVolumes
+                | ResourceLoadKind::StorageClasses
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
             ResourceUiEvent::ResourceActionCompleted { request, result } => {
@@ -285,6 +288,9 @@ impl PodResourcePanel {
                 | ResourceLoadKind::Secrets { .. }
                 | ResourceLoadKind::Services { .. }
                 | ResourceLoadKind::StatefulSets { .. }
+                | ResourceLoadKind::PersistentVolumeClaims { .. }
+                | ResourceLoadKind::PersistentVolumes
+                | ResourceLoadKind::StorageClasses
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
         }

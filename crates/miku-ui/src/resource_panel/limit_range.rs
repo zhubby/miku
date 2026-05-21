@@ -110,6 +110,9 @@ impl LimitRangeResourcePanel {
                 | ResourceLoadKind::Services { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::Pods { .. }
+                | ResourceLoadKind::PersistentVolumeClaims { .. }
+                | ResourceLoadKind::PersistentVolumes
+                | ResourceLoadKind::StorageClasses
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
             ResourceUiEvent::ResourceWatchUpdated { request, result } => match request.kind {
@@ -157,6 +160,9 @@ impl LimitRangeResourcePanel {
                 | ResourceLoadKind::Services { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::Pods { .. }
+                | ResourceLoadKind::PersistentVolumeClaims { .. }
+                | ResourceLoadKind::PersistentVolumes
+                | ResourceLoadKind::StorageClasses
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
             ResourceUiEvent::ResourceActionCompleted { .. }

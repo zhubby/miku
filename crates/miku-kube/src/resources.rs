@@ -42,8 +42,11 @@ fn kind_for_plural(plural: &str) -> String {
         "ingresses" => "Ingress".to_owned(),
         "ingressclasses" => "IngressClass".to_owned(),
         "networkpolicies" => "NetworkPolicy".to_owned(),
+        "persistentvolumeclaims" => "PersistentVolumeClaim".to_owned(),
+        "persistentvolumes" => "PersistentVolume".to_owned(),
         "resourcequotas" => "ResourceQuota".to_owned(),
         "secrets" => "Secret".to_owned(),
+        "storageclasses" => "StorageClass".to_owned(),
         "customresourcedefinitions" => "CustomResourceDefinition".to_owned(),
         value => value
             .trim_end_matches('s')
@@ -353,6 +356,33 @@ mod tests {
                 miku_core::ResourceRef::grouped("networking.k8s.io", "v1", "networkpolicies"),
                 "NetworkPolicy",
                 "networkpolicies",
+            ),
+        ];
+
+        for (resource, kind, plural) in cases {
+            let api_resource = api_resource(&resource);
+            assert_eq!(api_resource.kind, kind);
+            assert_eq!(api_resource.plural, plural);
+        }
+    }
+
+    #[test]
+    fn api_resource_uses_known_kind_for_storage_resources() {
+        let cases = [
+            (
+                miku_core::ResourceRef::core("v1", "persistentvolumeclaims"),
+                "PersistentVolumeClaim",
+                "persistentvolumeclaims",
+            ),
+            (
+                miku_core::ResourceRef::core("v1", "persistentvolumes"),
+                "PersistentVolume",
+                "persistentvolumes",
+            ),
+            (
+                miku_core::ResourceRef::grouped("storage.k8s.io", "v1", "storageclasses"),
+                "StorageClass",
+                "storageclasses",
             ),
         ];
 
