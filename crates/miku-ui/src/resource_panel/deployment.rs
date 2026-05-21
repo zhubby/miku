@@ -13,24 +13,24 @@ use super::{
 use crate::time::human_age_from_rfc3339;
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct EventResourcePanel {
+pub(crate) struct DeploymentResourcePanel {
     namespace_filter: Option<String>,
     search_text: String,
     namespaces: Vec<String>,
     namespace_status: LoadStatus,
     row_status: LoadStatus,
-    rows: Vec<EventRow>,
+    rows: Vec<DeploymentRow>,
     next_request_id: u64,
     namespace_request_id: Option<u64>,
     row_request_id: Option<u64>,
     namespace_watch_request_id: Option<u64>,
     row_watch_request_id: Option<u64>,
     last_cluster_id: Option<ClusterId>,
-    describe_dialog: Option<EventDescribeDialog>,
-    view_dialog: Option<EventViewDialog>,
+    describe_dialog: Option<DeploymentDescribeDialog>,
+    view_dialog: Option<DeploymentViewDialog>,
 }
 
-impl EventResourcePanel {
+impl DeploymentResourcePanel {
     pub(crate) fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -39,7 +39,7 @@ impl EventResourcePanel {
         let mut requests = ResourcePanelRequests::default();
         let Some(cluster_id) = cluster_id else {
             ui.centered_and_justified(|ui| {
-                ui.label("Select a cluster to load events.");
+                ui.label("Select a cluster to load deployments.");
             });
             return requests;
         };
@@ -53,7 +53,7 @@ impl EventResourcePanel {
         if matches!(self.row_status, LoadStatus::Idle) {
             requests
                 .watches
-                .push(self.request_event_watch(cluster_id.clone()));
+                .push(self.request_deployment_watch(cluster_id.clone()));
         }
 
         self.show_toolbar(ui, cluster_id, &mut requests);
@@ -80,21 +80,21 @@ impl EventResourcePanel {
                         Err(error) => self.namespace_status = LoadStatus::Error(error),
                     }
                 }
-                ResourceLoadKind::Events { .. } => {
+                ResourceLoadKind::Deployments { .. } => {
                     if self.row_request_id != Some(request.request_id) {
                         return;
                     }
                     self.row_request_id = None;
                     match result {
                         Ok(list) => {
-                            self.rows = event_rows_from_list(&list.items);
+                            self.rows = deployment_rows_from_list(&list.items);
                             self.row_status = LoadStatus::Loaded;
                         }
                         Err(error) => self.row_status = LoadStatus::Error(error),
                     }
                 }
                 ResourceLoadKind::Nodes
-                | ResourceLoadKind::Deployments { .. }
+                | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
@@ -112,13 +112,13 @@ impl EventResourcePanel {
                         Err(error) => self.namespace_status = LoadStatus::Error(error),
                     }
                 }
-                ResourceLoadKind::Events { .. } => {
+                ResourceLoadKind::Deployments { .. } => {
                     if self.row_watch_request_id != Some(request.request_id) {
                         return;
                     }
                     match result {
                         Ok(miku_api::ResourceEvent::Snapshot(list)) => {
-                            self.rows = event_rows_from_list(&list.items);
+                            self.rows = deployment_rows_from_list(&list.items);
                             self.row_status = LoadStatus::Loaded;
                         }
                         Ok(_) => {}
@@ -126,7 +126,7 @@ impl EventResourcePanel {
                     }
                 }
                 ResourceLoadKind::Nodes
-                | ResourceLoadKind::Deployments { .. }
+                | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
@@ -171,7 +171,7 @@ impl EventResourcePanel {
                 .to_owned();
 
             let mut namespace_changed = false;
-            egui::ComboBox::from_id_salt("event_resource_namespace_filter")
+            egui::ComboBox::from_id_salt("deployment_resource_namespace_filter")
                 .selected_text(selected_label)
                 .width(220.0)
                 .show_ui(ui, |ui| {
@@ -189,13 +189,11 @@ impl EventResourcePanel {
                     }
                 });
 
-            let search_changed = ui
-                .add(
-                    egui::TextEdit::singleline(&mut self.search_text)
-                        .hint_text("Search Events...")
-                        .desired_width(280.0),
-                )
-                .changed();
+            ui.add(
+                egui::TextEdit::singleline(&mut self.search_text)
+                    .hint_text("Search Deployments...")
+                    .desired_width(280.0),
+            );
 
             if ui
                 .button(egui_phosphor::regular::ARROWS_CLOCKWISE)
@@ -207,7 +205,7 @@ impl EventResourcePanel {
                     .push(self.request_namespace_watch(cluster_id.clone()));
                 requests
                     .watches
-                    .push(self.request_event_watch(cluster_id.clone()));
+                    .push(self.request_deployment_watch(cluster_id.clone()));
             }
 
             ui.separator();
@@ -224,11 +222,7 @@ impl EventResourcePanel {
             if namespace_changed {
                 requests
                     .watches
-                    .push(self.request_event_watch(cluster_id.clone()));
-            }
-
-            if search_changed {
-                ui.ctx().request_repaint();
+                    .push(self.request_deployment_watch(cluster_id.clone()));
             }
         });
     }
@@ -237,7 +231,7 @@ impl EventResourcePanel {
         match &self.row_status {
             LoadStatus::Idle | LoadStatus::Loading if self.rows.is_empty() => {
                 ui.centered_and_justified(|ui| {
-                    ui.label("Loading events...");
+                    ui.label("Loading deployments...");
                 });
             }
             LoadStatus::Error(error) => {
@@ -249,40 +243,40 @@ impl EventResourcePanel {
                 let row_indices = self.filtered_row_indices();
                 if row_indices.is_empty() {
                     ui.centered_and_justified(|ui| {
-                        ui.label("No events match the current filters.");
+                        ui.label("No deployments match the current filters.");
                     });
                     return;
                 }
 
-                let action = show_event_table(ui, &self.rows, row_indices);
+                let action = show_deployment_table(ui, &self.rows, row_indices);
                 self.apply_table_action(action);
             }
         }
     }
 
-    fn apply_table_action(&mut self, action: Option<EventTableAction>) {
+    fn apply_table_action(&mut self, action: Option<DeploymentTableAction>) {
         match action {
-            Some(EventTableAction::Describe { key }) => {
+            Some(DeploymentTableAction::Describe { key }) => {
                 let Some((name, describe)) = self
                     .row_by_key(&key)
-                    .map(|row| (row.name.clone(), event_describe_from_row(row)))
+                    .map(|row| (row.name.clone(), deployment_describe_from_row(row)))
                 else {
                     return;
                 };
-                self.describe_dialog = Some(EventDescribeDialog {
+                self.describe_dialog = Some(DeploymentDescribeDialog {
                     key,
                     name,
                     describe,
                 });
             }
-            Some(EventTableAction::View { key }) => {
+            Some(DeploymentTableAction::View { key }) => {
                 let Some((name, yaml)) = self
                     .row_by_key(&key)
                     .map(|row| (row.name.clone(), full_manifest_yaml(&row.raw)))
                 else {
                     return;
                 };
-                self.view_dialog = Some(EventViewDialog { key, name, yaml });
+                self.view_dialog = Some(DeploymentViewDialog { key, name, yaml });
             }
             None => {}
         }
@@ -295,23 +289,26 @@ impl EventResourcePanel {
 
         let mut open = true;
         egui::Window::new(format!("Describe {}", dialog.name))
-            .id(egui::Id::new(("event-describe-dialog", &dialog.key)))
+            .id(egui::Id::new(("deployment-describe-dialog", &dialog.key)))
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .open(&mut open)
             .collapsible(false)
-            .fixed_size([EVENT_DESCRIBE_DIALOG_WIDTH, EVENT_DESCRIBE_DIALOG_HEIGHT])
+            .fixed_size([
+                DEPLOYMENT_DESCRIBE_DIALOG_WIDTH,
+                DEPLOYMENT_DESCRIBE_DIALOG_HEIGHT,
+            ])
             .show(ctx, |ui| {
-                ui.set_width(EVENT_DESCRIBE_DIALOG_WIDTH);
-                ui.set_height(EVENT_DESCRIBE_CONTENT_HEIGHT);
+                ui.set_width(DEPLOYMENT_DESCRIBE_DIALOG_WIDTH);
+                ui.set_height(DEPLOYMENT_DESCRIBE_CONTENT_HEIGHT);
                 egui::ScrollArea::both()
-                    .id_salt(("event-describe-content", &dialog.key))
-                    .max_width(EVENT_DESCRIBE_DIALOG_WIDTH)
-                    .max_height(EVENT_DESCRIBE_CONTENT_HEIGHT)
+                    .id_salt(("deployment-describe-content", &dialog.key))
+                    .max_width(DEPLOYMENT_DESCRIBE_DIALOG_WIDTH)
+                    .max_height(DEPLOYMENT_DESCRIBE_CONTENT_HEIGHT)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.set_min_width(EVENT_DESCRIBE_CONTENT_WIDTH);
+                        ui.set_min_width(DEPLOYMENT_DESCRIBE_CONTENT_WIDTH);
                         ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-                        show_event_describe(ui, &dialog.describe);
+                        show_deployment_describe(ui, &dialog.describe);
                     });
             });
 
@@ -327,7 +324,7 @@ impl EventResourcePanel {
 
         let mut open = true;
         let response = ResourceYamlViewDialog {
-            id: egui::Id::new(("event-view-dialog", &dialog.key)),
+            id: egui::Id::new(("deployment-view-dialog", &dialog.key)),
             title: format!("View {}", dialog.name),
             yaml: &dialog.yaml,
             open: &mut open,
@@ -340,11 +337,11 @@ impl EventResourcePanel {
     }
 
     #[cfg(test)]
-    fn request_events(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
+    fn request_deployments(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
         let request = ResourceLoadRequest {
             request_id: self.allocate_request_id(),
             cluster_id,
-            kind: ResourceLoadKind::Events {
+            kind: ResourceLoadKind::Deployments {
                 namespace: self.namespace_filter.clone(),
             },
         };
@@ -364,11 +361,11 @@ impl EventResourcePanel {
         request
     }
 
-    fn request_event_watch(&mut self, cluster_id: ClusterId) -> ResourceWatchRequest {
+    fn request_deployment_watch(&mut self, cluster_id: ClusterId) -> ResourceWatchRequest {
         let request = ResourceWatchRequest {
             request_id: self.allocate_request_id(),
             cluster_id,
-            kind: ResourceLoadKind::Events {
+            kind: ResourceLoadKind::Deployments {
                 namespace: self.namespace_filter.clone(),
             },
         };
@@ -397,42 +394,42 @@ impl EventResourcePanel {
             .collect()
     }
 
-    fn row_by_key(&self, key: &str) -> Option<&EventRow> {
+    fn row_by_key(&self, key: &str) -> Option<&DeploymentRow> {
         self.rows.iter().find(|row| row.key == key)
     }
 }
 
-fn show_event_table(
+fn show_deployment_table(
     ui: &mut egui::Ui,
-    rows: &[EventRow],
+    rows: &[DeploymentRow],
     row_indices: Vec<usize>,
-) -> Option<EventTableAction> {
+) -> Option<DeploymentTableAction> {
     let row_height = ui.spacing().interact_size.y;
-    let table_width: f32 = EVENT_COLUMN_WIDTHS.iter().sum::<f32>()
-        + ui.spacing().item_spacing.x * EVENT_COLUMN_WIDTHS.len().saturating_sub(1) as f32;
+    let table_width: f32 = DEPLOYMENT_COLUMN_WIDTHS.iter().sum::<f32>()
+        + ui.spacing().item_spacing.x * DEPLOYMENT_COLUMN_WIDTHS.len().saturating_sub(1) as f32;
     let mut action = None;
 
     egui::ScrollArea::horizontal()
-        .id_salt("event_resource_table_horizontal")
+        .id_salt("deployment_resource_table_horizontal")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.set_min_width(table_width);
 
             let mut table = TableBuilder::new(ui)
-                .id_salt("event_resource_table")
+                .id_salt("deployment_resource_table")
                 .striped(true)
                 .resizable(false)
                 .sense(egui::Sense::click())
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .min_scrolled_height(0.0);
 
-            for width in EVENT_COLUMN_WIDTHS {
+            for width in DEPLOYMENT_COLUMN_WIDTHS {
                 table = table.column(Column::exact(width));
             }
 
             table
                 .header(row_height, |mut header| {
-                    for label in EVENT_COLUMNS {
+                    for label in DEPLOYMENT_COLUMNS {
                         header.col(|ui| {
                             ui.strong(label);
                         });
@@ -449,31 +446,34 @@ fn show_event_table(
                         };
 
                         table_row.col(|ui| {
+                            ui.label(&row.name);
+                        });
+                        table_row.col(|ui| {
                             ui.label(&row.namespace);
                         });
                         table_row.col(|ui| {
-                            ui.colored_label(
-                                event_type_color(ui, &row.event_type),
-                                &row.event_type,
-                            );
+                            ui.label(&row.ready);
                         });
                         table_row.col(|ui| {
-                            ui.label(&row.reason);
+                            ui.label(&row.up_to_date);
                         });
                         table_row.col(|ui| {
-                            ui.label(&row.involved_object);
+                            ui.label(&row.available);
                         });
                         table_row.col(|ui| {
-                            ui.label(&row.message);
+                            ui.label(&row.replicas);
                         });
                         table_row.col(|ui| {
-                            ui.label(&row.count);
+                            ui.label(&row.strategy);
                         });
                         table_row.col(|ui| {
-                            ui.label(&row.source);
+                            ui.label(&row.selector);
                         });
                         table_row.col(|ui| {
-                            ui.label(&row.last_seen);
+                            ui.label(&row.images);
+                        });
+                        table_row.col(|ui| {
+                            ui.label(&row.conditions);
                         });
                         table_row.col(|ui| {
                             ui.label(&row.age);
@@ -484,7 +484,7 @@ fn show_event_table(
                                 .button(format!("{} Describe", egui_phosphor::regular::INFO))
                                 .clicked()
                             {
-                                action = Some(EventTableAction::Describe {
+                                action = Some(DeploymentTableAction::Describe {
                                     key: row.key.clone(),
                                 });
                                 ui.close();
@@ -493,7 +493,7 @@ fn show_event_table(
                                 .button(format!("{} View", egui_phosphor::regular::EYE))
                                 .clicked()
                             {
-                                action = Some(EventTableAction::View {
+                                action = Some(DeploymentTableAction::View {
                                     key: row.key.clone(),
                                 });
                                 ui.close();
@@ -506,151 +506,164 @@ fn show_event_table(
     action
 }
 
-const EVENT_COLUMNS: [&str; 9] = [
+const DEPLOYMENT_COLUMNS: [&str; 11] = [
+    "Name",
     "Namespace",
-    "Type",
-    "Reason",
-    "Object",
-    "Message",
-    "Count",
-    "Source",
-    "Last Seen",
+    "Ready",
+    "Up-to-date",
+    "Available",
+    "Replicas",
+    "Strategy",
+    "Selector",
+    "Images",
+    "Conditions",
     "Age",
 ];
-const EVENT_COLUMN_WIDTHS: [f32; 9] = [160.0, 100.0, 180.0, 220.0, 420.0, 80.0, 200.0, 110.0, 90.0];
-const EVENT_DESCRIBE_DIALOG_WIDTH: f32 = 860.0;
-const EVENT_DESCRIBE_DIALOG_HEIGHT: f32 = 580.0;
-const EVENT_DESCRIBE_CONTENT_HEIGHT: f32 = 520.0;
-const EVENT_DESCRIBE_CONTENT_WIDTH: f32 = 1160.0;
-const EVENT_DESCRIBE_SECTION_WIDTH: f32 = 1128.0;
-const EVENT_DESCRIBE_FIELD_LABEL_WIDTH: f32 = 140.0;
-const EVENT_DESCRIBE_FIELD_VALUE_WIDTH: f32 = 370.0;
-const EVENT_DESCRIBE_LINE_WIDTH: f32 = 1080.0;
-
-fn event_type_color(ui: &egui::Ui, event_type: &str) -> egui::Color32 {
-    match event_type {
-        "Normal" => egui::Color32::from_rgb(46, 160, 67),
-        "Warning" => egui::Color32::from_rgb(191, 135, 0),
-        _ => ui.visuals().text_color(),
-    }
-}
+const DEPLOYMENT_COLUMN_WIDTHS: [f32; 11] = [
+    240.0, 160.0, 100.0, 100.0, 100.0, 100.0, 120.0, 260.0, 320.0, 280.0, 90.0,
+];
+const DEPLOYMENT_DESCRIBE_DIALOG_WIDTH: f32 = 860.0;
+const DEPLOYMENT_DESCRIBE_DIALOG_HEIGHT: f32 = 580.0;
+const DEPLOYMENT_DESCRIBE_CONTENT_HEIGHT: f32 = 520.0;
+const DEPLOYMENT_DESCRIBE_CONTENT_WIDTH: f32 = 1160.0;
+const DEPLOYMENT_DESCRIBE_SECTION_WIDTH: f32 = 1128.0;
+const DEPLOYMENT_DESCRIBE_FIELD_LABEL_WIDTH: f32 = 140.0;
+const DEPLOYMENT_DESCRIBE_FIELD_VALUE_WIDTH: f32 = 370.0;
+const DEPLOYMENT_DESCRIBE_LINE_WIDTH: f32 = 1080.0;
 
 #[cfg(test)]
-fn filter_event_rows<'a>(rows: &'a [EventRow], search_text: &str) -> Vec<&'a EventRow> {
+fn filter_deployment_rows<'a>(
+    rows: &'a [DeploymentRow],
+    search_text: &str,
+) -> Vec<&'a DeploymentRow> {
     rows.iter()
         .filter(|row| row_matches_search(row, search_text))
         .collect()
 }
 
-fn row_matches_search(row: &EventRow, search_text: &str) -> bool {
+fn row_matches_search(row: &DeploymentRow, search_text: &str) -> bool {
     let needle = search_text.trim().to_lowercase();
     needle.is_empty()
+        || row.name.to_lowercase().contains(&needle)
         || row.namespace.to_lowercase().contains(&needle)
-        || row.event_type.to_lowercase().contains(&needle)
-        || row.reason.to_lowercase().contains(&needle)
-        || row.involved_object.to_lowercase().contains(&needle)
-        || row.message.to_lowercase().contains(&needle)
-        || row.source.to_lowercase().contains(&needle)
+        || row.selector.to_lowercase().contains(&needle)
+        || row.images.to_lowercase().contains(&needle)
+        || row.conditions.to_lowercase().contains(&needle)
 }
 
-fn event_rows_from_list(items: &[ResourceSummary]) -> Vec<EventRow> {
-    let mut rows = items.iter().map(EventRow::from_summary).collect::<Vec<_>>();
+fn deployment_rows_from_list(items: &[ResourceSummary]) -> Vec<DeploymentRow> {
+    let mut rows = items
+        .iter()
+        .map(DeploymentRow::from_summary)
+        .collect::<Vec<_>>();
     rows.sort_by(|left, right| {
-        right
-            .sort_timestamp
-            .cmp(&left.sort_timestamp)
-            .then(left.namespace.cmp(&right.namespace))
+        left.namespace
+            .cmp(&right.namespace)
             .then(left.name.cmp(&right.name))
     });
     rows
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct EventRow {
+struct DeploymentRow {
     key: String,
     name: String,
     namespace: String,
-    event_type: String,
-    reason: String,
-    involved_object: String,
-    message: String,
-    count: String,
-    source: String,
-    first_seen: String,
-    last_seen: String,
+    ready: String,
+    up_to_date: String,
+    available: String,
+    replicas: String,
+    strategy: String,
+    selector: String,
+    images: String,
+    conditions: String,
     age: String,
-    sort_timestamp: String,
     raw: serde_json::Value,
 }
 
-impl EventRow {
+impl DeploymentRow {
     fn from_summary(summary: &ResourceSummary) -> Self {
         let raw = &summary.raw;
         let name = value_str(raw, &["metadata", "name"]).unwrap_or(&summary.name);
         let namespace = value_str(raw, &["metadata", "namespace"])
             .or(summary.namespace.as_deref())
             .unwrap_or("N/A");
-        let event_type = value_str(raw, &["type"]).unwrap_or("N/A");
-        let reason = value_str(raw, &["reason"]).unwrap_or("N/A");
-        let message = value_str(raw, &["message"]).unwrap_or("N/A");
-        let involved_object = involved_object_name(raw);
-        let source = event_source(raw);
-        let first_timestamp = first_event_timestamp(raw);
-        let last_timestamp = last_event_timestamp(raw);
-        let created_timestamp = value_str(raw, &["metadata", "creationTimestamp"]);
-        let sort_timestamp = last_timestamp
-            .or(created_timestamp)
-            .unwrap_or("")
-            .to_owned();
+        let desired = value_u64(raw, &["spec", "replicas"]);
+        let ready = value_u64(raw, &["status", "readyReplicas"]).unwrap_or(0);
+        let updated = value_u64(raw, &["status", "updatedReplicas"]).unwrap_or(0);
+        let available = value_u64(raw, &["status", "availableReplicas"]).unwrap_or(0);
+        let current = value_u64(raw, &["status", "replicas"]).unwrap_or(0);
 
         Self {
-            key: event_key(namespace, name),
+            key: deployment_key(namespace, name),
             name: name.to_owned(),
             namespace: namespace.to_owned(),
-            event_type: event_type.to_owned(),
-            reason: reason.to_owned(),
-            involved_object,
-            message: message.to_owned(),
-            count: event_count(raw),
-            source,
-            first_seen: first_timestamp.map(format_timestamp).unwrap_or_else(na),
-            last_seen: last_timestamp.map(format_timestamp).unwrap_or_else(na),
-            age: created_timestamp.map(format_timestamp).unwrap_or_else(na),
-            sort_timestamp,
+            ready: replica_ratio(ready, desired),
+            up_to_date: replica_ratio(updated, desired),
+            available: replica_ratio(available, desired),
+            replicas: replica_ratio(current, desired),
+            strategy: value_str(raw, &["spec", "strategy", "type"])
+                .unwrap_or("N/A")
+                .to_owned(),
+            selector: selector_label(raw),
+            images: container_images(raw),
+            conditions: condition_summary(raw),
+            age: value_str(raw, &["metadata", "creationTimestamp"])
+                .map(|timestamp| {
+                    human_age_from_rfc3339(timestamp).unwrap_or_else(|| timestamp.to_owned())
+                })
+                .unwrap_or_else(|| "N/A".to_owned()),
             raw: summary.raw.clone(),
         }
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum EventTableAction {
+enum DeploymentTableAction {
     Describe { key: String },
     View { key: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct EventDescribeDialog {
+struct DeploymentDescribeDialog {
     key: String,
     name: String,
-    describe: EventDescribe,
+    describe: DeploymentDescribe,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct EventViewDialog {
+struct DeploymentViewDialog {
     key: String,
     name: String,
     yaml: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct EventDescribe {
+struct DeploymentDescribe {
     summary: Vec<DescribeField>,
-    involved: Vec<DescribeField>,
-    timing: Vec<DescribeField>,
+    replicas: Vec<DescribeField>,
+    rollout: Vec<DescribeField>,
+    selector: Vec<ResourceMapEntry>,
+    template_labels: Vec<ResourceMapEntry>,
+    containers: Vec<ContainerDescribe>,
+    conditions: Vec<DeploymentConditionDescribe>,
     labels: Vec<ResourceMapEntry>,
     annotations: Vec<ResourceMapEntry>,
-    message: String,
     raw_yaml: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ContainerDescribe {
+    name: String,
+    image: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct DeploymentConditionDescribe {
+    condition_type: String,
+    status: String,
+    reason: String,
+    message: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -659,30 +672,100 @@ struct DescribeField {
     value: String,
 }
 
-fn show_event_describe(ui: &mut egui::Ui, describe: &EventDescribe) {
-    describe_group(ui, egui_phosphor::regular::BELL, "Event", |ui| {
+fn show_deployment_describe(ui: &mut egui::Ui, describe: &DeploymentDescribe) {
+    describe_group(ui, egui_phosphor::regular::STACK, "Deployment", |ui| {
         describe_fields(ui, &describe.summary);
     });
 
     ui.add_space(10.0);
-    describe_group(ui, egui_phosphor::regular::CUBE, "Involved object", |ui| {
-        describe_fields(ui, &describe.involved);
+    describe_group(ui, egui_phosphor::regular::GAUGE, "Replicas", |ui| {
+        describe_fields(ui, &describe.replicas);
     });
 
     ui.add_space(10.0);
-    describe_group(ui, egui_phosphor::regular::CLOCK, "Timing", |ui| {
-        describe_fields(ui, &describe.timing);
+    describe_group(
+        ui,
+        egui_phosphor::regular::ARROWS_CLOCKWISE,
+        "Rollout",
+        |ui| {
+            describe_fields(ui, &describe.rollout);
+        },
+    );
+
+    ui.add_space(10.0);
+    describe_group(ui, egui_phosphor::regular::FUNNEL, "Selector", |ui| {
+        ResourceMapView {
+            id_salt: "deployment-describe-selector",
+            icon: egui_phosphor::regular::FUNNEL,
+            title: "Match labels",
+            entries: &describe.selector,
+            empty_label: "No selector labels.",
+        }
+        .show(ui);
     });
 
     ui.add_space(10.0);
-    describe_group(ui, egui_phosphor::regular::CHAT_TEXT, "Message", |ui| {
-        non_wrapping_value(ui, &describe.message, EVENT_DESCRIBE_LINE_WIDTH);
+    describe_group(ui, egui_phosphor::regular::CUBE, "Pod template", |ui| {
+        ResourceMapView {
+            id_salt: "deployment-describe-template-labels",
+            icon: egui_phosphor::regular::TAG,
+            title: "Labels",
+            entries: &describe.template_labels,
+            empty_label: "No template labels.",
+        }
+        .show(ui);
+        ui.add_space(8.0);
+        if describe.containers.is_empty() {
+            non_wrapping_value(ui, "N/A", DEPLOYMENT_DESCRIBE_LINE_WIDTH);
+        } else {
+            for container in &describe.containers {
+                non_wrapping_value(
+                    ui,
+                    &format!("{}: {}", container.name, container.image),
+                    DEPLOYMENT_DESCRIBE_LINE_WIDTH,
+                );
+            }
+        }
     });
+
+    ui.add_space(10.0);
+    describe_group(
+        ui,
+        egui_phosphor::regular::CHECK_CIRCLE,
+        "Conditions",
+        |ui| {
+            if describe.conditions.is_empty() {
+                non_wrapping_value(ui, "N/A", DEPLOYMENT_DESCRIBE_LINE_WIDTH);
+            } else {
+                egui::Grid::new("deployment-describe-conditions")
+                    .num_columns(4)
+                    .spacing([18.0, 4.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.strong("Type");
+                        ui.strong("Status");
+                        ui.strong("Reason");
+                        ui.strong("Message");
+                        ui.end_row();
+                        for condition in &describe.conditions {
+                            non_wrapping_value(ui, &condition.condition_type, 180.0);
+                            ui.colored_label(
+                                condition_color(ui, &condition.status),
+                                &condition.status,
+                            );
+                            non_wrapping_value(ui, &condition.reason, 220.0);
+                            non_wrapping_value(ui, &condition.message, 520.0);
+                            ui.end_row();
+                        }
+                    });
+            }
+        },
+    );
 
     ui.add_space(10.0);
     describe_group(ui, egui_phosphor::regular::TAG, "Metadata", |ui| {
         ResourceMapView {
-            id_salt: "event-describe-labels",
+            id_salt: "deployment-describe-labels",
             icon: egui_phosphor::regular::TAG,
             title: "Labels",
             entries: &describe.labels,
@@ -691,7 +774,7 @@ fn show_event_describe(ui: &mut egui::Ui, describe: &EventDescribe) {
         .show(ui);
         ui.add_space(8.0);
         ResourceMapView {
-            id_salt: "event-describe-annotations",
+            id_salt: "deployment-describe-annotations",
             icon: egui_phosphor::regular::NOTE,
             title: "Annotations",
             entries: &describe.annotations,
@@ -703,7 +786,7 @@ fn show_event_describe(ui: &mut egui::Ui, describe: &EventDescribe) {
     ui.add_space(10.0);
     describe_group(ui, egui_phosphor::regular::CODE, "Raw manifest", |ui| {
         egui::ScrollArea::both()
-            .id_salt("event-describe-raw-manifest-content")
+            .id_salt("deployment-describe-raw-manifest-content")
             .max_height(180.0)
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -731,7 +814,7 @@ fn describe_group(
         .corner_radius(egui::CornerRadius::same(4))
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
-            ui.set_min_width(EVENT_DESCRIBE_SECTION_WIDTH);
+            ui.set_min_width(DEPLOYMENT_DESCRIBE_SECTION_WIDTH);
             ui.horizontal(|ui| {
                 ui.label(icon);
                 ui.strong(title);
@@ -749,11 +832,11 @@ fn describe_fields(ui: &mut egui::Ui, fields: &[DescribeField]) {
             for chunk in fields.chunks(2) {
                 for field in chunk {
                     ui.add_sized(
-                        [EVENT_DESCRIBE_FIELD_LABEL_WIDTH, 0.0],
+                        [DEPLOYMENT_DESCRIBE_FIELD_LABEL_WIDTH, 0.0],
                         egui::Label::new(egui::RichText::new(&field.label).weak())
                             .wrap_mode(TextWrapMode::Extend),
                     );
-                    non_wrapping_value(ui, &field.value, EVENT_DESCRIBE_FIELD_VALUE_WIDTH);
+                    non_wrapping_value(ui, &field.value, DEPLOYMENT_DESCRIBE_FIELD_VALUE_WIDTH);
                 }
                 if chunk.len() == 1 {
                     ui.label("");
@@ -773,6 +856,15 @@ fn non_wrapping_value(ui: &mut egui::Ui, value: &str, width: f32) {
     );
 }
 
+fn condition_color(ui: &egui::Ui, status: &str) -> egui::Color32 {
+    match status {
+        "True" | "Available" => egui::Color32::from_rgb(46, 160, 67),
+        "False" | "Progressing" => egui::Color32::from_rgb(191, 135, 0),
+        "Unknown" => ui.visuals().error_fg_color,
+        _ => ui.visuals().text_color(),
+    }
+}
+
 impl DescribeField {
     fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
@@ -782,101 +874,133 @@ impl DescribeField {
     }
 }
 
-fn event_describe_from_row(row: &EventRow) -> EventDescribe {
+fn deployment_describe_from_row(row: &DeploymentRow) -> DeploymentDescribe {
     let raw = &row.raw;
-    EventDescribe {
+    DeploymentDescribe {
         summary: vec![
             DescribeField::new("Name", row.name.clone()),
             DescribeField::new("Namespace", row.namespace.clone()),
-            DescribeField::new("Type", row.event_type.clone()),
-            DescribeField::new("Reason", row.reason.clone()),
-            DescribeField::new("Count", row.count.clone()),
-            DescribeField::new("Source", row.source.clone()),
+            DescribeField::new("Age", row.age.clone()),
+            DescribeField::new("Strategy", row.strategy.clone()),
         ],
-        involved: vec![
-            DescribeField::new("Object", row.involved_object.clone()),
-            DescribeField::new(
-                "Kind",
-                value_str(raw, &["involvedObject", "kind"]).unwrap_or("N/A"),
-            ),
-            DescribeField::new(
-                "Name",
-                value_str(raw, &["involvedObject", "name"]).unwrap_or("N/A"),
-            ),
-            DescribeField::new(
-                "Namespace",
-                value_str(raw, &["involvedObject", "namespace"]).unwrap_or("N/A"),
-            ),
-            DescribeField::new(
-                "UID",
-                value_str(raw, &["involvedObject", "uid"]).unwrap_or("N/A"),
-            ),
-            DescribeField::new(
-                "Field path",
-                value_str(raw, &["involvedObject", "fieldPath"]).unwrap_or("N/A"),
-            ),
+        replicas: vec![
+            DescribeField::new("Ready", row.ready.clone()),
+            DescribeField::new("Up-to-date", row.up_to_date.clone()),
+            DescribeField::new("Available", row.available.clone()),
+            DescribeField::new("Replicas", row.replicas.clone()),
         ],
-        timing: vec![
-            DescribeField::new("First seen", row.first_seen.clone()),
-            DescribeField::new("Last seen", row.last_seen.clone()),
-            DescribeField::new("Created", row.age.clone()),
+        rollout: vec![
             DescribeField::new(
-                "Reporting controller",
-                value_str(raw, &["reportingController"]).unwrap_or("N/A"),
+                "Max surge",
+                value_str(raw, &["spec", "strategy", "rollingUpdate", "maxSurge"]).unwrap_or("N/A"),
             ),
             DescribeField::new(
-                "Reporting instance",
-                value_str(raw, &["reportingInstance"]).unwrap_or("N/A"),
+                "Max unavailable",
+                value_str(
+                    raw,
+                    &["spec", "strategy", "rollingUpdate", "maxUnavailable"],
+                )
+                .unwrap_or("N/A"),
+            ),
+            DescribeField::new(
+                "Min ready seconds",
+                value_u64(raw, &["spec", "minReadySeconds"])
+                    .map_or_else(|| "N/A".to_owned(), |value| value.to_string()),
+            ),
+            DescribeField::new(
+                "Revision history",
+                value_u64(raw, &["spec", "revisionHistoryLimit"])
+                    .map_or_else(|| "N/A".to_owned(), |value| value.to_string()),
             ),
         ],
+        selector: string_map_entries(raw.pointer("/spec/selector/matchLabels")),
+        template_labels: string_map_entries(raw.pointer("/spec/template/metadata/labels")),
+        containers: deployment_containers(raw),
+        conditions: deployment_condition_describes(raw),
         labels: string_map_entries(raw.pointer("/metadata/labels")),
         annotations: string_map_entries(raw.pointer("/metadata/annotations")),
-        message: row.message.clone(),
         raw_yaml: full_manifest_yaml(raw),
     }
 }
 
-fn event_key(namespace: &str, name: &str) -> String {
+fn deployment_key(namespace: &str, name: &str) -> String {
     format!("{namespace}/{name}")
 }
 
-fn involved_object_name(raw: &serde_json::Value) -> String {
-    let kind = value_str(raw, &["involvedObject", "kind"]).unwrap_or("N/A");
-    let name = value_str(raw, &["involvedObject", "name"]).unwrap_or("N/A");
-    format!("{kind}/{name}")
+fn replica_ratio(current: u64, desired: Option<u64>) -> String {
+    match desired {
+        Some(desired) => format!("{current}/{desired}"),
+        None => format!("{current}/N/A"),
+    }
 }
 
-fn event_source(raw: &serde_json::Value) -> String {
-    value_str(raw, &["source", "component"])
-        .or_else(|| value_str(raw, &["reportingController"]))
-        .or_else(|| value_str(raw, &["reportingInstance"]))
-        .unwrap_or("N/A")
-        .to_owned()
+fn selector_label(raw: &serde_json::Value) -> String {
+    let labels = string_map_lines(raw.pointer("/spec/selector/matchLabels"));
+    if labels.is_empty() {
+        "N/A".to_owned()
+    } else {
+        labels.join(", ")
+    }
 }
 
-fn event_count(raw: &serde_json::Value) -> String {
-    raw.get("count")
-        .and_then(serde_json::Value::as_u64)
-        .or_else(|| {
-            raw.get("series")
-                .and_then(|series| series.get("count"))
-                .and_then(serde_json::Value::as_u64)
+fn container_images(raw: &serde_json::Value) -> String {
+    let images = raw
+        .pointer("/spec/template/spec/containers")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|container| value_str(container, &["image"]))
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if images.is_empty() {
+        "N/A".to_owned()
+    } else {
+        images.join(", ")
+    }
+}
+
+fn condition_summary(raw: &serde_json::Value) -> String {
+    let conditions = deployment_condition_describes(raw)
+        .into_iter()
+        .map(|condition| format!("{}={}", condition.condition_type, condition.status))
+        .collect::<Vec<_>>();
+    if conditions.is_empty() {
+        "N/A".to_owned()
+    } else {
+        conditions.join(", ")
+    }
+}
+
+fn deployment_containers(raw: &serde_json::Value) -> Vec<ContainerDescribe> {
+    raw.pointer("/spec/template/spec/containers")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|container| ContainerDescribe {
+            name: value_str(container, &["name"]).unwrap_or("N/A").to_owned(),
+            image: value_str(container, &["image"]).unwrap_or("N/A").to_owned(),
         })
-        .map_or_else(na, |count| count.to_string())
+        .collect()
 }
 
-fn first_event_timestamp(raw: &serde_json::Value) -> Option<&str> {
-    value_str(raw, &["firstTimestamp"]).or_else(|| value_str(raw, &["eventTime"]))
-}
-
-fn last_event_timestamp(raw: &serde_json::Value) -> Option<&str> {
-    value_str(raw, &["lastTimestamp"])
-        .or_else(|| value_str(raw, &["eventTime"]))
-        .or_else(|| value_str(raw, &["metadata", "creationTimestamp"]))
-}
-
-fn format_timestamp(timestamp: &str) -> String {
-    human_age_from_rfc3339(timestamp).unwrap_or_else(|| timestamp.to_owned())
+fn deployment_condition_describes(raw: &serde_json::Value) -> Vec<DeploymentConditionDescribe> {
+    raw.pointer("/status/conditions")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|condition| DeploymentConditionDescribe {
+            condition_type: value_str(condition, &["type"]).unwrap_or("N/A").to_owned(),
+            status: value_str(condition, &["status"])
+                .unwrap_or("N/A")
+                .to_owned(),
+            reason: value_str(condition, &["reason"])
+                .unwrap_or("N/A")
+                .to_owned(),
+            message: value_str(condition, &["message"])
+                .unwrap_or("N/A")
+                .to_owned(),
+        })
+        .collect()
 }
 
 fn string_map_entries(value: Option<&serde_json::Value>) -> Vec<ResourceMapEntry> {
@@ -896,6 +1020,13 @@ fn string_map_entries(value: Option<&serde_json::Value>) -> Vec<ResourceMapEntry
     entries
 }
 
+fn string_map_lines(value: Option<&serde_json::Value>) -> Vec<String> {
+    string_map_entries(value)
+        .into_iter()
+        .map(|entry| format!("{}={}", entry.key, entry.value))
+        .collect()
+}
+
 fn full_manifest_yaml(raw: &serde_json::Value) -> String {
     serde_yaml::to_string(raw)
         .or_else(|_| serde_json::to_string_pretty(raw))
@@ -910,8 +1041,12 @@ fn value_str<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a str>
     current.as_str()
 }
 
-fn na() -> String {
-    "N/A".to_owned()
+fn value_u64(value: &serde_json::Value, path: &[&str]) -> Option<u64> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_u64()
 }
 
 #[cfg(test)]
@@ -920,146 +1055,126 @@ mod tests {
     use miku_api::ResourceList;
 
     #[test]
-    fn event_request_query_uses_selected_namespace() {
-        let mut panel = EventResourcePanel {
+    fn deployment_request_query_uses_selected_namespace() {
+        let mut panel = DeploymentResourcePanel {
             namespace_filter: Some("production".to_owned()),
-            ..EventResourcePanel::default()
+            ..DeploymentResourcePanel::default()
         };
 
-        let request = panel.request_events(ClusterId::new("local"));
+        let request = panel.request_deployments(ClusterId::new("local"));
         let query = request.query();
 
-        assert_eq!(query.resource.plural, "events");
+        assert_eq!(query.resource.plural, "deployments");
+        assert_eq!(query.resource.group.as_deref(), Some("apps"));
         assert_eq!(query.namespace.as_deref(), Some("production"));
     }
 
     #[test]
-    fn event_row_extracts_table_fields_from_raw_summary() {
-        let row = EventRow::from_summary(&event_summary(
-            "api.17",
-            "default",
-            "Warning",
-            "BackOff",
-            "2026-05-18T10:04:00Z",
-        ));
+    fn deployment_row_extracts_table_fields_from_raw_summary() {
+        let row = DeploymentRow::from_summary(&deployment_summary());
 
-        assert_eq!(row.name, "api.17");
+        assert_eq!(row.name, "api");
         assert_eq!(row.namespace, "default");
-        assert_eq!(row.event_type, "Warning");
-        assert_eq!(row.reason, "BackOff");
-        assert_eq!(row.involved_object, "Pod/api");
-        assert_eq!(row.message, "Back-off restarting failed container");
-        assert_eq!(row.count, "7");
-        assert_eq!(row.source, "kubelet");
-        assert!(row.first_seen.ends_with(" ago"));
-        assert!(row.last_seen.ends_with(" ago"));
+        assert_eq!(row.ready, "2/3");
+        assert_eq!(row.up_to_date, "3/3");
+        assert_eq!(row.available, "2/3");
+        assert_eq!(row.replicas, "3/3");
+        assert_eq!(row.strategy, "RollingUpdate");
+        assert_eq!(row.selector, "app=api, tier=backend");
+        assert_eq!(row.images, "ghcr.io/example/api:1.0.0, envoyproxy/envoy:v1");
+        assert_eq!(row.conditions, "Available=True, Progressing=True");
         assert!(row.age.ends_with(" ago"));
     }
 
     #[test]
-    fn event_row_handles_missing_optional_fields() {
-        let row = EventRow::from_summary(&ResourceSummary {
+    fn deployment_row_handles_missing_optional_fields() {
+        let row = DeploymentRow::from_summary(&ResourceSummary {
             name: "minimal".to_owned(),
-            namespace: None,
-            kind: "Event".to_owned(),
+            namespace: Some("default".to_owned()),
+            kind: "Deployment".to_owned(),
             status: None,
-            raw: serde_json::json!({"metadata": {"name": "minimal"}}),
+            raw: serde_json::json!({"metadata": {"name": "minimal", "namespace": "default"}}),
         });
 
-        assert_eq!(row.namespace, "N/A");
-        assert_eq!(row.event_type, "N/A");
-        assert_eq!(row.reason, "N/A");
-        assert_eq!(row.involved_object, "N/A/N/A");
-        assert_eq!(row.message, "N/A");
-        assert_eq!(row.count, "N/A");
-        assert_eq!(row.source, "N/A");
-        assert_eq!(row.last_seen, "N/A");
+        assert_eq!(row.ready, "0/N/A");
+        assert_eq!(row.replicas, "0/N/A");
+        assert_eq!(row.strategy, "N/A");
+        assert_eq!(row.selector, "N/A");
+        assert_eq!(row.images, "N/A");
+        assert_eq!(row.conditions, "N/A");
     }
 
     #[test]
-    fn event_rows_filter_by_multiple_fields_case_insensitively() {
+    fn deployment_rows_filter_by_multiple_fields_case_insensitively() {
         let rows = vec![
-            EventRow::from_summary(&event_summary(
-                "api.17",
-                "default",
-                "Warning",
-                "BackOff",
-                "2026-05-18T10:04:00Z",
-            )),
-            EventRow::from_summary(&event_summary(
-                "worker.11",
-                "production",
-                "Normal",
-                "Pulled",
-                "2026-05-18T10:05:00Z",
-            )),
+            DeploymentRow::from_summary(&deployment_summary()),
+            DeploymentRow::from_summary(&ResourceSummary {
+                name: "worker".to_owned(),
+                namespace: Some("production".to_owned()),
+                kind: "Deployment".to_owned(),
+                status: None,
+                raw: serde_json::json!({
+                    "metadata": {"name": "worker", "namespace": "production"},
+                    "spec": {
+                        "selector": {"matchLabels": {"app": "worker"}},
+                        "template": {"spec": {"containers": [{"name": "worker", "image": "worker:1"}]}}
+                    }
+                }),
+            }),
         ];
 
-        assert_eq!(filter_event_rows(&rows, "back-off").len(), 1);
-        assert_eq!(filter_event_rows(&rows, "PRODUCTION").len(), 1);
-        assert_eq!(filter_event_rows(&rows, "pod/API").len(), 1);
+        assert_eq!(filter_deployment_rows(&rows, "BACKEND").len(), 1);
+        assert_eq!(filter_deployment_rows(&rows, "PRODUCTION").len(), 1);
+        assert_eq!(filter_deployment_rows(&rows, "envoy").len(), 1);
+        assert_eq!(filter_deployment_rows(&rows, "Progressing").len(), 1);
     }
 
     #[test]
-    fn event_rows_are_sorted_by_last_seen_descending() {
-        let rows = event_rows_from_list(&[
-            event_summary(
-                "older",
-                "default",
-                "Normal",
-                "Pulled",
-                "2026-05-18T10:00:00Z",
-            ),
-            event_summary(
-                "newer",
-                "default",
-                "Warning",
-                "BackOff",
-                "2026-05-18T10:05:00Z",
-            ),
+    fn deployment_rows_are_sorted_by_namespace_and_name() {
+        let rows = deployment_rows_from_list(&[
+            deployment_summary_with_name("zeta", "worker"),
+            deployment_summary_with_name("default", "api"),
+            deployment_summary_with_name("default", "scheduler"),
         ]);
 
-        let names = rows.into_iter().map(|row| row.name).collect::<Vec<_>>();
-        assert_eq!(names, vec!["newer", "older"]);
+        let keys = rows.into_iter().map(|row| row.key).collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            vec!["default/api", "default/scheduler", "zeta/worker"]
+        );
     }
 
     #[test]
-    fn event_describe_extracts_metadata() {
-        let row = EventRow::from_summary(&event_summary(
-            "api.17",
-            "default",
-            "Warning",
-            "BackOff",
-            "2026-05-18T10:04:00Z",
-        ));
-        let describe = event_describe_from_row(&row);
+    fn deployment_describe_extracts_details() {
+        let row = DeploymentRow::from_summary(&deployment_summary());
+        let describe = deployment_describe_from_row(&row);
 
+        assert_eq!(describe.selector.len(), 2);
+        assert_eq!(describe.template_labels.len(), 2);
+        assert_eq!(describe.containers.len(), 2);
+        assert_eq!(describe.containers[0].name, "api");
+        assert_eq!(describe.containers[0].image, "ghcr.io/example/api:1.0.0");
+        assert_eq!(describe.conditions.len(), 2);
         assert!(describe.labels.iter().any(|entry| entry.key == "app"));
-        assert!(describe.annotations.iter().any(|entry| entry.key == "note"));
         assert!(
-            describe.involved.iter().any(|field| {
-                field.label == "Field path" && field.value == "spec.containers{api}"
-            })
+            describe
+                .annotations
+                .iter()
+                .any(|entry| entry.key == "deployment.kubernetes.io/revision")
         );
     }
 
     #[test]
     fn stale_resource_events_do_not_replace_current_rows() {
-        let mut panel = EventResourcePanel::default();
+        let mut panel = DeploymentResourcePanel::default();
         let cluster_id = ClusterId::new("local");
-        let first = panel.request_events(cluster_id.clone());
-        let second = panel.request_events(cluster_id);
+        let first = panel.request_deployments(cluster_id.clone());
+        let second = panel.request_deployments(cluster_id);
 
         panel.apply_event(ResourceUiEvent::ResourcesLoaded {
             request: first,
             result: Ok(ResourceList {
-                items: vec![event_summary(
-                    "stale",
-                    "default",
-                    "Normal",
-                    "Pulled",
-                    "2026-05-18T10:00:00Z",
-                )],
+                items: vec![deployment_summary_with_name("default", "stale")],
                 continue_token: None,
             }),
         });
@@ -1068,38 +1183,26 @@ mod tests {
         panel.apply_event(ResourceUiEvent::ResourcesLoaded {
             request: second,
             result: Ok(ResourceList {
-                items: vec![event_summary(
-                    "api.17",
-                    "default",
-                    "Warning",
-                    "BackOff",
-                    "2026-05-18T10:04:00Z",
-                )],
+                items: vec![deployment_summary()],
                 continue_token: None,
             }),
         });
 
         assert_eq!(panel.rows.len(), 1);
-        assert_eq!(panel.rows[0].name, "api.17");
+        assert_eq!(panel.rows[0].name, "api");
     }
 
     #[test]
     fn stale_watch_events_do_not_replace_current_rows() {
-        let mut panel = EventResourcePanel::default();
+        let mut panel = DeploymentResourcePanel::default();
         let cluster_id = ClusterId::new("local");
-        let first = panel.request_event_watch(cluster_id.clone());
-        let second = panel.request_event_watch(cluster_id);
+        let first = panel.request_deployment_watch(cluster_id.clone());
+        let second = panel.request_deployment_watch(cluster_id);
 
         panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
             request: first,
             result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
-                items: vec![event_summary(
-                    "stale",
-                    "default",
-                    "Normal",
-                    "Pulled",
-                    "2026-05-18T10:00:00Z",
-                )],
+                items: vec![deployment_summary_with_name("default", "stale")],
                 continue_token: None,
             })),
         });
@@ -1108,24 +1211,18 @@ mod tests {
         panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
             request: second,
             result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
-                items: vec![event_summary(
-                    "api.17",
-                    "default",
-                    "Warning",
-                    "BackOff",
-                    "2026-05-18T10:04:00Z",
-                )],
+                items: vec![deployment_summary()],
                 continue_token: None,
             })),
         });
 
         assert_eq!(panel.rows.len(), 1);
-        assert_eq!(panel.rows[0].name, "api.17");
+        assert_eq!(panel.rows[0].name, "api");
     }
 
     #[test]
     fn namespace_watch_events_from_shared_request_update_selector() {
-        let mut panel = EventResourcePanel::default();
+        let mut panel = DeploymentResourcePanel::default();
         let request = ResourceWatchRequest {
             request_id: 42,
             cluster_id: ClusterId::new("local"),
@@ -1144,54 +1241,76 @@ mod tests {
         assert_eq!(panel.namespace_status, LoadStatus::Loaded);
     }
 
-    fn event_summary(
-        name: &str,
-        namespace: &str,
-        event_type: &str,
-        reason: &str,
-        last_timestamp: &str,
-    ) -> ResourceSummary {
-        let message = if reason == "BackOff" {
-            "Back-off restarting failed container"
-        } else {
-            "Successfully pulled container image"
-        };
-        let involved_name = name.split('.').next().unwrap_or("api");
+    fn deployment_summary() -> ResourceSummary {
+        deployment_summary_with_name("default", "api")
+    }
+
+    fn deployment_summary_with_name(namespace: &str, name: &str) -> ResourceSummary {
         ResourceSummary {
             name: name.to_owned(),
             namespace: Some(namespace.to_owned()),
-            kind: "Event".to_owned(),
+            kind: "Deployment".to_owned(),
             status: None,
             raw: serde_json::json!({
                 "metadata": {
                     "name": name,
                     "namespace": namespace,
-                    "creationTimestamp": "2026-05-18T09:58:00Z",
-                    "labels": {
-                        "app": "api"
+                    "creationTimestamp": "2026-05-18T10:00:00Z",
+                    "labels": {"app": name},
+                    "annotations": {"deployment.kubernetes.io/revision": "3"}
+                },
+                "spec": {
+                    "replicas": 3,
+                    "minReadySeconds": 5,
+                    "revisionHistoryLimit": 10,
+                    "strategy": {
+                        "type": "RollingUpdate",
+                        "rollingUpdate": {
+                            "maxSurge": "25%",
+                            "maxUnavailable": "25%"
+                        }
                     },
-                    "annotations": {
-                        "note": "example"
+                    "selector": {
+                        "matchLabels": {
+                            "app": name,
+                            "tier": "backend"
+                        }
+                    },
+                    "template": {
+                        "metadata": {
+                            "labels": {
+                                "app": name,
+                                "tier": "backend"
+                            }
+                        },
+                        "spec": {
+                            "containers": [
+                                {"name": name, "image": "ghcr.io/example/api:1.0.0"},
+                                {"name": "sidecar", "image": "envoyproxy/envoy:v1"}
+                            ]
+                        }
                     }
                 },
-                "type": event_type,
-                "reason": reason,
-                "message": message,
-                "count": 7,
-                "firstTimestamp": "2026-05-18T10:00:00Z",
-                "lastTimestamp": last_timestamp,
-                "source": {
-                    "component": "kubelet"
-                },
-                "involvedObject": {
-                    "kind": "Pod",
-                    "name": involved_name,
-                    "namespace": namespace,
-                    "uid": "pod-uid",
-                    "fieldPath": "spec.containers{api}"
-                },
-                "reportingController": "kubelet",
-                "reportingInstance": "kind-worker"
+                "status": {
+                    "replicas": 3,
+                    "readyReplicas": 2,
+                    "updatedReplicas": 3,
+                    "availableReplicas": 2,
+                    "conditions": [
+                        {
+                            "type": "Available",
+                            "status": "True",
+                            "reason": "MinimumReplicasAvailable",
+                            "message": "Deployment has minimum availability."
+                        },
+                        {
+                            "type": "Progressing",
+                            "status": "True",
+                            "reason": "NewReplicaSetAvailable",
+                            "message": "ReplicaSet has successfully progressed."
+                        }
+                    ]
+                }
             }),
         }
     }

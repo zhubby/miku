@@ -72,6 +72,7 @@ impl NodeResourcePanel {
                 }
                 ResourceLoadKind::Namespaces
                 | ResourceLoadKind::Events { .. }
+                | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
@@ -91,6 +92,7 @@ impl NodeResourcePanel {
                 }
                 ResourceLoadKind::Namespaces
                 | ResourceLoadKind::Events { .. }
+                | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },

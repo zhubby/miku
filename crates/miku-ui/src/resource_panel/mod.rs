@@ -7,12 +7,14 @@ use miku_core::{ClusterId, ResourceRef};
 
 mod components;
 mod custom_resources;
+mod deployment;
 mod event;
 mod namespace;
 mod node;
 mod pod;
 
 pub(crate) use custom_resources::CustomResourcesPanel;
+pub(crate) use deployment::DeploymentResourcePanel;
 pub(crate) use event::EventResourcePanel;
 pub(crate) use namespace::NamespaceResourcePanel;
 pub(crate) use node::NodeResourcePanel;
@@ -87,6 +89,7 @@ pub(crate) enum ResourceLoadKind {
     Namespaces,
     Nodes,
     Events { namespace: Option<String> },
+    Deployments { namespace: Option<String> },
     Pods { namespace: Option<String> },
     CustomResourceDefinitions,
 }
@@ -154,6 +157,9 @@ impl ResourceWatchRequest {
             ResourceLoadKind::Namespaces => ResourceLoadKind::Namespaces,
             ResourceLoadKind::Nodes => ResourceLoadKind::Nodes,
             ResourceLoadKind::Events { .. } => ResourceLoadKind::Events { namespace: None },
+            ResourceLoadKind::Deployments { .. } => {
+                ResourceLoadKind::Deployments { namespace: None }
+            }
             ResourceLoadKind::Pods { .. } => ResourceLoadKind::Pods { namespace: None },
             ResourceLoadKind::CustomResourceDefinitions => {
                 ResourceLoadKind::CustomResourceDefinitions
@@ -327,6 +333,16 @@ fn resource_query_for_kind(
             }
             query
         }
+        ResourceLoadKind::Deployments { namespace } => {
+            let mut query = miku_api::ResourceQuery::new(
+                cluster_id,
+                ResourceRef::grouped("apps", "v1", "deployments"),
+            );
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
         ResourceLoadKind::Pods { namespace } => {
             let mut query =
                 miku_api::ResourceQuery::new(cluster_id, ResourceRef::core("v1", "pods"));
@@ -394,6 +410,36 @@ mod tests {
         );
 
         assert_eq!(query.resource, ResourceRef::core("v1", "events"));
+        assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn deployments_query_uses_apps_api_without_namespace_by_default() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::Deployments { namespace: None },
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("apps", "v1", "deployments")
+        );
+        assert_eq!(query.namespace, None);
+    }
+
+    #[test]
+    fn deployments_query_uses_selected_namespace() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::Deployments {
+                namespace: Some("production".to_owned()),
+            },
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("apps", "v1", "deployments")
+        );
         assert_eq!(query.namespace.as_deref(), Some("production"));
     }
 }

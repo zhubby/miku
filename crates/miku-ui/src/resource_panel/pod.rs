@@ -123,6 +123,7 @@ impl PodResourcePanel {
                 }
                 ResourceLoadKind::Nodes
                 | ResourceLoadKind::Events { .. }
+                | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
             ResourceUiEvent::ResourceActionCompleted { request, result } => {
@@ -253,6 +254,7 @@ impl PodResourcePanel {
                 }
                 ResourceLoadKind::Nodes
                 | ResourceLoadKind::Events { .. }
+                | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
         }
