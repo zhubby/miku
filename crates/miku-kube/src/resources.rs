@@ -32,6 +32,7 @@ fn kind_for_plural(plural: &str) -> String {
         "daemonsets" => "DaemonSet".to_owned(),
         "deployments" => "Deployment".to_owned(),
         "jobs" => "Job".to_owned(),
+        "replicasets" => "ReplicaSet".to_owned(),
         "statefulsets" => "StatefulSet".to_owned(),
         "namespaces" => "Namespace".to_owned(),
         "configmaps" => "ConfigMap".to_owned(),
@@ -291,6 +292,16 @@ mod tests {
 
         assert_eq!(api_resource.kind, "Job");
         assert_eq!(api_resource.plural, "jobs");
+    }
+
+    #[test]
+    fn api_resource_uses_known_kind_for_replica_sets() {
+        let resource = miku_core::ResourceRef::grouped("apps", "v1", "replicasets");
+
+        let api_resource = api_resource(&resource);
+
+        assert_eq!(api_resource.kind, "ReplicaSet");
+        assert_eq!(api_resource.plural, "replicasets");
     }
 
     #[test]

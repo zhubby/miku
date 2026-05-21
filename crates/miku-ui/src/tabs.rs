@@ -10,7 +10,8 @@ use crate::resource_panel::{
     CronJobResourcePanel, CustomResourcesPanel, DaemonSetResourcePanel, DeploymentResourcePanel,
     EventResourcePanel, JobResourcePanel, NamespaceResourcePanel, NodeResourcePanel,
     PodAttachInputRequest, PodAttachRequest, PodLogRequest, PodResourcePanel,
-    ResourceActionRequest, ResourceLoadRequest, ResourceWatchRequest, StatefulSetResourcePanel,
+    ReplicaSetResourcePanel, ResourceActionRequest, ResourceLoadRequest, ResourceWatchRequest,
+    StatefulSetResourcePanel,
 };
 use crate::resources::{RESOURCE_CATEGORIES, ResourceNavItem};
 use crate::state::{AppState, ClusterConnectionState};
@@ -48,6 +49,7 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) namespace_resource_panel: Option<&'a mut NamespaceResourcePanel>,
     pub(crate) node_resource_panel: Option<&'a mut NodeResourcePanel>,
     pub(crate) pod_resource_panel: Option<&'a mut PodResourcePanel>,
+    pub(crate) replica_set_resource_panel: Option<&'a mut ReplicaSetResourcePanel>,
     pub(crate) stateful_set_resource_panel: Option<&'a mut StatefulSetResourcePanel>,
     pub(crate) custom_resources_panel: Option<&'a mut CustomResourcesPanel>,
     pub(crate) status_load_requests: Vec<ClusterStatusLoadRequest>,
@@ -232,6 +234,16 @@ impl TabViewer for AppTabViewer<'_> {
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Pod resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Replica Sets" {
+                    if let Some(panel) = self.replica_set_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("ReplicaSet resource panel is unavailable.");
                         });
                     }
                 } else if resource.name == "Stateful Sets" {

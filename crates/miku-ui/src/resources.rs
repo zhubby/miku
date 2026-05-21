@@ -40,9 +40,6 @@ pub(crate) const RESOURCE_CATEGORIES: &[ResourceNavCategory] = &[
             ResourceNavItem {
                 name: "Replica Sets",
             },
-            ResourceNavItem {
-                name: "Replication Controllers",
-            },
             ResourceNavItem { name: "Jobs" },
             ResourceNavItem { name: "Cron Jobs" },
         ],

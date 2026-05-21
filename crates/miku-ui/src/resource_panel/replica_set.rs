@@ -13,24 +13,24 @@ use super::{
 use crate::time::human_age_from_rfc3339;
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct StatefulSetResourcePanel {
+pub(crate) struct ReplicaSetResourcePanel {
     namespace_filter: Option<String>,
     search_text: String,
     namespaces: Vec<String>,
     namespace_status: LoadStatus,
     row_status: LoadStatus,
-    rows: Vec<StatefulSetRow>,
+    rows: Vec<ReplicaSetRow>,
     next_request_id: u64,
     namespace_request_id: Option<u64>,
     row_request_id: Option<u64>,
     namespace_watch_request_id: Option<u64>,
     row_watch_request_id: Option<u64>,
     last_cluster_id: Option<ClusterId>,
-    describe_dialog: Option<StatefulSetDescribeDialog>,
-    view_dialog: Option<StatefulSetViewDialog>,
+    describe_dialog: Option<ReplicaSetDescribeDialog>,
+    view_dialog: Option<ReplicaSetViewDialog>,
 }
 
-impl StatefulSetResourcePanel {
+impl ReplicaSetResourcePanel {
     pub(crate) fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -39,7 +39,7 @@ impl StatefulSetResourcePanel {
         let mut requests = ResourcePanelRequests::default();
         let Some(cluster_id) = cluster_id else {
             ui.centered_and_justified(|ui| {
-                ui.label("Select a cluster to load statefulsets.");
+                ui.label("Select a cluster to load replicasets.");
             });
             return requests;
         };
@@ -53,7 +53,7 @@ impl StatefulSetResourcePanel {
         if matches!(self.row_status, LoadStatus::Idle) {
             requests
                 .watches
-                .push(self.request_stateful_set_watch(cluster_id.clone()));
+                .push(self.request_replica_set_watch(cluster_id.clone()));
         }
 
         self.show_toolbar(ui, cluster_id, &mut requests);
@@ -80,14 +80,14 @@ impl StatefulSetResourcePanel {
                         Err(error) => self.namespace_status = LoadStatus::Error(error),
                     }
                 }
-                ResourceLoadKind::StatefulSets { .. } => {
+                ResourceLoadKind::ReplicaSets { .. } => {
                     if self.row_request_id != Some(request.request_id) {
                         return;
                     }
                     self.row_request_id = None;
                     match result {
                         Ok(list) => {
-                            self.rows = stateful_set_rows_from_list(&list.items);
+                            self.rows = replica_set_rows_from_list(&list.items);
                             self.row_status = LoadStatus::Loaded;
                         }
                         Err(error) => self.row_status = LoadStatus::Error(error),
@@ -99,7 +99,7 @@ impl StatefulSetResourcePanel {
                 | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::Jobs { .. }
-                | ResourceLoadKind::ReplicaSets { .. }
+                | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
@@ -117,13 +117,13 @@ impl StatefulSetResourcePanel {
                         Err(error) => self.namespace_status = LoadStatus::Error(error),
                     }
                 }
-                ResourceLoadKind::StatefulSets { .. } => {
+                ResourceLoadKind::ReplicaSets { .. } => {
                     if self.row_watch_request_id != Some(request.request_id) {
                         return;
                     }
                     match result {
                         Ok(miku_api::ResourceEvent::Snapshot(list)) => {
-                            self.rows = stateful_set_rows_from_list(&list.items);
+                            self.rows = replica_set_rows_from_list(&list.items);
                             self.row_status = LoadStatus::Loaded;
                         }
                         Ok(_) => {}
@@ -136,7 +136,7 @@ impl StatefulSetResourcePanel {
                 | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::Jobs { .. }
-                | ResourceLoadKind::ReplicaSets { .. }
+                | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
@@ -181,7 +181,7 @@ impl StatefulSetResourcePanel {
                 .to_owned();
 
             let mut namespace_changed = false;
-            egui::ComboBox::from_id_salt("stateful_set_resource_namespace_filter")
+            egui::ComboBox::from_id_salt("replica_set_resource_namespace_filter")
                 .selected_text(selected_label)
                 .width(220.0)
                 .show_ui(ui, |ui| {
@@ -201,7 +201,7 @@ impl StatefulSetResourcePanel {
 
             ui.add(
                 egui::TextEdit::singleline(&mut self.search_text)
-                    .hint_text("Search StatefulSets...")
+                    .hint_text("Search ReplicaSets...")
                     .desired_width(280.0),
             );
 
@@ -215,7 +215,7 @@ impl StatefulSetResourcePanel {
                     .push(self.request_namespace_watch(cluster_id.clone()));
                 requests
                     .watches
-                    .push(self.request_stateful_set_watch(cluster_id.clone()));
+                    .push(self.request_replica_set_watch(cluster_id.clone()));
             }
 
             ui.separator();
@@ -232,7 +232,7 @@ impl StatefulSetResourcePanel {
             if namespace_changed {
                 requests
                     .watches
-                    .push(self.request_stateful_set_watch(cluster_id.clone()));
+                    .push(self.request_replica_set_watch(cluster_id.clone()));
             }
         });
     }
@@ -241,7 +241,7 @@ impl StatefulSetResourcePanel {
         match &self.row_status {
             LoadStatus::Idle | LoadStatus::Loading if self.rows.is_empty() => {
                 ui.centered_and_justified(|ui| {
-                    ui.label("Loading statefulsets...");
+                    ui.label("Loading replicasets...");
                 });
             }
             LoadStatus::Error(error) => {
@@ -253,40 +253,40 @@ impl StatefulSetResourcePanel {
                 let row_indices = self.filtered_row_indices();
                 if row_indices.is_empty() {
                     ui.centered_and_justified(|ui| {
-                        ui.label("No statefulsets match the current filters.");
+                        ui.label("No replicasets match the current filters.");
                     });
                     return;
                 }
 
-                let action = show_stateful_set_table(ui, &self.rows, row_indices);
+                let action = show_replica_set_table(ui, &self.rows, row_indices);
                 self.apply_table_action(action);
             }
         }
     }
 
-    fn apply_table_action(&mut self, action: Option<StatefulSetTableAction>) {
+    fn apply_table_action(&mut self, action: Option<ReplicaSetTableAction>) {
         match action {
-            Some(StatefulSetTableAction::Describe { key }) => {
+            Some(ReplicaSetTableAction::Describe { key }) => {
                 let Some((name, describe)) = self
                     .row_by_key(&key)
-                    .map(|row| (row.name.clone(), stateful_set_describe_from_row(row)))
+                    .map(|row| (row.name.clone(), replica_set_describe_from_row(row)))
                 else {
                     return;
                 };
-                self.describe_dialog = Some(StatefulSetDescribeDialog {
+                self.describe_dialog = Some(ReplicaSetDescribeDialog {
                     key,
                     name,
                     describe,
                 });
             }
-            Some(StatefulSetTableAction::View { key }) => {
+            Some(ReplicaSetTableAction::View { key }) => {
                 let Some((name, yaml)) = self
                     .row_by_key(&key)
                     .map(|row| (row.name.clone(), full_manifest_yaml(&row.raw)))
                 else {
                     return;
                 };
-                self.view_dialog = Some(StatefulSetViewDialog { key, name, yaml });
+                self.view_dialog = Some(ReplicaSetViewDialog { key, name, yaml });
             }
             None => {}
         }
@@ -299,26 +299,26 @@ impl StatefulSetResourcePanel {
 
         let mut open = true;
         egui::Window::new(format!("Describe {}", dialog.name))
-            .id(egui::Id::new(("stateful_set-describe-dialog", &dialog.key)))
+            .id(egui::Id::new(("replica_set-describe-dialog", &dialog.key)))
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .open(&mut open)
             .collapsible(false)
             .fixed_size([
-                STATEFUL_SET_DESCRIBE_DIALOG_WIDTH,
-                STATEFUL_SET_DESCRIBE_DIALOG_HEIGHT,
+                REPLICA_SET_DESCRIBE_DIALOG_WIDTH,
+                REPLICA_SET_DESCRIBE_DIALOG_HEIGHT,
             ])
             .show(ctx, |ui| {
-                ui.set_width(STATEFUL_SET_DESCRIBE_DIALOG_WIDTH);
-                ui.set_height(STATEFUL_SET_DESCRIBE_CONTENT_HEIGHT);
+                ui.set_width(REPLICA_SET_DESCRIBE_DIALOG_WIDTH);
+                ui.set_height(REPLICA_SET_DESCRIBE_CONTENT_HEIGHT);
                 egui::ScrollArea::both()
-                    .id_salt(("stateful_set-describe-content", &dialog.key))
-                    .max_width(STATEFUL_SET_DESCRIBE_DIALOG_WIDTH)
-                    .max_height(STATEFUL_SET_DESCRIBE_CONTENT_HEIGHT)
+                    .id_salt(("replica_set-describe-content", &dialog.key))
+                    .max_width(REPLICA_SET_DESCRIBE_DIALOG_WIDTH)
+                    .max_height(REPLICA_SET_DESCRIBE_CONTENT_HEIGHT)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.set_min_width(STATEFUL_SET_DESCRIBE_CONTENT_WIDTH);
+                        ui.set_min_width(REPLICA_SET_DESCRIBE_CONTENT_WIDTH);
                         ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-                        show_stateful_set_describe(ui, &dialog.describe);
+                        show_replica_set_describe(ui, &dialog.describe);
                     });
             });
 
@@ -334,7 +334,7 @@ impl StatefulSetResourcePanel {
 
         let mut open = true;
         let response = ResourceYamlViewDialog {
-            id: egui::Id::new(("stateful_set-view-dialog", &dialog.key)),
+            id: egui::Id::new(("replica_set-view-dialog", &dialog.key)),
             title: format!("View {}", dialog.name),
             yaml: &dialog.yaml,
             open: &mut open,
@@ -347,11 +347,11 @@ impl StatefulSetResourcePanel {
     }
 
     #[cfg(test)]
-    fn request_statefulsets(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
+    fn request_replicasets(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
         let request = ResourceLoadRequest {
             request_id: self.allocate_request_id(),
             cluster_id,
-            kind: ResourceLoadKind::StatefulSets {
+            kind: ResourceLoadKind::ReplicaSets {
                 namespace: self.namespace_filter.clone(),
             },
         };
@@ -371,11 +371,11 @@ impl StatefulSetResourcePanel {
         request
     }
 
-    fn request_stateful_set_watch(&mut self, cluster_id: ClusterId) -> ResourceWatchRequest {
+    fn request_replica_set_watch(&mut self, cluster_id: ClusterId) -> ResourceWatchRequest {
         let request = ResourceWatchRequest {
             request_id: self.allocate_request_id(),
             cluster_id,
-            kind: ResourceLoadKind::StatefulSets {
+            kind: ResourceLoadKind::ReplicaSets {
                 namespace: self.namespace_filter.clone(),
             },
         };
@@ -404,42 +404,42 @@ impl StatefulSetResourcePanel {
             .collect()
     }
 
-    fn row_by_key(&self, key: &str) -> Option<&StatefulSetRow> {
+    fn row_by_key(&self, key: &str) -> Option<&ReplicaSetRow> {
         self.rows.iter().find(|row| row.key == key)
     }
 }
 
-fn show_stateful_set_table(
+fn show_replica_set_table(
     ui: &mut egui::Ui,
-    rows: &[StatefulSetRow],
+    rows: &[ReplicaSetRow],
     row_indices: Vec<usize>,
-) -> Option<StatefulSetTableAction> {
+) -> Option<ReplicaSetTableAction> {
     let row_height = ui.spacing().interact_size.y;
-    let table_width: f32 = STATEFUL_SET_COLUMN_WIDTHS.iter().sum::<f32>()
-        + ui.spacing().item_spacing.x * STATEFUL_SET_COLUMN_WIDTHS.len().saturating_sub(1) as f32;
+    let table_width: f32 = REPLICA_SET_COLUMN_WIDTHS.iter().sum::<f32>()
+        + ui.spacing().item_spacing.x * REPLICA_SET_COLUMN_WIDTHS.len().saturating_sub(1) as f32;
     let mut action = None;
 
     egui::ScrollArea::horizontal()
-        .id_salt("stateful_set_resource_table_horizontal")
+        .id_salt("replica_set_resource_table_horizontal")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.set_min_width(table_width);
 
             let mut table = TableBuilder::new(ui)
-                .id_salt("stateful_set_resource_table")
+                .id_salt("replica_set_resource_table")
                 .striped(true)
                 .resizable(false)
                 .sense(egui::Sense::click())
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .min_scrolled_height(0.0);
 
-            for width in STATEFUL_SET_COLUMN_WIDTHS {
+            for width in REPLICA_SET_COLUMN_WIDTHS {
                 table = table.column(Column::exact(width));
             }
 
             table
                 .header(row_height, |mut header| {
-                    for label in STATEFUL_SET_COLUMNS {
+                    for label in REPLICA_SET_COLUMNS {
                         header.col(|ui| {
                             ui.strong(label);
                         });
@@ -465,25 +465,25 @@ fn show_stateful_set_table(
                             ui.label(&row.ready);
                         });
                         table_row.col(|ui| {
+                            ui.label(&row.desired);
+                        });
+                        table_row.col(|ui| {
                             ui.label(&row.current);
                         });
                         table_row.col(|ui| {
-                            ui.label(&row.updated);
+                            ui.label(&row.available);
                         });
                         table_row.col(|ui| {
-                            ui.label(&row.replicas);
-                        });
-                        table_row.col(|ui| {
-                            ui.label(&row.service);
-                        });
-                        table_row.col(|ui| {
-                            ui.label(&row.strategy);
+                            ui.label(&row.controlled_by);
                         });
                         table_row.col(|ui| {
                             ui.label(&row.selector);
                         });
                         table_row.col(|ui| {
                             ui.label(&row.images);
+                        });
+                        table_row.col(|ui| {
+                            ui.label(&row.conditions);
                         });
                         table_row.col(|ui| {
                             ui.label(&row.age);
@@ -494,7 +494,7 @@ fn show_stateful_set_table(
                                 .button(format!("{} Describe", egui_phosphor::regular::INFO))
                                 .clicked()
                             {
-                                action = Some(StatefulSetTableAction::Describe {
+                                action = Some(ReplicaSetTableAction::Describe {
                                     key: row.key.clone(),
                                 });
                                 ui.close();
@@ -503,7 +503,7 @@ fn show_stateful_set_table(
                                 .button(format!("{} View", egui_phosphor::regular::EYE))
                                 .clicked()
                             {
-                                action = Some(StatefulSetTableAction::View {
+                                action = Some(ReplicaSetTableAction::View {
                                     key: row.key.clone(),
                                 });
                                 ui.close();
@@ -516,55 +516,57 @@ fn show_stateful_set_table(
     action
 }
 
-const STATEFUL_SET_COLUMNS: [&str; 11] = [
+const REPLICA_SET_COLUMNS: [&str; 11] = [
     "Name",
     "Namespace",
     "Ready",
+    "Desired",
     "Current",
-    "Updated",
-    "Replicas",
-    "Service",
-    "Strategy",
+    "Available",
+    "Controlled By",
     "Selector",
     "Images",
+    "Conditions",
     "Age",
 ];
-const STATEFUL_SET_COLUMN_WIDTHS: [f32; 11] = [
-    240.0, 160.0, 100.0, 90.0, 90.0, 100.0, 160.0, 120.0, 260.0, 320.0, 90.0,
+const REPLICA_SET_COLUMN_WIDTHS: [f32; 11] = [
+    240.0, 160.0, 100.0, 90.0, 90.0, 100.0, 180.0, 260.0, 320.0, 260.0, 90.0,
 ];
-const STATEFUL_SET_DESCRIBE_DIALOG_WIDTH: f32 = 860.0;
-const STATEFUL_SET_DESCRIBE_DIALOG_HEIGHT: f32 = 580.0;
-const STATEFUL_SET_DESCRIBE_CONTENT_HEIGHT: f32 = 520.0;
-const STATEFUL_SET_DESCRIBE_CONTENT_WIDTH: f32 = 1160.0;
-const STATEFUL_SET_DESCRIBE_SECTION_WIDTH: f32 = 1128.0;
-const STATEFUL_SET_DESCRIBE_FIELD_LABEL_WIDTH: f32 = 140.0;
-const STATEFUL_SET_DESCRIBE_FIELD_VALUE_WIDTH: f32 = 370.0;
-const STATEFUL_SET_DESCRIBE_LINE_WIDTH: f32 = 1080.0;
+const REPLICA_SET_DESCRIBE_DIALOG_WIDTH: f32 = 860.0;
+const REPLICA_SET_DESCRIBE_DIALOG_HEIGHT: f32 = 580.0;
+const REPLICA_SET_DESCRIBE_CONTENT_HEIGHT: f32 = 520.0;
+const REPLICA_SET_DESCRIBE_CONTENT_WIDTH: f32 = 1160.0;
+const REPLICA_SET_DESCRIBE_SECTION_WIDTH: f32 = 1128.0;
+const REPLICA_SET_DESCRIBE_FIELD_LABEL_WIDTH: f32 = 140.0;
+const REPLICA_SET_DESCRIBE_FIELD_VALUE_WIDTH: f32 = 370.0;
+const REPLICA_SET_DESCRIBE_LINE_WIDTH: f32 = 1080.0;
 
 #[cfg(test)]
-fn filter_stateful_set_rows<'a>(
-    rows: &'a [StatefulSetRow],
+fn filter_replica_set_rows<'a>(
+    rows: &'a [ReplicaSetRow],
     search_text: &str,
-) -> Vec<&'a StatefulSetRow> {
+) -> Vec<&'a ReplicaSetRow> {
     rows.iter()
         .filter(|row| row_matches_search(row, search_text))
         .collect()
 }
 
-fn row_matches_search(row: &StatefulSetRow, search_text: &str) -> bool {
+fn row_matches_search(row: &ReplicaSetRow, search_text: &str) -> bool {
     let needle = search_text.trim().to_lowercase();
     needle.is_empty()
         || row.name.to_lowercase().contains(&needle)
         || row.namespace.to_lowercase().contains(&needle)
         || row.selector.to_lowercase().contains(&needle)
         || row.images.to_lowercase().contains(&needle)
+        || row.conditions.to_lowercase().contains(&needle)
+        || row.controlled_by.to_lowercase().contains(&needle)
         || row.status_summary.to_lowercase().contains(&needle)
 }
 
-fn stateful_set_rows_from_list(items: &[ResourceSummary]) -> Vec<StatefulSetRow> {
+fn replica_set_rows_from_list(items: &[ResourceSummary]) -> Vec<ReplicaSetRow> {
     let mut rows = items
         .iter()
-        .map(StatefulSetRow::from_summary)
+        .map(ReplicaSetRow::from_summary)
         .collect::<Vec<_>>();
     rows.sort_by(|left, right| {
         left.namespace
@@ -575,53 +577,48 @@ fn stateful_set_rows_from_list(items: &[ResourceSummary]) -> Vec<StatefulSetRow>
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct StatefulSetRow {
+struct ReplicaSetRow {
     key: String,
     name: String,
     namespace: String,
     ready: String,
+    desired: String,
     current: String,
-    updated: String,
-    replicas: String,
-    service: String,
-    strategy: String,
+    available: String,
+    controlled_by: String,
     selector: String,
     images: String,
+    conditions: String,
     status_summary: String,
     age: String,
     raw: serde_json::Value,
 }
 
-impl StatefulSetRow {
+impl ReplicaSetRow {
     fn from_summary(summary: &ResourceSummary) -> Self {
         let raw = &summary.raw;
         let name = value_str(raw, &["metadata", "name"]).unwrap_or(&summary.name);
         let namespace = value_str(raw, &["metadata", "namespace"])
             .or(summary.namespace.as_deref())
             .unwrap_or("N/A");
-        let desired = value_u64(raw, &["spec", "replicas"]);
+        let desired = value_u64(raw, &["spec", "replicas"]).unwrap_or(0);
         let ready = value_u64(raw, &["status", "readyReplicas"]).unwrap_or(0);
-        let current = value_u64(raw, &["status", "currentReplicas"]).unwrap_or(0);
-        let updated = value_u64(raw, &["status", "updatedReplicas"]).unwrap_or(0);
-        let replicas = value_u64(raw, &["status", "replicas"]).unwrap_or(0);
+        let current = value_u64(raw, &["status", "replicas"]).unwrap_or(0);
+        let available = value_u64(raw, &["status", "availableReplicas"]).unwrap_or(0);
 
         Self {
-            key: stateful_set_key(namespace, name),
+            key: replica_set_key(namespace, name),
             name: name.to_owned(),
             namespace: namespace.to_owned(),
             ready: replica_ratio(ready, desired),
+            desired: desired.to_string(),
             current: current.to_string(),
-            updated: updated.to_string(),
-            replicas: replica_ratio(replicas, desired),
-            service: value_str(raw, &["spec", "serviceName"])
-                .unwrap_or("N/A")
-                .to_owned(),
-            strategy: value_str(raw, &["spec", "updateStrategy", "type"])
-                .unwrap_or("N/A")
-                .to_owned(),
+            available: available.to_string(),
+            controlled_by: owner_reference(raw),
             selector: selector_label(raw),
             images: container_images(raw),
-            status_summary: stateful_set_status_summary(ready, current, updated, replicas),
+            conditions: condition_summary(raw),
+            status_summary: replica_set_status_summary(ready, desired, current, available),
             age: value_str(raw, &["metadata", "creationTimestamp"])
                 .map(|timestamp| {
                     human_age_from_rfc3339(timestamp).unwrap_or_else(|| timestamp.to_owned())
@@ -633,34 +630,34 @@ impl StatefulSetRow {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum StatefulSetTableAction {
+enum ReplicaSetTableAction {
     Describe { key: String },
     View { key: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct StatefulSetDescribeDialog {
+struct ReplicaSetDescribeDialog {
     key: String,
     name: String,
-    describe: StatefulSetDescribe,
+    describe: ReplicaSetDescribe,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct StatefulSetViewDialog {
+struct ReplicaSetViewDialog {
     key: String,
     name: String,
     yaml: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct StatefulSetDescribe {
+struct ReplicaSetDescribe {
     summary: Vec<DescribeField>,
     replicas: Vec<DescribeField>,
     rollout: Vec<DescribeField>,
     selector: Vec<ResourceMapEntry>,
     template_labels: Vec<ResourceMapEntry>,
     containers: Vec<ContainerDescribe>,
-    conditions: Vec<StatefulSetConditionDescribe>,
+    conditions: Vec<ReplicaSetConditionDescribe>,
     labels: Vec<ResourceMapEntry>,
     annotations: Vec<ResourceMapEntry>,
     raw_yaml: String,
@@ -673,7 +670,7 @@ struct ContainerDescribe {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct StatefulSetConditionDescribe {
+struct ReplicaSetConditionDescribe {
     condition_type: String,
     status: String,
     reason: String,
@@ -686,8 +683,8 @@ struct DescribeField {
     value: String,
 }
 
-fn show_stateful_set_describe(ui: &mut egui::Ui, describe: &StatefulSetDescribe) {
-    describe_group(ui, egui_phosphor::regular::STACK, "StatefulSet", |ui| {
+fn show_replica_set_describe(ui: &mut egui::Ui, describe: &ReplicaSetDescribe) {
+    describe_group(ui, egui_phosphor::regular::STACK, "ReplicaSet", |ui| {
         describe_fields(ui, &describe.summary);
     });
 
@@ -709,7 +706,7 @@ fn show_stateful_set_describe(ui: &mut egui::Ui, describe: &StatefulSetDescribe)
     ui.add_space(10.0);
     describe_group(ui, egui_phosphor::regular::FUNNEL, "Selector", |ui| {
         ResourceMapView {
-            id_salt: "stateful_set-describe-selector",
+            id_salt: "replica_set-describe-selector",
             icon: egui_phosphor::regular::FUNNEL,
             title: "Match labels",
             entries: &describe.selector,
@@ -721,7 +718,7 @@ fn show_stateful_set_describe(ui: &mut egui::Ui, describe: &StatefulSetDescribe)
     ui.add_space(10.0);
     describe_group(ui, egui_phosphor::regular::CUBE, "Pod template", |ui| {
         ResourceMapView {
-            id_salt: "stateful_set-describe-template-labels",
+            id_salt: "replica_set-describe-template-labels",
             icon: egui_phosphor::regular::TAG,
             title: "Labels",
             entries: &describe.template_labels,
@@ -730,13 +727,13 @@ fn show_stateful_set_describe(ui: &mut egui::Ui, describe: &StatefulSetDescribe)
         .show(ui);
         ui.add_space(8.0);
         if describe.containers.is_empty() {
-            non_wrapping_value(ui, "N/A", STATEFUL_SET_DESCRIBE_LINE_WIDTH);
+            non_wrapping_value(ui, "N/A", REPLICA_SET_DESCRIBE_LINE_WIDTH);
         } else {
             for container in &describe.containers {
                 non_wrapping_value(
                     ui,
                     &format!("{}: {}", container.name, container.image),
-                    STATEFUL_SET_DESCRIBE_LINE_WIDTH,
+                    REPLICA_SET_DESCRIBE_LINE_WIDTH,
                 );
             }
         }
@@ -749,9 +746,9 @@ fn show_stateful_set_describe(ui: &mut egui::Ui, describe: &StatefulSetDescribe)
         "Conditions",
         |ui| {
             if describe.conditions.is_empty() {
-                non_wrapping_value(ui, "N/A", STATEFUL_SET_DESCRIBE_LINE_WIDTH);
+                non_wrapping_value(ui, "N/A", REPLICA_SET_DESCRIBE_LINE_WIDTH);
             } else {
-                egui::Grid::new("stateful_set-describe-conditions")
+                egui::Grid::new("replica_set-describe-conditions")
                     .num_columns(4)
                     .spacing([18.0, 4.0])
                     .striped(true)
@@ -779,7 +776,7 @@ fn show_stateful_set_describe(ui: &mut egui::Ui, describe: &StatefulSetDescribe)
     ui.add_space(10.0);
     describe_group(ui, egui_phosphor::regular::TAG, "Metadata", |ui| {
         ResourceMapView {
-            id_salt: "stateful_set-describe-labels",
+            id_salt: "replica_set-describe-labels",
             icon: egui_phosphor::regular::TAG,
             title: "Labels",
             entries: &describe.labels,
@@ -788,7 +785,7 @@ fn show_stateful_set_describe(ui: &mut egui::Ui, describe: &StatefulSetDescribe)
         .show(ui);
         ui.add_space(8.0);
         ResourceMapView {
-            id_salt: "stateful_set-describe-annotations",
+            id_salt: "replica_set-describe-annotations",
             icon: egui_phosphor::regular::NOTE,
             title: "Annotations",
             entries: &describe.annotations,
@@ -800,7 +797,7 @@ fn show_stateful_set_describe(ui: &mut egui::Ui, describe: &StatefulSetDescribe)
     ui.add_space(10.0);
     describe_group(ui, egui_phosphor::regular::CODE, "Raw manifest", |ui| {
         egui::ScrollArea::both()
-            .id_salt("stateful_set-describe-raw-manifest-content")
+            .id_salt("replica_set-describe-raw-manifest-content")
             .max_height(180.0)
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -828,7 +825,7 @@ fn describe_group(
         .corner_radius(egui::CornerRadius::same(4))
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
-            ui.set_min_width(STATEFUL_SET_DESCRIBE_SECTION_WIDTH);
+            ui.set_min_width(REPLICA_SET_DESCRIBE_SECTION_WIDTH);
             ui.horizontal(|ui| {
                 ui.label(icon);
                 ui.strong(title);
@@ -846,11 +843,11 @@ fn describe_fields(ui: &mut egui::Ui, fields: &[DescribeField]) {
             for chunk in fields.chunks(2) {
                 for field in chunk {
                     ui.add_sized(
-                        [STATEFUL_SET_DESCRIBE_FIELD_LABEL_WIDTH, 0.0],
+                        [REPLICA_SET_DESCRIBE_FIELD_LABEL_WIDTH, 0.0],
                         egui::Label::new(egui::RichText::new(&field.label).weak())
                             .wrap_mode(TextWrapMode::Extend),
                     );
-                    non_wrapping_value(ui, &field.value, STATEFUL_SET_DESCRIBE_FIELD_VALUE_WIDTH);
+                    non_wrapping_value(ui, &field.value, REPLICA_SET_DESCRIBE_FIELD_VALUE_WIDTH);
                 }
                 if chunk.len() == 1 {
                     ui.label("");
@@ -888,65 +885,54 @@ impl DescribeField {
     }
 }
 
-fn stateful_set_describe_from_row(row: &StatefulSetRow) -> StatefulSetDescribe {
+fn replica_set_describe_from_row(row: &ReplicaSetRow) -> ReplicaSetDescribe {
     let raw = &row.raw;
-    StatefulSetDescribe {
+    ReplicaSetDescribe {
         summary: vec![
             DescribeField::new("Name", row.name.clone()),
             DescribeField::new("Namespace", row.namespace.clone()),
             DescribeField::new("Age", row.age.clone()),
-            DescribeField::new("Service", row.service.clone()),
-            DescribeField::new("Strategy", row.strategy.clone()),
+            DescribeField::new("Controlled by", row.controlled_by.clone()),
         ],
         replicas: vec![
             DescribeField::new("Ready", row.ready.clone()),
+            DescribeField::new("Desired", row.desired.clone()),
             DescribeField::new("Current", row.current.clone()),
-            DescribeField::new("Updated", row.updated.clone()),
-            DescribeField::new("Replicas", row.replicas.clone()),
+            DescribeField::new("Available", row.available.clone()),
         ],
         rollout: vec![
             DescribeField::new(
-                "Update strategy",
-                value_str(raw, &["spec", "updateStrategy", "type"]).unwrap_or("N/A"),
+                "Fully labeled",
+                value_u64(raw, &["status", "fullyLabeledReplicas"])
+                    .map_or_else(|| "N/A".to_owned(), |value| value.to_string()),
             ),
             DescribeField::new(
-                "Partition",
-                value_u64(
-                    raw,
-                    &["spec", "updateStrategy", "rollingUpdate", "partition"],
-                )
-                .map_or_else(|| "N/A".to_owned(), |value| value.to_string()),
+                "Observed generation",
+                value_u64(raw, &["status", "observedGeneration"])
+                    .map_or_else(|| "N/A".to_owned(), |value| value.to_string()),
             ),
             DescribeField::new(
                 "Min ready seconds",
                 value_u64(raw, &["spec", "minReadySeconds"])
                     .map_or_else(|| "N/A".to_owned(), |value| value.to_string()),
             ),
-            DescribeField::new(
-                "Revision history",
-                value_u64(raw, &["spec", "revisionHistoryLimit"])
-                    .map_or_else(|| "N/A".to_owned(), |value| value.to_string()),
-            ),
         ],
         selector: string_map_entries(raw.pointer("/spec/selector/matchLabels")),
         template_labels: string_map_entries(raw.pointer("/spec/template/metadata/labels")),
-        containers: stateful_set_containers(raw),
-        conditions: stateful_set_condition_describes(raw),
+        containers: replica_set_containers(raw),
+        conditions: replica_set_condition_describes(raw),
         labels: string_map_entries(raw.pointer("/metadata/labels")),
         annotations: string_map_entries(raw.pointer("/metadata/annotations")),
         raw_yaml: full_manifest_yaml(raw),
     }
 }
 
-fn stateful_set_key(namespace: &str, name: &str) -> String {
+fn replica_set_key(namespace: &str, name: &str) -> String {
     format!("{namespace}/{name}")
 }
 
-fn replica_ratio(current: u64, desired: Option<u64>) -> String {
-    match desired {
-        Some(desired) => format!("{current}/{desired}"),
-        None => format!("{current}/N/A"),
-    }
+fn replica_ratio(current: u64, desired: u64) -> String {
+    format!("{current}/{desired}")
 }
 
 fn selector_label(raw: &serde_json::Value) -> String {
@@ -974,11 +960,42 @@ fn container_images(raw: &serde_json::Value) -> String {
     }
 }
 
-fn stateful_set_status_summary(ready: u64, current: u64, updated: u64, replicas: u64) -> String {
-    format!("ready={ready}, current={current}, updated={updated}, replicas={replicas}")
+fn condition_summary(raw: &serde_json::Value) -> String {
+    let conditions = replica_set_condition_describes(raw)
+        .into_iter()
+        .map(|condition| format!("{}={}", condition.condition_type, condition.status))
+        .collect::<Vec<_>>();
+    if conditions.is_empty() {
+        "N/A".to_owned()
+    } else {
+        conditions.join(", ")
+    }
 }
 
-fn stateful_set_containers(raw: &serde_json::Value) -> Vec<ContainerDescribe> {
+fn replica_set_status_summary(ready: u64, desired: u64, current: u64, available: u64) -> String {
+    format!("ready={ready}, desired={desired}, current={current}, available={available}")
+}
+
+fn owner_reference(raw: &serde_json::Value) -> String {
+    raw.pointer("/metadata/ownerReferences")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|owner| value_bool(owner, &["controller"]).unwrap_or(false))
+        .or_else(|| {
+            raw.pointer("/metadata/ownerReferences")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|owners| owners.first())
+        })
+        .map(|owner| {
+            let kind = value_str(owner, &["kind"]).unwrap_or("N/A");
+            let name = value_str(owner, &["name"]).unwrap_or("N/A");
+            format!("{kind}/{name}")
+        })
+        .unwrap_or_else(|| "N/A".to_owned())
+}
+
+fn replica_set_containers(raw: &serde_json::Value) -> Vec<ContainerDescribe> {
     raw.pointer("/spec/template/spec/containers")
         .and_then(serde_json::Value::as_array)
         .into_iter()
@@ -990,12 +1007,12 @@ fn stateful_set_containers(raw: &serde_json::Value) -> Vec<ContainerDescribe> {
         .collect()
 }
 
-fn stateful_set_condition_describes(raw: &serde_json::Value) -> Vec<StatefulSetConditionDescribe> {
+fn replica_set_condition_describes(raw: &serde_json::Value) -> Vec<ReplicaSetConditionDescribe> {
     raw.pointer("/status/conditions")
         .and_then(serde_json::Value::as_array)
         .into_iter()
         .flatten()
-        .map(|condition| StatefulSetConditionDescribe {
+        .map(|condition| ReplicaSetConditionDescribe {
             condition_type: value_str(condition, &["type"]).unwrap_or("N/A").to_owned(),
             status: value_str(condition, &["status"])
                 .unwrap_or("N/A")
@@ -1056,148 +1073,124 @@ fn value_u64(value: &serde_json::Value, path: &[&str]) -> Option<u64> {
     current.as_u64()
 }
 
+fn value_bool(value: &serde_json::Value, path: &[&str]) -> Option<bool> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_bool()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use miku_api::ResourceList;
 
     #[test]
-    fn stateful_set_request_query_uses_selected_namespace() {
-        let mut panel = StatefulSetResourcePanel {
+    fn replica_set_request_query_uses_selected_namespace() {
+        let mut panel = ReplicaSetResourcePanel {
             namespace_filter: Some("production".to_owned()),
-            ..StatefulSetResourcePanel::default()
+            ..ReplicaSetResourcePanel::default()
         };
 
-        let request = panel.request_statefulsets(ClusterId::new("local"));
+        let request = panel.request_replicasets(ClusterId::new("local"));
         let query = request.query();
 
-        assert_eq!(query.resource.plural, "statefulsets");
+        assert_eq!(query.resource.plural, "replicasets");
         assert_eq!(query.resource.group.as_deref(), Some("apps"));
         assert_eq!(query.namespace.as_deref(), Some("production"));
     }
 
     #[test]
-    fn stateful_set_row_extracts_table_fields_from_raw_summary() {
-        let row = StatefulSetRow::from_summary(&stateful_set_summary());
+    fn replica_set_row_extracts_table_fields_from_raw_summary() {
+        let row = ReplicaSetRow::from_summary(&replica_set_summary());
 
-        assert_eq!(row.name, "api");
+        assert_eq!(row.name, "api-75f");
         assert_eq!(row.namespace, "default");
         assert_eq!(row.ready, "2/3");
-        assert_eq!(row.current, "2");
-        assert_eq!(row.updated, "3");
-        assert_eq!(row.replicas, "3/3");
-        assert_eq!(row.service, "api-headless");
-        assert_eq!(row.strategy, "RollingUpdate");
-        assert_eq!(row.selector, "app=api, tier=backend");
+        assert_eq!(row.desired, "3");
+        assert_eq!(row.current, "3");
+        assert_eq!(row.available, "2");
+        assert_eq!(row.controlled_by, "Deployment/api");
+        assert_eq!(row.selector, "app=api, pod-template-hash=75f");
         assert_eq!(row.images, "ghcr.io/example/api:1.0.0, envoyproxy/envoy:v1");
-        assert_eq!(
-            row.status_summary,
-            "ready=2, current=2, updated=3, replicas=3"
-        );
+        assert_eq!(row.conditions, "ReplicaFailure=False");
         assert!(row.age.ends_with(" ago"));
     }
 
     #[test]
-    fn stateful_set_row_handles_missing_optional_fields() {
-        let row = StatefulSetRow::from_summary(&ResourceSummary {
+    fn replica_set_row_handles_missing_optional_fields() {
+        let row = ReplicaSetRow::from_summary(&ResourceSummary {
             name: "minimal".to_owned(),
             namespace: Some("default".to_owned()),
-            kind: "StatefulSet".to_owned(),
+            kind: "ReplicaSet".to_owned(),
             status: None,
             raw: serde_json::json!({"metadata": {"name": "minimal", "namespace": "default"}}),
         });
 
-        assert_eq!(row.ready, "0/N/A");
+        assert_eq!(row.ready, "0/0");
+        assert_eq!(row.desired, "0");
         assert_eq!(row.current, "0");
-        assert_eq!(row.updated, "0");
-        assert_eq!(row.replicas, "0/N/A");
-        assert_eq!(row.service, "N/A");
-        assert_eq!(row.strategy, "N/A");
+        assert_eq!(row.available, "0");
+        assert_eq!(row.controlled_by, "N/A");
         assert_eq!(row.selector, "N/A");
         assert_eq!(row.images, "N/A");
-        assert_eq!(
-            row.status_summary,
-            "ready=0, current=0, updated=0, replicas=0"
-        );
+        assert_eq!(row.conditions, "N/A");
     }
 
     #[test]
-    fn stateful_set_rows_filter_by_multiple_fields_case_insensitively() {
+    fn replica_set_rows_filter_by_multiple_fields_case_insensitively() {
         let rows = vec![
-            StatefulSetRow::from_summary(&stateful_set_summary()),
-            StatefulSetRow::from_summary(&ResourceSummary {
-                name: "worker".to_owned(),
-                namespace: Some("production".to_owned()),
-                kind: "StatefulSet".to_owned(),
-                status: None,
-                raw: serde_json::json!({
-                    "metadata": {"name": "worker", "namespace": "production"},
-                    "spec": {
-                        "selector": {"matchLabels": {"app": "worker"}},
-                        "template": {"spec": {"containers": [{"name": "worker", "image": "worker:1"}]}}
-                    }
-                }),
-            }),
+            ReplicaSetRow::from_summary(&replica_set_summary()),
+            ReplicaSetRow::from_summary(&replica_set_summary_with_name("production", "worker-77d")),
         ];
 
-        assert_eq!(filter_stateful_set_rows(&rows, "BACKEND").len(), 1);
-        assert_eq!(filter_stateful_set_rows(&rows, "PRODUCTION").len(), 1);
-        assert_eq!(filter_stateful_set_rows(&rows, "envoy").len(), 1);
-        assert_eq!(filter_stateful_set_rows(&rows, "updated=3").len(), 1);
+        assert_eq!(filter_replica_set_rows(&rows, "API-75F").len(), 1);
+        assert_eq!(filter_replica_set_rows(&rows, "PRODUCTION").len(), 1);
+        assert_eq!(filter_replica_set_rows(&rows, "deployment/api").len(), 2);
+        assert_eq!(filter_replica_set_rows(&rows, "ReplicaFailure").len(), 2);
     }
 
     #[test]
-    fn stateful_set_rows_are_sorted_by_namespace_and_name() {
-        let rows = stateful_set_rows_from_list(&[
-            stateful_set_summary_with_name("zeta", "worker"),
-            stateful_set_summary_with_name("default", "api"),
-            stateful_set_summary_with_name("default", "scheduler"),
+    fn replica_set_rows_are_sorted_by_namespace_and_name() {
+        let rows = replica_set_rows_from_list(&[
+            replica_set_summary_with_name("zeta", "worker"),
+            replica_set_summary_with_name("default", "api-b"),
+            replica_set_summary_with_name("default", "api-a"),
         ]);
 
         let keys = rows.into_iter().map(|row| row.key).collect::<Vec<_>>();
-        assert_eq!(
-            keys,
-            vec!["default/api", "default/scheduler", "zeta/worker"]
-        );
+        assert_eq!(keys, vec!["default/api-a", "default/api-b", "zeta/worker"]);
     }
 
     #[test]
-    fn stateful_set_describe_extracts_details() {
-        let row = StatefulSetRow::from_summary(&stateful_set_summary());
-        let describe = stateful_set_describe_from_row(&row);
+    fn replica_set_describe_extracts_details() {
+        let row = ReplicaSetRow::from_summary(&replica_set_summary());
+        let describe = replica_set_describe_from_row(&row);
 
         assert_eq!(describe.selector.len(), 2);
         assert_eq!(describe.template_labels.len(), 2);
         assert_eq!(describe.containers.len(), 2);
-        assert_eq!(describe.containers[0].name, "api");
-        assert_eq!(describe.containers[0].image, "ghcr.io/example/api:1.0.0");
-        assert_eq!(describe.conditions.len(), 2);
-        assert!(describe.labels.iter().any(|entry| entry.key == "app"));
+        assert_eq!(describe.conditions.len(), 1);
         assert!(
             describe
                 .summary
                 .iter()
-                .any(|field| { field.label == "Service" && field.value == "api-headless" })
-        );
-        assert!(
-            describe
-                .annotations
-                .iter()
-                .any(|entry| entry.key == "apps.kubernetes.io/revision")
+                .any(|field| field.label == "Controlled by" && field.value == "Deployment/api")
         );
     }
 
     #[test]
     fn stale_resource_events_do_not_replace_current_rows() {
-        let mut panel = StatefulSetResourcePanel::default();
+        let mut panel = ReplicaSetResourcePanel::default();
         let cluster_id = ClusterId::new("local");
-        let first = panel.request_statefulsets(cluster_id.clone());
-        let second = panel.request_statefulsets(cluster_id);
+        let first = panel.request_replicasets(cluster_id.clone());
+        let second = panel.request_replicasets(cluster_id);
 
         panel.apply_event(ResourceUiEvent::ResourcesLoaded {
             request: first,
             result: Ok(ResourceList {
-                items: vec![stateful_set_summary_with_name("default", "stale")],
+                items: vec![replica_set_summary_with_name("default", "stale")],
                 continue_token: None,
             }),
         });
@@ -1206,26 +1199,25 @@ mod tests {
         panel.apply_event(ResourceUiEvent::ResourcesLoaded {
             request: second,
             result: Ok(ResourceList {
-                items: vec![stateful_set_summary()],
+                items: vec![replica_set_summary()],
                 continue_token: None,
             }),
         });
 
-        assert_eq!(panel.rows.len(), 1);
-        assert_eq!(panel.rows[0].name, "api");
+        assert_eq!(panel.rows[0].name, "api-75f");
     }
 
     #[test]
     fn stale_watch_events_do_not_replace_current_rows() {
-        let mut panel = StatefulSetResourcePanel::default();
+        let mut panel = ReplicaSetResourcePanel::default();
         let cluster_id = ClusterId::new("local");
-        let first = panel.request_stateful_set_watch(cluster_id.clone());
-        let second = panel.request_stateful_set_watch(cluster_id);
+        let first = panel.request_replica_set_watch(cluster_id.clone());
+        let second = panel.request_replica_set_watch(cluster_id);
 
         panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
             request: first,
             result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
-                items: vec![stateful_set_summary_with_name("default", "stale")],
+                items: vec![replica_set_summary_with_name("default", "stale")],
                 continue_token: None,
             })),
         });
@@ -1234,26 +1226,23 @@ mod tests {
         panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
             request: second,
             result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
-                items: vec![stateful_set_summary()],
+                items: vec![replica_set_summary()],
                 continue_token: None,
             })),
         });
 
-        assert_eq!(panel.rows.len(), 1);
-        assert_eq!(panel.rows[0].name, "api");
+        assert_eq!(panel.rows[0].name, "api-75f");
     }
 
     #[test]
     fn namespace_watch_events_from_shared_request_update_selector() {
-        let mut panel = StatefulSetResourcePanel::default();
-        let request = ResourceWatchRequest {
-            request_id: 42,
-            cluster_id: ClusterId::new("local"),
-            kind: ResourceLoadKind::Namespaces,
-        };
-
+        let mut panel = ReplicaSetResourcePanel::default();
         panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
-            request,
+            request: ResourceWatchRequest {
+                request_id: 42,
+                cluster_id: ClusterId::new("local"),
+                kind: ResourceLoadKind::Namespaces,
+            },
             result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
                 items: vec![namespace_summary("production")],
                 continue_token: None,
@@ -1261,54 +1250,46 @@ mod tests {
         });
 
         assert_eq!(panel.namespaces, vec!["production".to_owned()]);
-        assert_eq!(panel.namespace_status, LoadStatus::Loaded);
     }
 
-    fn stateful_set_summary() -> ResourceSummary {
-        stateful_set_summary_with_name("default", "api")
+    fn replica_set_summary() -> ResourceSummary {
+        replica_set_summary_with_name("default", "api-75f")
     }
 
-    fn stateful_set_summary_with_name(namespace: &str, name: &str) -> ResourceSummary {
+    fn replica_set_summary_with_name(namespace: &str, name: &str) -> ResourceSummary {
         ResourceSummary {
             name: name.to_owned(),
             namespace: Some(namespace.to_owned()),
-            kind: "StatefulSet".to_owned(),
+            kind: "ReplicaSet".to_owned(),
             status: None,
             raw: serde_json::json!({
                 "metadata": {
                     "name": name,
                     "namespace": namespace,
                     "creationTimestamp": "2026-05-18T10:00:00Z",
-                    "labels": {"app": name},
-                    "annotations": {"apps.kubernetes.io/revision": "3"}
+                    "labels": {"app": "api"},
+                    "ownerReferences": [
+                        {"kind": "Deployment", "name": "api", "controller": true}
+                    ]
                 },
                 "spec": {
                     "replicas": 3,
-                    "serviceName": "api-headless",
-                    "minReadySeconds": 5,
-                    "revisionHistoryLimit": 10,
-                    "updateStrategy": {
-                        "type": "RollingUpdate",
-                        "rollingUpdate": {
-                            "partition": 1
-                        }
-                    },
                     "selector": {
                         "matchLabels": {
-                            "app": name,
-                            "tier": "backend"
+                            "app": "api",
+                            "pod-template-hash": "75f"
                         }
                     },
                     "template": {
                         "metadata": {
                             "labels": {
-                                "app": name,
-                                "tier": "backend"
+                                "app": "api",
+                                "pod-template-hash": "75f"
                             }
                         },
                         "spec": {
                             "containers": [
-                                {"name": name, "image": "ghcr.io/example/api:1.0.0"},
+                                {"name": "api", "image": "ghcr.io/example/api:1.0.0"},
                                 {"name": "sidecar", "image": "envoyproxy/envoy:v1"}
                             ]
                         }
@@ -1317,20 +1298,15 @@ mod tests {
                 "status": {
                     "replicas": 3,
                     "readyReplicas": 2,
-                    "currentReplicas": 2,
-                    "updatedReplicas": 3,
+                    "availableReplicas": 2,
+                    "fullyLabeledReplicas": 3,
+                    "observedGeneration": 4,
                     "conditions": [
                         {
-                            "type": "Available",
-                            "status": "True",
-                            "reason": "MinimumReplicasAvailable",
-                            "message": "StatefulSet has minimum availability."
-                        },
-                        {
-                            "type": "Progressing",
-                            "status": "True",
-                            "reason": "NewReplicaSetAvailable",
-                            "message": "ReplicaSet has successfully progressed."
+                            "type": "ReplicaFailure",
+                            "status": "False",
+                            "reason": "NoFailure",
+                            "message": "No replica failures."
                         }
                     ]
                 }

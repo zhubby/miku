@@ -99,6 +99,7 @@ impl EventResourcePanel {
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::Jobs { .. }
+                | ResourceLoadKind::ReplicaSets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
@@ -135,6 +136,7 @@ impl EventResourcePanel {
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::Jobs { .. }
+                | ResourceLoadKind::ReplicaSets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
