@@ -24,7 +24,6 @@ pub(crate) const RESOURCE_CATEGORIES: &[ResourceNavCategory] = &[
         name: "Workloads",
         icon: egui_phosphor::regular::CUBE,
         items: &[
-            ResourceNavItem { name: "Overview" },
             ResourceNavItem { name: "Pods" },
             ResourceNavItem {
                 name: "Deployments",
@@ -173,6 +172,11 @@ mod tests {
         assert_category_contains("Access Control", "Cluster Role Bindings");
     }
 
+    #[test]
+    fn workloads_catalog_does_not_include_overview() {
+        assert_category_does_not_contain("Workloads", "Overview");
+    }
+
     fn assert_category_contains(category_name: &str, item_name: &str) {
         let category = RESOURCE_CATEGORIES
             .iter()
@@ -180,5 +184,14 @@ mod tests {
             .unwrap();
 
         assert!(category.items.iter().any(|item| item.name == item_name));
+    }
+
+    fn assert_category_does_not_contain(category_name: &str, item_name: &str) {
+        let category = RESOURCE_CATEGORIES
+            .iter()
+            .find(|category| category.name == category_name)
+            .unwrap();
+
+        assert!(!category.items.iter().any(|item| item.name == item_name));
     }
 }
