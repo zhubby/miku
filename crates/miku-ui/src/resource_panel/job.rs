@@ -95,6 +95,11 @@ impl JobResourcePanel {
                 }
                 ResourceLoadKind::Nodes
                 | ResourceLoadKind::ConfigMaps { .. }
+                | ResourceLoadKind::EndpointSlices { .. }
+                | ResourceLoadKind::Endpoints { .. }
+                | ResourceLoadKind::IngressClasses
+                | ResourceLoadKind::Ingresses { .. }
+                | ResourceLoadKind::NetworkPolicies { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::Events { .. }
@@ -104,6 +109,7 @@ impl JobResourcePanel {
                 | ResourceLoadKind::ReplicaSets { .. }
                 | ResourceLoadKind::ResourceQuotas { .. }
                 | ResourceLoadKind::Secrets { .. }
+                | ResourceLoadKind::Services { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
@@ -136,6 +142,11 @@ impl JobResourcePanel {
                 }
                 ResourceLoadKind::Nodes
                 | ResourceLoadKind::ConfigMaps { .. }
+                | ResourceLoadKind::EndpointSlices { .. }
+                | ResourceLoadKind::Endpoints { .. }
+                | ResourceLoadKind::IngressClasses
+                | ResourceLoadKind::Ingresses { .. }
+                | ResourceLoadKind::NetworkPolicies { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::Events { .. }
@@ -145,6 +156,7 @@ impl JobResourcePanel {
                 | ResourceLoadKind::ReplicaSets { .. }
                 | ResourceLoadKind::ResourceQuotas { .. }
                 | ResourceLoadKind::Secrets { .. }
+                | ResourceLoadKind::Services { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },

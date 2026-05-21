@@ -13,12 +13,13 @@ use crate::forms::NewClusterForm;
 use crate::resource_panel::ResourceWatchKey;
 use crate::resource_panel::{
     ConfigMapResourcePanel, CronJobResourcePanel, CustomResourcesPanel, DaemonSetResourcePanel,
-    DeploymentResourcePanel, EventResourcePanel, JobResourcePanel, LimitRangeResourcePanel,
-    NamespaceResourcePanel, NodeResourcePanel, PodAttachInputRequest, PodAttachRequest,
-    PodLogRequest, PodResourcePanel, ReplicaSetResourcePanel, ResourceActionKind,
-    ResourceActionOutcome, ResourceActionRequest, ResourceLoadKind, ResourceLoadRequest,
-    ResourceQuotaResourcePanel, ResourceUiEvent, ResourceWatchRequest, SecretResourcePanel,
-    StatefulSetResourcePanel,
+    DeploymentResourcePanel, EndpointSliceResourcePanel, EndpointsResourcePanel,
+    EventResourcePanel, IngressClassResourcePanel, IngressResourcePanel, JobResourcePanel,
+    LimitRangeResourcePanel, NamespaceResourcePanel, NetworkPolicyResourcePanel, NodeResourcePanel,
+    PodAttachInputRequest, PodAttachRequest, PodLogRequest, PodResourcePanel,
+    ReplicaSetResourcePanel, ResourceActionKind, ResourceActionOutcome, ResourceActionRequest,
+    ResourceLoadKind, ResourceLoadRequest, ResourceQuotaResourcePanel, ResourceUiEvent,
+    ResourceWatchRequest, SecretResourcePanel, ServiceResourcePanel, StatefulSetResourcePanel,
 };
 use crate::resources::ResourceNavItem;
 use crate::state::{AppState, ClusterConnectionState, RuntimeMode};
@@ -62,16 +63,22 @@ pub(crate) struct ClusterWorkspace {
     pub(crate) config_map_resource_panel: ConfigMapResourcePanel,
     pub(crate) daemon_set_resource_panel: DaemonSetResourcePanel,
     pub(crate) deployment_resource_panel: DeploymentResourcePanel,
+    pub(crate) endpoint_slice_resource_panel: EndpointSliceResourcePanel,
+    pub(crate) endpoints_resource_panel: EndpointsResourcePanel,
     pub(crate) event_resource_panel: EventResourcePanel,
+    pub(crate) ingress_class_resource_panel: IngressClassResourcePanel,
+    pub(crate) ingress_resource_panel: IngressResourcePanel,
     pub(crate) cron_job_resource_panel: CronJobResourcePanel,
     pub(crate) job_resource_panel: JobResourcePanel,
     pub(crate) limit_range_resource_panel: LimitRangeResourcePanel,
     pub(crate) namespace_resource_panel: NamespaceResourcePanel,
+    pub(crate) network_policy_resource_panel: NetworkPolicyResourcePanel,
     pub(crate) node_resource_panel: NodeResourcePanel,
     pub(crate) pod_resource_panel: PodResourcePanel,
     pub(crate) replica_set_resource_panel: ReplicaSetResourcePanel,
     pub(crate) resource_quota_resource_panel: ResourceQuotaResourcePanel,
     pub(crate) secret_resource_panel: SecretResourcePanel,
+    pub(crate) service_resource_panel: ServiceResourcePanel,
     pub(crate) stateful_set_resource_panel: StatefulSetResourcePanel,
     pub(crate) custom_resources_panel: CustomResourcesPanel,
 }
@@ -85,16 +92,22 @@ impl Default for ClusterWorkspace {
             config_map_resource_panel: ConfigMapResourcePanel::default(),
             daemon_set_resource_panel: DaemonSetResourcePanel::default(),
             deployment_resource_panel: DeploymentResourcePanel::default(),
+            endpoint_slice_resource_panel: EndpointSliceResourcePanel::default(),
+            endpoints_resource_panel: EndpointsResourcePanel::default(),
             event_resource_panel: EventResourcePanel::default(),
+            ingress_class_resource_panel: IngressClassResourcePanel::default(),
+            ingress_resource_panel: IngressResourcePanel::default(),
             cron_job_resource_panel: CronJobResourcePanel::default(),
             job_resource_panel: JobResourcePanel::default(),
             limit_range_resource_panel: LimitRangeResourcePanel::default(),
             namespace_resource_panel: NamespaceResourcePanel::default(),
+            network_policy_resource_panel: NetworkPolicyResourcePanel::default(),
             node_resource_panel: NodeResourcePanel::default(),
             pod_resource_panel: PodResourcePanel::default(),
             replica_set_resource_panel: ReplicaSetResourcePanel::default(),
             resource_quota_resource_panel: ResourceQuotaResourcePanel::default(),
             secret_resource_panel: SecretResourcePanel::default(),
+            service_resource_panel: ServiceResourcePanel::default(),
             stateful_set_resource_panel: StatefulSetResourcePanel::default(),
             custom_resources_panel: CustomResourcesPanel::default(),
         }
@@ -231,15 +244,21 @@ impl eframe::App for MikuApp {
                     cron_job_resource_panel: None,
                     daemon_set_resource_panel: None,
                     deployment_resource_panel: None,
+                    endpoint_slice_resource_panel: None,
+                    endpoints_resource_panel: None,
                     event_resource_panel: None,
+                    ingress_class_resource_panel: None,
+                    ingress_resource_panel: None,
                     job_resource_panel: None,
                     limit_range_resource_panel: None,
                     namespace_resource_panel: None,
+                    network_policy_resource_panel: None,
                     node_resource_panel: None,
                     pod_resource_panel: None,
                     replica_set_resource_panel: None,
                     resource_quota_resource_panel: None,
                     secret_resource_panel: None,
+                    service_resource_panel: None,
                     stateful_set_resource_panel: None,
                     custom_resources_panel: None,
                     status_load_requests: Vec::new(),
@@ -302,15 +321,21 @@ impl eframe::App for MikuApp {
                     cron_job_resource_panel: None,
                     daemon_set_resource_panel: None,
                     deployment_resource_panel: None,
+                    endpoint_slice_resource_panel: None,
+                    endpoints_resource_panel: None,
                     event_resource_panel: None,
+                    ingress_class_resource_panel: None,
+                    ingress_resource_panel: None,
                     job_resource_panel: None,
                     limit_range_resource_panel: None,
                     namespace_resource_panel: None,
+                    network_policy_resource_panel: None,
                     node_resource_panel: None,
                     pod_resource_panel: None,
                     replica_set_resource_panel: None,
                     resource_quota_resource_panel: None,
                     secret_resource_panel: None,
+                    service_resource_panel: None,
                     stateful_set_resource_panel: None,
                     custom_resources_panel: None,
                     status_load_requests: Vec::new(),
@@ -381,15 +406,21 @@ impl eframe::App for MikuApp {
                 cron_job_resource_panel: Some(&mut workspace.cron_job_resource_panel),
                 daemon_set_resource_panel: Some(&mut workspace.daemon_set_resource_panel),
                 deployment_resource_panel: Some(&mut workspace.deployment_resource_panel),
+                endpoint_slice_resource_panel: Some(&mut workspace.endpoint_slice_resource_panel),
+                endpoints_resource_panel: Some(&mut workspace.endpoints_resource_panel),
                 event_resource_panel: Some(&mut workspace.event_resource_panel),
+                ingress_class_resource_panel: Some(&mut workspace.ingress_class_resource_panel),
+                ingress_resource_panel: Some(&mut workspace.ingress_resource_panel),
                 job_resource_panel: Some(&mut workspace.job_resource_panel),
                 limit_range_resource_panel: Some(&mut workspace.limit_range_resource_panel),
                 namespace_resource_panel: Some(&mut workspace.namespace_resource_panel),
+                network_policy_resource_panel: Some(&mut workspace.network_policy_resource_panel),
                 node_resource_panel: Some(&mut workspace.node_resource_panel),
                 pod_resource_panel: Some(&mut workspace.pod_resource_panel),
                 replica_set_resource_panel: Some(&mut workspace.replica_set_resource_panel),
                 resource_quota_resource_panel: Some(&mut workspace.resource_quota_resource_panel),
                 secret_resource_panel: Some(&mut workspace.secret_resource_panel),
+                service_resource_panel: Some(&mut workspace.service_resource_panel),
                 stateful_set_resource_panel: Some(&mut workspace.stateful_set_resource_panel),
                 custom_resources_panel: Some(&mut workspace.custom_resources_panel),
                 status_load_requests: Vec::new(),
@@ -619,7 +650,14 @@ impl MikuApp {
                     workspace
                         .deployment_resource_panel
                         .apply_event(event.clone());
+                    workspace
+                        .endpoint_slice_resource_panel
+                        .apply_event(event.clone());
+                    workspace
+                        .endpoints_resource_panel
+                        .apply_event(event.clone());
                     workspace.event_resource_panel.apply_event(event.clone());
+                    workspace.ingress_resource_panel.apply_event(event.clone());
                     workspace.job_resource_panel.apply_event(event.clone());
                     workspace
                         .limit_range_resource_panel
@@ -628,12 +666,16 @@ impl MikuApp {
                         .namespace_resource_panel
                         .apply_event(event.clone());
                     workspace
+                        .network_policy_resource_panel
+                        .apply_event(event.clone());
+                    workspace
                         .replica_set_resource_panel
                         .apply_event(event.clone());
                     workspace
                         .resource_quota_resource_panel
                         .apply_event(event.clone());
                     workspace.secret_resource_panel.apply_event(event.clone());
+                    workspace.service_resource_panel.apply_event(event.clone());
                     workspace
                         .stateful_set_resource_panel
                         .apply_event(event.clone());
@@ -644,6 +686,12 @@ impl MikuApp {
                 }
                 ResourceLoadKind::Events { .. } => {
                     workspace.event_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::EndpointSlices { .. } => {
+                    workspace.endpoint_slice_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::Endpoints { .. } => {
+                    workspace.endpoints_resource_panel.apply_event(event);
                 }
                 ResourceLoadKind::ConfigMaps { .. } => {
                     workspace.config_map_resource_panel.apply_event(event);
@@ -663,8 +711,17 @@ impl MikuApp {
                 ResourceLoadKind::Jobs { .. } => {
                     workspace.job_resource_panel.apply_event(event);
                 }
+                ResourceLoadKind::IngressClasses => {
+                    workspace.ingress_class_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::Ingresses { .. } => {
+                    workspace.ingress_resource_panel.apply_event(event);
+                }
                 ResourceLoadKind::LimitRanges { .. } => {
                     workspace.limit_range_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::NetworkPolicies { .. } => {
+                    workspace.network_policy_resource_panel.apply_event(event);
                 }
                 ResourceLoadKind::ReplicaSets { .. } => {
                     workspace.replica_set_resource_panel.apply_event(event);
@@ -674,6 +731,9 @@ impl MikuApp {
                 }
                 ResourceLoadKind::Secrets { .. } => {
                     workspace.secret_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::Services { .. } => {
+                    workspace.service_resource_panel.apply_event(event);
                 }
                 ResourceLoadKind::Pods { .. } => {
                     workspace.pod_resource_panel.apply_event(event);
@@ -694,7 +754,14 @@ impl MikuApp {
                     workspace
                         .deployment_resource_panel
                         .apply_event(event.clone());
+                    workspace
+                        .endpoint_slice_resource_panel
+                        .apply_event(event.clone());
+                    workspace
+                        .endpoints_resource_panel
+                        .apply_event(event.clone());
                     workspace.event_resource_panel.apply_event(event.clone());
+                    workspace.ingress_resource_panel.apply_event(event.clone());
                     workspace.job_resource_panel.apply_event(event.clone());
                     workspace
                         .limit_range_resource_panel
@@ -703,12 +770,16 @@ impl MikuApp {
                         .namespace_resource_panel
                         .apply_event(event.clone());
                     workspace
+                        .network_policy_resource_panel
+                        .apply_event(event.clone());
+                    workspace
                         .replica_set_resource_panel
                         .apply_event(event.clone());
                     workspace
                         .resource_quota_resource_panel
                         .apply_event(event.clone());
                     workspace.secret_resource_panel.apply_event(event.clone());
+                    workspace.service_resource_panel.apply_event(event.clone());
                     workspace
                         .stateful_set_resource_panel
                         .apply_event(event.clone());
@@ -719,6 +790,12 @@ impl MikuApp {
                 }
                 ResourceLoadKind::Events { .. } => {
                     workspace.event_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::EndpointSlices { .. } => {
+                    workspace.endpoint_slice_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::Endpoints { .. } => {
+                    workspace.endpoints_resource_panel.apply_event(event);
                 }
                 ResourceLoadKind::ConfigMaps { .. } => {
                     workspace.config_map_resource_panel.apply_event(event);
@@ -738,8 +815,17 @@ impl MikuApp {
                 ResourceLoadKind::Jobs { .. } => {
                     workspace.job_resource_panel.apply_event(event);
                 }
+                ResourceLoadKind::IngressClasses => {
+                    workspace.ingress_class_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::Ingresses { .. } => {
+                    workspace.ingress_resource_panel.apply_event(event);
+                }
                 ResourceLoadKind::LimitRanges { .. } => {
                     workspace.limit_range_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::NetworkPolicies { .. } => {
+                    workspace.network_policy_resource_panel.apply_event(event);
                 }
                 ResourceLoadKind::ReplicaSets { .. } => {
                     workspace.replica_set_resource_panel.apply_event(event);
@@ -749,6 +835,9 @@ impl MikuApp {
                 }
                 ResourceLoadKind::Secrets { .. } => {
                     workspace.secret_resource_panel.apply_event(event);
+                }
+                ResourceLoadKind::Services { .. } => {
+                    workspace.service_resource_panel.apply_event(event);
                 }
                 ResourceLoadKind::Pods { .. } => {
                     workspace.pod_resource_panel.apply_event(event);

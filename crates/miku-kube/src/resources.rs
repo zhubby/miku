@@ -28,6 +28,8 @@ fn kind_for_plural(plural: &str) -> String {
     match plural {
         "pods" => "Pod".to_owned(),
         "services" => "Service".to_owned(),
+        "endpoints" => "Endpoints".to_owned(),
+        "endpointslices" => "EndpointSlice".to_owned(),
         "cronjobs" => "CronJob".to_owned(),
         "daemonsets" => "DaemonSet".to_owned(),
         "deployments" => "Deployment".to_owned(),
@@ -37,6 +39,9 @@ fn kind_for_plural(plural: &str) -> String {
         "namespaces" => "Namespace".to_owned(),
         "configmaps" => "ConfigMap".to_owned(),
         "limitranges" => "LimitRange".to_owned(),
+        "ingresses" => "Ingress".to_owned(),
+        "ingressclasses" => "IngressClass".to_owned(),
+        "networkpolicies" => "NetworkPolicy".to_owned(),
         "resourcequotas" => "ResourceQuota".to_owned(),
         "secrets" => "Secret".to_owned(),
         "customresourcedefinitions" => "CustomResourceDefinition".to_owned(),
@@ -314,6 +319,48 @@ mod tests {
 
         assert_eq!(api_resource.kind, "LimitRange");
         assert_eq!(api_resource.plural, "limitranges");
+    }
+
+    #[test]
+    fn api_resource_uses_known_kind_for_network_resources() {
+        let cases = [
+            (
+                miku_core::ResourceRef::core("v1", "services"),
+                "Service",
+                "services",
+            ),
+            (
+                miku_core::ResourceRef::core("v1", "endpoints"),
+                "Endpoints",
+                "endpoints",
+            ),
+            (
+                miku_core::ResourceRef::grouped("discovery.k8s.io", "v1", "endpointslices"),
+                "EndpointSlice",
+                "endpointslices",
+            ),
+            (
+                miku_core::ResourceRef::grouped("networking.k8s.io", "v1", "ingresses"),
+                "Ingress",
+                "ingresses",
+            ),
+            (
+                miku_core::ResourceRef::grouped("networking.k8s.io", "v1", "ingressclasses"),
+                "IngressClass",
+                "ingressclasses",
+            ),
+            (
+                miku_core::ResourceRef::grouped("networking.k8s.io", "v1", "networkpolicies"),
+                "NetworkPolicy",
+                "networkpolicies",
+            ),
+        ];
+
+        for (resource, kind, plural) in cases {
+            let api_resource = api_resource(&resource);
+            assert_eq!(api_resource.kind, kind);
+            assert_eq!(api_resource.plural, plural);
+        }
     }
 
     #[test]

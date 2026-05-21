@@ -96,6 +96,11 @@ impl ConfigMapResourcePanel {
                     }
                 }
                 ResourceLoadKind::Nodes
+                | ResourceLoadKind::EndpointSlices { .. }
+                | ResourceLoadKind::Endpoints { .. }
+                | ResourceLoadKind::IngressClasses
+                | ResourceLoadKind::Ingresses { .. }
+                | ResourceLoadKind::NetworkPolicies { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::Deployments { .. }
@@ -105,6 +110,7 @@ impl ConfigMapResourcePanel {
                 | ResourceLoadKind::ReplicaSets { .. }
                 | ResourceLoadKind::ResourceQuotas { .. }
                 | ResourceLoadKind::Secrets { .. }
+                | ResourceLoadKind::Services { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
@@ -137,6 +143,11 @@ impl ConfigMapResourcePanel {
                     }
                 }
                 ResourceLoadKind::Nodes
+                | ResourceLoadKind::EndpointSlices { .. }
+                | ResourceLoadKind::Endpoints { .. }
+                | ResourceLoadKind::IngressClasses
+                | ResourceLoadKind::Ingresses { .. }
+                | ResourceLoadKind::NetworkPolicies { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::Deployments { .. }
@@ -146,6 +157,7 @@ impl ConfigMapResourcePanel {
                 | ResourceLoadKind::ReplicaSets { .. }
                 | ResourceLoadKind::ResourceQuotas { .. }
                 | ResourceLoadKind::Secrets { .. }
+                | ResourceLoadKind::Services { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}

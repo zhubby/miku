@@ -15,6 +15,7 @@ mod event;
 mod job;
 mod limit_range;
 mod namespace;
+mod network;
 mod node;
 mod pod;
 mod replica_set;
@@ -31,6 +32,10 @@ pub(crate) use event::EventResourcePanel;
 pub(crate) use job::JobResourcePanel;
 pub(crate) use limit_range::LimitRangeResourcePanel;
 pub(crate) use namespace::NamespaceResourcePanel;
+pub(crate) use network::{
+    EndpointSliceResourcePanel, EndpointsResourcePanel, IngressClassResourcePanel,
+    IngressResourcePanel, NetworkPolicyResourcePanel, ServiceResourcePanel,
+};
 pub(crate) use node::NodeResourcePanel;
 pub(crate) use pod::PodResourcePanel;
 pub(crate) use replica_set::ReplicaSetResourcePanel;
@@ -107,15 +112,21 @@ pub(crate) enum ResourceLoadKind {
     Namespaces,
     Nodes,
     ConfigMaps { namespace: Option<String> },
+    EndpointSlices { namespace: Option<String> },
+    Endpoints { namespace: Option<String> },
     Events { namespace: Option<String> },
     CronJobs { namespace: Option<String> },
     DaemonSets { namespace: Option<String> },
     Deployments { namespace: Option<String> },
     Jobs { namespace: Option<String> },
     LimitRanges { namespace: Option<String> },
+    IngressClasses,
+    Ingresses { namespace: Option<String> },
+    NetworkPolicies { namespace: Option<String> },
     ReplicaSets { namespace: Option<String> },
     ResourceQuotas { namespace: Option<String> },
     Secrets { namespace: Option<String> },
+    Services { namespace: Option<String> },
     StatefulSets { namespace: Option<String> },
     Pods { namespace: Option<String> },
     CustomResourceDefinitions,
@@ -184,6 +195,10 @@ impl ResourceWatchRequest {
             ResourceLoadKind::Namespaces => ResourceLoadKind::Namespaces,
             ResourceLoadKind::Nodes => ResourceLoadKind::Nodes,
             ResourceLoadKind::ConfigMaps { .. } => ResourceLoadKind::ConfigMaps { namespace: None },
+            ResourceLoadKind::EndpointSlices { .. } => {
+                ResourceLoadKind::EndpointSlices { namespace: None }
+            }
+            ResourceLoadKind::Endpoints { .. } => ResourceLoadKind::Endpoints { namespace: None },
             ResourceLoadKind::Events { .. } => ResourceLoadKind::Events { namespace: None },
             ResourceLoadKind::CronJobs { .. } => ResourceLoadKind::CronJobs { namespace: None },
             ResourceLoadKind::DaemonSets { .. } => ResourceLoadKind::DaemonSets { namespace: None },
@@ -197,6 +212,11 @@ impl ResourceWatchRequest {
             ResourceLoadKind::LimitRanges { .. } => {
                 ResourceLoadKind::LimitRanges { namespace: None }
             }
+            ResourceLoadKind::IngressClasses => ResourceLoadKind::IngressClasses,
+            ResourceLoadKind::Ingresses { .. } => ResourceLoadKind::Ingresses { namespace: None },
+            ResourceLoadKind::NetworkPolicies { .. } => {
+                ResourceLoadKind::NetworkPolicies { namespace: None }
+            }
             ResourceLoadKind::ReplicaSets { .. } => {
                 ResourceLoadKind::ReplicaSets { namespace: None }
             }
@@ -204,6 +224,7 @@ impl ResourceWatchRequest {
                 ResourceLoadKind::ResourceQuotas { namespace: None }
             }
             ResourceLoadKind::Secrets { .. } => ResourceLoadKind::Secrets { namespace: None },
+            ResourceLoadKind::Services { .. } => ResourceLoadKind::Services { namespace: None },
             ResourceLoadKind::Pods { .. } => ResourceLoadKind::Pods { namespace: None },
             ResourceLoadKind::CustomResourceDefinitions => {
                 ResourceLoadKind::CustomResourceDefinitions
@@ -377,6 +398,24 @@ fn resource_query_for_kind(
             }
             query
         }
+        ResourceLoadKind::EndpointSlices { namespace } => {
+            let mut query = miku_api::ResourceQuery::new(
+                cluster_id,
+                ResourceRef::grouped("discovery.k8s.io", "v1", "endpointslices"),
+            );
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
+        ResourceLoadKind::Endpoints { namespace } => {
+            let mut query =
+                miku_api::ResourceQuery::new(cluster_id, ResourceRef::core("v1", "endpoints"));
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
         ResourceLoadKind::Events { namespace } => {
             let mut query =
                 miku_api::ResourceQuery::new(cluster_id, ResourceRef::core("v1", "events"));
@@ -443,6 +482,30 @@ fn resource_query_for_kind(
             }
             query
         }
+        ResourceLoadKind::IngressClasses => miku_api::ResourceQuery::new(
+            cluster_id,
+            ResourceRef::grouped("networking.k8s.io", "v1", "ingressclasses").cluster_scoped(),
+        ),
+        ResourceLoadKind::Ingresses { namespace } => {
+            let mut query = miku_api::ResourceQuery::new(
+                cluster_id,
+                ResourceRef::grouped("networking.k8s.io", "v1", "ingresses"),
+            );
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
+        ResourceLoadKind::NetworkPolicies { namespace } => {
+            let mut query = miku_api::ResourceQuery::new(
+                cluster_id,
+                ResourceRef::grouped("networking.k8s.io", "v1", "networkpolicies"),
+            );
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
         ResourceLoadKind::ReplicaSets { namespace } => {
             let mut query = miku_api::ResourceQuery::new(
                 cluster_id,
@@ -464,6 +527,14 @@ fn resource_query_for_kind(
         ResourceLoadKind::Secrets { namespace } => {
             let mut query =
                 miku_api::ResourceQuery::new(cluster_id, ResourceRef::core("v1", "secrets"));
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
+        ResourceLoadKind::Services { namespace } => {
+            let mut query =
+                miku_api::ResourceQuery::new(cluster_id, ResourceRef::core("v1", "services"));
             if let Some(namespace) = namespace {
                 query = query.namespace(namespace.clone());
             }
@@ -560,6 +631,92 @@ mod tests {
         );
 
         assert_eq!(query.resource, ResourceRef::core("v1", "configmaps"));
+        assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn services_query_uses_core_api_and_selected_namespace() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::Services {
+                namespace: Some("production".to_owned()),
+            },
+        );
+
+        assert_eq!(query.resource, ResourceRef::core("v1", "services"));
+        assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn endpoint_slices_query_uses_discovery_api_and_selected_namespace() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::EndpointSlices {
+                namespace: Some("production".to_owned()),
+            },
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("discovery.k8s.io", "v1", "endpointslices")
+        );
+        assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn endpoints_query_uses_core_api_and_selected_namespace() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::Endpoints {
+                namespace: Some("production".to_owned()),
+            },
+        );
+
+        assert_eq!(query.resource, ResourceRef::core("v1", "endpoints"));
+        assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn ingresses_query_uses_networking_api_and_selected_namespace() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::Ingresses {
+                namespace: Some("production".to_owned()),
+            },
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("networking.k8s.io", "v1", "ingresses")
+        );
+        assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn ingress_classes_query_uses_cluster_scoped_networking_api() {
+        let query =
+            resource_query_for_kind(ClusterId::new("local"), &ResourceLoadKind::IngressClasses);
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("networking.k8s.io", "v1", "ingressclasses").cluster_scoped()
+        );
+        assert_eq!(query.namespace, None);
+    }
+
+    #[test]
+    fn network_policies_query_uses_networking_api_and_selected_namespace() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::NetworkPolicies {
+                namespace: Some("production".to_owned()),
+            },
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("networking.k8s.io", "v1", "networkpolicies")
+        );
         assert_eq!(query.namespace.as_deref(), Some("production"));
     }
 

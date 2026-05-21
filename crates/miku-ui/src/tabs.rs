@@ -8,10 +8,12 @@ use miku_api::{
 
 use crate::resource_panel::{
     ConfigMapResourcePanel, CronJobResourcePanel, CustomResourcesPanel, DaemonSetResourcePanel,
-    DeploymentResourcePanel, EventResourcePanel, JobResourcePanel, LimitRangeResourcePanel,
-    NamespaceResourcePanel, NodeResourcePanel, PodAttachInputRequest, PodAttachRequest,
-    PodLogRequest, PodResourcePanel, ReplicaSetResourcePanel, ResourceActionRequest,
-    ResourceLoadRequest, ResourceQuotaResourcePanel, ResourceWatchRequest, SecretResourcePanel,
+    DeploymentResourcePanel, EndpointSliceResourcePanel, EndpointsResourcePanel,
+    EventResourcePanel, IngressClassResourcePanel, IngressResourcePanel, JobResourcePanel,
+    LimitRangeResourcePanel, NamespaceResourcePanel, NetworkPolicyResourcePanel, NodeResourcePanel,
+    PodAttachInputRequest, PodAttachRequest, PodLogRequest, PodResourcePanel,
+    ReplicaSetResourcePanel, ResourceActionRequest, ResourceLoadRequest,
+    ResourceQuotaResourcePanel, ResourceWatchRequest, SecretResourcePanel, ServiceResourcePanel,
     StatefulSetResourcePanel,
 };
 use crate::resources::{RESOURCE_CATEGORIES, ResourceNavItem};
@@ -46,15 +48,21 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) cron_job_resource_panel: Option<&'a mut CronJobResourcePanel>,
     pub(crate) daemon_set_resource_panel: Option<&'a mut DaemonSetResourcePanel>,
     pub(crate) deployment_resource_panel: Option<&'a mut DeploymentResourcePanel>,
+    pub(crate) endpoint_slice_resource_panel: Option<&'a mut EndpointSliceResourcePanel>,
+    pub(crate) endpoints_resource_panel: Option<&'a mut EndpointsResourcePanel>,
     pub(crate) event_resource_panel: Option<&'a mut EventResourcePanel>,
+    pub(crate) ingress_class_resource_panel: Option<&'a mut IngressClassResourcePanel>,
+    pub(crate) ingress_resource_panel: Option<&'a mut IngressResourcePanel>,
     pub(crate) job_resource_panel: Option<&'a mut JobResourcePanel>,
     pub(crate) limit_range_resource_panel: Option<&'a mut LimitRangeResourcePanel>,
     pub(crate) namespace_resource_panel: Option<&'a mut NamespaceResourcePanel>,
+    pub(crate) network_policy_resource_panel: Option<&'a mut NetworkPolicyResourcePanel>,
     pub(crate) node_resource_panel: Option<&'a mut NodeResourcePanel>,
     pub(crate) pod_resource_panel: Option<&'a mut PodResourcePanel>,
     pub(crate) replica_set_resource_panel: Option<&'a mut ReplicaSetResourcePanel>,
     pub(crate) resource_quota_resource_panel: Option<&'a mut ResourceQuotaResourcePanel>,
     pub(crate) secret_resource_panel: Option<&'a mut SecretResourcePanel>,
+    pub(crate) service_resource_panel: Option<&'a mut ServiceResourcePanel>,
     pub(crate) stateful_set_resource_panel: Option<&'a mut StatefulSetResourcePanel>,
     pub(crate) custom_resources_panel: Option<&'a mut CustomResourcesPanel>,
     pub(crate) status_load_requests: Vec<ClusterStatusLoadRequest>,
@@ -206,6 +214,46 @@ impl TabViewer for AppTabViewer<'_> {
                             ui.label("Event resource panel is unavailable.");
                         });
                     }
+                } else if resource.name == "Endpoint Slices" {
+                    if let Some(panel) = self.endpoint_slice_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("EndpointSlice resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Endpoints" {
+                    if let Some(panel) = self.endpoints_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("Endpoints resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Ingress Classes" {
+                    if let Some(panel) = self.ingress_class_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("IngressClass resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Ingresses" {
+                    if let Some(panel) = self.ingress_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("Ingress resource panel is unavailable.");
+                        });
+                    }
                 } else if resource.name == "Jobs" {
                     if let Some(panel) = self.job_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
@@ -289,6 +337,26 @@ impl TabViewer for AppTabViewer<'_> {
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Secret resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Services" {
+                    if let Some(panel) = self.service_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("Service resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Network Policies" {
+                    if let Some(panel) = self.network_policy_resource_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                        self.resource_watch_requests.extend(requests.watches);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("NetworkPolicy resource panel is unavailable.");
                         });
                     }
                 } else if resource.name == "Stateful Sets" {

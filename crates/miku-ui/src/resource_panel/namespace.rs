@@ -72,6 +72,11 @@ impl NamespaceResourcePanel {
                 }
                 ResourceLoadKind::Nodes
                 | ResourceLoadKind::ConfigMaps { .. }
+                | ResourceLoadKind::EndpointSlices { .. }
+                | ResourceLoadKind::Endpoints { .. }
+                | ResourceLoadKind::IngressClasses
+                | ResourceLoadKind::Ingresses { .. }
+                | ResourceLoadKind::NetworkPolicies { .. }
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::DaemonSets { .. }
@@ -82,6 +87,7 @@ impl NamespaceResourcePanel {
                 | ResourceLoadKind::ReplicaSets { .. }
                 | ResourceLoadKind::ResourceQuotas { .. }
                 | ResourceLoadKind::Secrets { .. }
+                | ResourceLoadKind::Services { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
@@ -101,6 +107,11 @@ impl NamespaceResourcePanel {
                 }
                 ResourceLoadKind::Nodes
                 | ResourceLoadKind::ConfigMaps { .. }
+                | ResourceLoadKind::EndpointSlices { .. }
+                | ResourceLoadKind::Endpoints { .. }
+                | ResourceLoadKind::IngressClasses
+                | ResourceLoadKind::Ingresses { .. }
+                | ResourceLoadKind::NetworkPolicies { .. }
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::DaemonSets { .. }
@@ -111,6 +122,7 @@ impl NamespaceResourcePanel {
                 | ResourceLoadKind::ReplicaSets { .. }
                 | ResourceLoadKind::ResourceQuotas { .. }
                 | ResourceLoadKind::Secrets { .. }
+                | ResourceLoadKind::Services { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },

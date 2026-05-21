@@ -94,6 +94,11 @@ impl LimitRangeResourcePanel {
                 }
                 ResourceLoadKind::Nodes
                 | ResourceLoadKind::ConfigMaps { .. }
+                | ResourceLoadKind::EndpointSlices { .. }
+                | ResourceLoadKind::Endpoints { .. }
+                | ResourceLoadKind::IngressClasses
+                | ResourceLoadKind::Ingresses { .. }
+                | ResourceLoadKind::NetworkPolicies { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::Deployments { .. }
@@ -102,6 +107,7 @@ impl LimitRangeResourcePanel {
                 | ResourceLoadKind::ReplicaSets { .. }
                 | ResourceLoadKind::ResourceQuotas { .. }
                 | ResourceLoadKind::Secrets { .. }
+                | ResourceLoadKind::Services { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
@@ -135,6 +141,11 @@ impl LimitRangeResourcePanel {
                 }
                 ResourceLoadKind::Nodes
                 | ResourceLoadKind::ConfigMaps { .. }
+                | ResourceLoadKind::EndpointSlices { .. }
+                | ResourceLoadKind::Endpoints { .. }
+                | ResourceLoadKind::IngressClasses
+                | ResourceLoadKind::Ingresses { .. }
+                | ResourceLoadKind::NetworkPolicies { .. }
                 | ResourceLoadKind::CronJobs { .. }
                 | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::Deployments { .. }
@@ -143,6 +154,7 @@ impl LimitRangeResourcePanel {
                 | ResourceLoadKind::ReplicaSets { .. }
                 | ResourceLoadKind::ResourceQuotas { .. }
                 | ResourceLoadKind::Secrets { .. }
+                | ResourceLoadKind::Services { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}

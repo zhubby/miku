@@ -95,6 +95,11 @@ impl ReplicaSetResourcePanel {
                 }
                 ResourceLoadKind::Nodes
                 | ResourceLoadKind::ConfigMaps { .. }
+                | ResourceLoadKind::EndpointSlices { .. }
+                | ResourceLoadKind::Endpoints { .. }
+                | ResourceLoadKind::IngressClasses
+                | ResourceLoadKind::Ingresses { .. }
+                | ResourceLoadKind::NetworkPolicies { .. }
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::DaemonSets { .. }
@@ -102,6 +107,7 @@ impl ReplicaSetResourcePanel {
                 | ResourceLoadKind::Jobs { .. }
                 | ResourceLoadKind::LimitRanges { .. }
                 | ResourceLoadKind::Secrets { .. }
+                | ResourceLoadKind::Services { .. }
                 | ResourceLoadKind::ResourceQuotas { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::Pods { .. }
@@ -136,6 +142,11 @@ impl ReplicaSetResourcePanel {
                 }
                 ResourceLoadKind::Nodes
                 | ResourceLoadKind::ConfigMaps { .. }
+                | ResourceLoadKind::EndpointSlices { .. }
+                | ResourceLoadKind::Endpoints { .. }
+                | ResourceLoadKind::IngressClasses
+                | ResourceLoadKind::Ingresses { .. }
+                | ResourceLoadKind::NetworkPolicies { .. }
                 | ResourceLoadKind::Deployments { .. }
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::DaemonSets { .. }
@@ -143,6 +154,7 @@ impl ReplicaSetResourcePanel {
                 | ResourceLoadKind::Jobs { .. }
                 | ResourceLoadKind::LimitRanges { .. }
                 | ResourceLoadKind::Secrets { .. }
+                | ResourceLoadKind::Services { .. }
                 | ResourceLoadKind::ResourceQuotas { .. }
                 | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::Pods { .. }
