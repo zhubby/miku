@@ -6,8 +6,10 @@ use miku_api::{
 use miku_core::{ClusterId, ResourceRef};
 
 mod components;
+mod custom_resources;
 mod pod;
 
+pub(crate) use custom_resources::CustomResourcesPanel;
 pub(crate) use pod::PodResourcePanel;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,6 +80,7 @@ pub(crate) struct ResourcePanelRequests {
 pub(crate) enum ResourceLoadKind {
     Namespaces,
     Pods { namespace: Option<String> },
+    CustomResourceDefinitions,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -142,6 +145,9 @@ impl ResourceWatchRequest {
         let kind = match &self.kind {
             ResourceLoadKind::Namespaces => ResourceLoadKind::Namespaces,
             ResourceLoadKind::Pods { .. } => ResourceLoadKind::Pods { namespace: None },
+            ResourceLoadKind::CustomResourceDefinitions => {
+                ResourceLoadKind::CustomResourceDefinitions
+            }
         };
         ResourceWatchKey {
             cluster_id: self.cluster_id.clone(),
@@ -307,5 +313,30 @@ fn resource_query_for_kind(
             }
             query
         }
+        ResourceLoadKind::CustomResourceDefinitions => miku_api::ResourceQuery::new(
+            cluster_id,
+            ResourceRef::grouped("apiextensions.k8s.io", "v1", "customresourcedefinitions")
+                .cluster_scoped(),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_resource_definitions_query_uses_cluster_scoped_crd_api() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::CustomResourceDefinitions,
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("apiextensions.k8s.io", "v1", "customresourcedefinitions")
+                .cluster_scoped()
+        );
+        assert_eq!(query.namespace, None);
     }
 }

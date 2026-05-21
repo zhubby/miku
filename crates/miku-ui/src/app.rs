@@ -12,9 +12,9 @@ use crate::forms::NewClusterForm;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::resource_panel::ResourceWatchKey;
 use crate::resource_panel::{
-    PodAttachInputRequest, PodAttachRequest, PodLogRequest, PodResourcePanel, ResourceActionKind,
-    ResourceActionOutcome, ResourceActionRequest, ResourceLoadRequest, ResourceUiEvent,
-    ResourceWatchRequest,
+    CustomResourcesPanel, PodAttachInputRequest, PodAttachRequest, PodLogRequest, PodResourcePanel,
+    ResourceActionKind, ResourceActionOutcome, ResourceActionRequest, ResourceLoadKind,
+    ResourceLoadRequest, ResourceUiEvent, ResourceWatchRequest,
 };
 use crate::resources::ResourceNavItem;
 use crate::state::{AppState, ClusterConnectionState, RuntimeMode};
@@ -56,6 +56,7 @@ pub(crate) struct ClusterWorkspace {
     pub(crate) selected_resource: Option<ResourceNavItem>,
     pub(crate) status_panel: ClusterStatusPanel,
     pub(crate) pod_resource_panel: PodResourcePanel,
+    pub(crate) custom_resources_panel: CustomResourcesPanel,
 }
 
 impl Default for ClusterWorkspace {
@@ -65,6 +66,7 @@ impl Default for ClusterWorkspace {
             selected_resource: None,
             status_panel: ClusterStatusPanel::default(),
             pod_resource_panel: PodResourcePanel::default(),
+            custom_resources_panel: CustomResourcesPanel::default(),
         }
     }
 }
@@ -196,6 +198,7 @@ impl eframe::App for MikuApp {
                     selected_cluster_id: self.selected_cluster_id(),
                     cluster_status_panel: None,
                     pod_resource_panel: None,
+                    custom_resources_panel: None,
                     status_load_requests: Vec::new(),
                     resource_load_requests: Vec::new(),
                     resource_watch_requests: Vec::new(),
@@ -253,6 +256,7 @@ impl eframe::App for MikuApp {
                     selected_cluster_id: self.selected_cluster_id(),
                     cluster_status_panel: None,
                     pod_resource_panel: None,
+                    custom_resources_panel: None,
                     status_load_requests: Vec::new(),
                     resource_load_requests: Vec::new(),
                     resource_watch_requests: Vec::new(),
@@ -318,6 +322,7 @@ impl eframe::App for MikuApp {
                 selected_cluster_id: Some(selected_cluster_id),
                 cluster_status_panel: Some(&mut workspace.status_panel),
                 pod_resource_panel: Some(&mut workspace.pod_resource_panel),
+                custom_resources_panel: Some(&mut workspace.custom_resources_panel),
                 status_load_requests: Vec::new(),
                 resource_load_requests: Vec::new(),
                 resource_watch_requests: Vec::new(),
@@ -528,9 +533,31 @@ impl MikuApp {
             _ => {}
         }
         let cluster_id = event.cluster_id().clone();
-        self.ensure_workspace(cluster_id)
-            .pod_resource_panel
-            .apply_event(event);
+        let workspace = self.ensure_workspace(cluster_id);
+        match &event {
+            ResourceUiEvent::ResourcesLoaded { request, .. } => match request.kind {
+                ResourceLoadKind::CustomResourceDefinitions => {
+                    workspace.custom_resources_panel.apply_event(event);
+                }
+                ResourceLoadKind::Namespaces | ResourceLoadKind::Pods { .. } => {
+                    workspace.pod_resource_panel.apply_event(event);
+                }
+            },
+            ResourceUiEvent::ResourceWatchUpdated { request, .. } => match request.kind {
+                ResourceLoadKind::CustomResourceDefinitions => {
+                    workspace.custom_resources_panel.apply_event(event);
+                }
+                ResourceLoadKind::Namespaces | ResourceLoadKind::Pods { .. } => {
+                    workspace.pod_resource_panel.apply_event(event);
+                }
+            },
+            ResourceUiEvent::ResourceActionCompleted { .. }
+            | ResourceUiEvent::PodLogsLoaded { .. }
+            | ResourceUiEvent::PodAttachConnected { .. }
+            | ResourceUiEvent::PodAttachOutput { .. } => {
+                workspace.pod_resource_panel.apply_event(event);
+            }
+        }
     }
 
     fn request_resource_load(&mut self, request: ResourceLoadRequest) {

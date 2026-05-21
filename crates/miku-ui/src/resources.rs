@@ -18,6 +18,9 @@ pub(crate) const RESOURCE_CATEGORIES: &[ResourceNavCategory] = &[
             ResourceNavItem { name: "Nodes" },
             ResourceNavItem { name: "Namespaces" },
             ResourceNavItem { name: "Events" },
+            ResourceNavItem {
+                name: "Custom Resources",
+            },
         ],
     },
     ResourceNavCategory {
@@ -165,6 +168,7 @@ mod tests {
         assert_category_contains("General", "Nodes");
         assert_category_contains("General", "Namespaces");
         assert_category_contains("General", "Events");
+        assert_category_contains("General", "Custom Resources");
         assert_category_contains("Workloads", "Pods");
         assert_category_contains("Config", "Config Maps");
         assert_category_contains("Network", "Endpoint Slices");

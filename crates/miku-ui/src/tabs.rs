@@ -7,7 +7,7 @@ use miku_api::{
 };
 
 use crate::resource_panel::{
-    PodAttachInputRequest, PodAttachRequest, PodLogRequest, PodResourcePanel,
+    CustomResourcesPanel, PodAttachInputRequest, PodAttachRequest, PodLogRequest, PodResourcePanel,
     ResourceActionRequest, ResourceLoadRequest, ResourceWatchRequest,
 };
 use crate::resources::{RESOURCE_CATEGORIES, ResourceNavItem};
@@ -39,6 +39,7 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) selected_cluster_id: Option<miku_core::ClusterId>,
     pub(crate) cluster_status_panel: Option<&'a mut ClusterStatusPanel>,
     pub(crate) pod_resource_panel: Option<&'a mut PodResourcePanel>,
+    pub(crate) custom_resources_panel: Option<&'a mut CustomResourcesPanel>,
     pub(crate) status_load_requests: Vec<ClusterStatusLoadRequest>,
     pub(crate) resource_load_requests: Vec<ResourceLoadRequest>,
     pub(crate) resource_watch_requests: Vec<ResourceWatchRequest>,
@@ -151,6 +152,15 @@ impl TabViewer for AppTabViewer<'_> {
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Pod resource panel is unavailable.");
+                        });
+                    }
+                } else if resource.name == "Custom Resources" {
+                    if let Some(panel) = self.custom_resources_panel.as_deref_mut() {
+                        let requests = panel.show(ui, self.selected_cluster_id.as_ref());
+                        self.resource_load_requests.extend(requests.loads);
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("Custom resources panel is unavailable.");
                         });
                     }
                 } else {

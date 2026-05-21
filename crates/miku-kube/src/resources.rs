@@ -32,6 +32,7 @@ fn kind_for_plural(plural: &str) -> String {
         "namespaces" => "Namespace".to_owned(),
         "configmaps" => "ConfigMap".to_owned(),
         "secrets" => "Secret".to_owned(),
+        "customresourcedefinitions" => "CustomResourceDefinition".to_owned(),
         value => value
             .trim_end_matches('s')
             .split(['-', '_'])
@@ -256,6 +257,20 @@ mod tests {
 
         assert_eq!(api_resource.kind, "Deployment");
         assert_eq!(api_resource.plural, "deployments");
+    }
+
+    #[test]
+    fn api_resource_uses_known_kind_for_custom_resource_definitions() {
+        let resource = miku_core::ResourceRef::grouped(
+            "apiextensions.k8s.io",
+            "v1",
+            "customresourcedefinitions",
+        );
+
+        let api_resource = api_resource(&resource);
+
+        assert_eq!(api_resource.kind, "CustomResourceDefinition");
+        assert_eq!(api_resource.plural, "customresourcedefinitions");
     }
 
     #[test]
