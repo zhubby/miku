@@ -95,6 +95,10 @@ impl DeploymentResourcePanel {
                 }
                 ResourceLoadKind::Nodes
                 | ResourceLoadKind::Events { .. }
+                | ResourceLoadKind::DaemonSets { .. }
+                | ResourceLoadKind::StatefulSets { .. }
+                | ResourceLoadKind::CronJobs { .. }
+                | ResourceLoadKind::Jobs { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
@@ -127,6 +131,10 @@ impl DeploymentResourcePanel {
                 }
                 ResourceLoadKind::Nodes
                 | ResourceLoadKind::Events { .. }
+                | ResourceLoadKind::DaemonSets { .. }
+                | ResourceLoadKind::StatefulSets { .. }
+                | ResourceLoadKind::CronJobs { .. }
+                | ResourceLoadKind::Jobs { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },

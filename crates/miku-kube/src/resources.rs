@@ -28,7 +28,11 @@ fn kind_for_plural(plural: &str) -> String {
     match plural {
         "pods" => "Pod".to_owned(),
         "services" => "Service".to_owned(),
+        "cronjobs" => "CronJob".to_owned(),
+        "daemonsets" => "DaemonSet".to_owned(),
         "deployments" => "Deployment".to_owned(),
+        "jobs" => "Job".to_owned(),
+        "statefulsets" => "StatefulSet".to_owned(),
         "namespaces" => "Namespace".to_owned(),
         "configmaps" => "ConfigMap".to_owned(),
         "secrets" => "Secret".to_owned(),
@@ -257,6 +261,46 @@ mod tests {
 
         assert_eq!(api_resource.kind, "Deployment");
         assert_eq!(api_resource.plural, "deployments");
+    }
+
+    #[test]
+    fn api_resource_uses_known_kind_for_daemon_sets() {
+        let resource = miku_core::ResourceRef::grouped("apps", "v1", "daemonsets");
+
+        let api_resource = api_resource(&resource);
+
+        assert_eq!(api_resource.kind, "DaemonSet");
+        assert_eq!(api_resource.plural, "daemonsets");
+    }
+
+    #[test]
+    fn api_resource_uses_known_kind_for_cron_jobs() {
+        let resource = miku_core::ResourceRef::grouped("batch", "v1", "cronjobs");
+
+        let api_resource = api_resource(&resource);
+
+        assert_eq!(api_resource.kind, "CronJob");
+        assert_eq!(api_resource.plural, "cronjobs");
+    }
+
+    #[test]
+    fn api_resource_uses_known_kind_for_jobs() {
+        let resource = miku_core::ResourceRef::grouped("batch", "v1", "jobs");
+
+        let api_resource = api_resource(&resource);
+
+        assert_eq!(api_resource.kind, "Job");
+        assert_eq!(api_resource.plural, "jobs");
+    }
+
+    #[test]
+    fn api_resource_uses_known_kind_for_stateful_sets() {
+        let resource = miku_core::ResourceRef::grouped("apps", "v1", "statefulsets");
+
+        let api_resource = api_resource(&resource);
+
+        assert_eq!(api_resource.kind, "StatefulSet");
+        assert_eq!(api_resource.plural, "statefulsets");
     }
 
     #[test]

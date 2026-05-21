@@ -73,6 +73,10 @@ impl NodeResourcePanel {
                 ResourceLoadKind::Namespaces
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::Deployments { .. }
+                | ResourceLoadKind::DaemonSets { .. }
+                | ResourceLoadKind::StatefulSets { .. }
+                | ResourceLoadKind::CronJobs { .. }
+                | ResourceLoadKind::Jobs { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
@@ -93,6 +97,10 @@ impl NodeResourcePanel {
                 ResourceLoadKind::Namespaces
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::Deployments { .. }
+                | ResourceLoadKind::DaemonSets { .. }
+                | ResourceLoadKind::StatefulSets { .. }
+                | ResourceLoadKind::CronJobs { .. }
+                | ResourceLoadKind::Jobs { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },

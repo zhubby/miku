@@ -122,8 +122,12 @@ impl PodResourcePanel {
                     }
                 }
                 ResourceLoadKind::Nodes
+                | ResourceLoadKind::CronJobs { .. }
+                | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::Deployments { .. }
+                | ResourceLoadKind::Jobs { .. }
+                | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
             ResourceUiEvent::ResourceActionCompleted { request, result } => {
@@ -253,8 +257,12 @@ impl PodResourcePanel {
                     }
                 }
                 ResourceLoadKind::Nodes
+                | ResourceLoadKind::CronJobs { .. }
+                | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::Deployments { .. }
+                | ResourceLoadKind::Jobs { .. }
+                | ResourceLoadKind::StatefulSets { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
         }

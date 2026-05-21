@@ -6,19 +6,27 @@ use miku_api::{
 use miku_core::{ClusterId, ResourceRef};
 
 mod components;
+mod cron_job;
 mod custom_resources;
+mod daemon_set;
 mod deployment;
 mod event;
+mod job;
 mod namespace;
 mod node;
 mod pod;
+mod stateful_set;
 
+pub(crate) use cron_job::CronJobResourcePanel;
 pub(crate) use custom_resources::CustomResourcesPanel;
+pub(crate) use daemon_set::DaemonSetResourcePanel;
 pub(crate) use deployment::DeploymentResourcePanel;
 pub(crate) use event::EventResourcePanel;
+pub(crate) use job::JobResourcePanel;
 pub(crate) use namespace::NamespaceResourcePanel;
 pub(crate) use node::NodeResourcePanel;
 pub(crate) use pod::PodResourcePanel;
+pub(crate) use stateful_set::StatefulSetResourcePanel;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResourceLoadRequest {
@@ -89,7 +97,11 @@ pub(crate) enum ResourceLoadKind {
     Namespaces,
     Nodes,
     Events { namespace: Option<String> },
+    CronJobs { namespace: Option<String> },
+    DaemonSets { namespace: Option<String> },
     Deployments { namespace: Option<String> },
+    Jobs { namespace: Option<String> },
+    StatefulSets { namespace: Option<String> },
     Pods { namespace: Option<String> },
     CustomResourceDefinitions,
 }
@@ -157,9 +169,15 @@ impl ResourceWatchRequest {
             ResourceLoadKind::Namespaces => ResourceLoadKind::Namespaces,
             ResourceLoadKind::Nodes => ResourceLoadKind::Nodes,
             ResourceLoadKind::Events { .. } => ResourceLoadKind::Events { namespace: None },
+            ResourceLoadKind::CronJobs { .. } => ResourceLoadKind::CronJobs { namespace: None },
+            ResourceLoadKind::DaemonSets { .. } => ResourceLoadKind::DaemonSets { namespace: None },
             ResourceLoadKind::Deployments { .. } => {
                 ResourceLoadKind::Deployments { namespace: None }
             }
+            ResourceLoadKind::StatefulSets { .. } => {
+                ResourceLoadKind::StatefulSets { namespace: None }
+            }
+            ResourceLoadKind::Jobs { .. } => ResourceLoadKind::Jobs { namespace: None },
             ResourceLoadKind::Pods { .. } => ResourceLoadKind::Pods { namespace: None },
             ResourceLoadKind::CustomResourceDefinitions => {
                 ResourceLoadKind::CustomResourceDefinitions
@@ -333,10 +351,50 @@ fn resource_query_for_kind(
             }
             query
         }
+        ResourceLoadKind::CronJobs { namespace } => {
+            let mut query = miku_api::ResourceQuery::new(
+                cluster_id,
+                ResourceRef::grouped("batch", "v1", "cronjobs"),
+            );
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
+        ResourceLoadKind::DaemonSets { namespace } => {
+            let mut query = miku_api::ResourceQuery::new(
+                cluster_id,
+                ResourceRef::grouped("apps", "v1", "daemonsets"),
+            );
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
         ResourceLoadKind::Deployments { namespace } => {
             let mut query = miku_api::ResourceQuery::new(
                 cluster_id,
                 ResourceRef::grouped("apps", "v1", "deployments"),
+            );
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
+        ResourceLoadKind::StatefulSets { namespace } => {
+            let mut query = miku_api::ResourceQuery::new(
+                cluster_id,
+                ResourceRef::grouped("apps", "v1", "statefulsets"),
+            );
+            if let Some(namespace) = namespace {
+                query = query.namespace(namespace.clone());
+            }
+            query
+        }
+        ResourceLoadKind::Jobs { namespace } => {
+            let mut query = miku_api::ResourceQuery::new(
+                cluster_id,
+                ResourceRef::grouped("batch", "v1", "jobs"),
             );
             if let Some(namespace) = namespace {
                 query = query.namespace(namespace.clone());
@@ -439,6 +497,120 @@ mod tests {
         assert_eq!(
             query.resource,
             ResourceRef::grouped("apps", "v1", "deployments")
+        );
+        assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn cron_jobs_query_uses_batch_api_without_namespace_by_default() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::CronJobs { namespace: None },
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("batch", "v1", "cronjobs")
+        );
+        assert_eq!(query.namespace, None);
+    }
+
+    #[test]
+    fn cron_jobs_query_uses_selected_namespace() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::CronJobs {
+                namespace: Some("production".to_owned()),
+            },
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("batch", "v1", "cronjobs")
+        );
+        assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn jobs_query_uses_batch_api_without_namespace_by_default() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::Jobs { namespace: None },
+        );
+
+        assert_eq!(query.resource, ResourceRef::grouped("batch", "v1", "jobs"));
+        assert_eq!(query.namespace, None);
+    }
+
+    #[test]
+    fn jobs_query_uses_selected_namespace() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::Jobs {
+                namespace: Some("production".to_owned()),
+            },
+        );
+
+        assert_eq!(query.resource, ResourceRef::grouped("batch", "v1", "jobs"));
+        assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn daemon_sets_query_uses_apps_api_without_namespace_by_default() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::DaemonSets { namespace: None },
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("apps", "v1", "daemonsets")
+        );
+        assert_eq!(query.namespace, None);
+    }
+
+    #[test]
+    fn daemon_sets_query_uses_selected_namespace() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::DaemonSets {
+                namespace: Some("production".to_owned()),
+            },
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("apps", "v1", "daemonsets")
+        );
+        assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn stateful_sets_query_uses_apps_api_without_namespace_by_default() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::StatefulSets { namespace: None },
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("apps", "v1", "statefulsets")
+        );
+        assert_eq!(query.namespace, None);
+    }
+
+    #[test]
+    fn stateful_sets_query_uses_selected_namespace() {
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::StatefulSets {
+                namespace: Some("production".to_owned()),
+            },
+        );
+
+        assert_eq!(
+            query.resource,
+            ResourceRef::grouped("apps", "v1", "statefulsets")
         );
         assert_eq!(query.namespace.as_deref(), Some("production"));
     }

@@ -13,24 +13,24 @@ use super::{
 use crate::time::human_age_from_rfc3339;
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct EventResourcePanel {
+pub(crate) struct CronJobResourcePanel {
     namespace_filter: Option<String>,
     search_text: String,
     namespaces: Vec<String>,
     namespace_status: LoadStatus,
     row_status: LoadStatus,
-    rows: Vec<EventRow>,
+    rows: Vec<CronJobRow>,
     next_request_id: u64,
     namespace_request_id: Option<u64>,
     row_request_id: Option<u64>,
     namespace_watch_request_id: Option<u64>,
     row_watch_request_id: Option<u64>,
     last_cluster_id: Option<ClusterId>,
-    describe_dialog: Option<EventDescribeDialog>,
-    view_dialog: Option<EventViewDialog>,
+    describe_dialog: Option<CronJobDescribeDialog>,
+    view_dialog: Option<CronJobViewDialog>,
 }
 
-impl EventResourcePanel {
+impl CronJobResourcePanel {
     pub(crate) fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -39,7 +39,7 @@ impl EventResourcePanel {
         let mut requests = ResourcePanelRequests::default();
         let Some(cluster_id) = cluster_id else {
             ui.centered_and_justified(|ui| {
-                ui.label("Select a cluster to load events.");
+                ui.label("Select a cluster to load cronjobs.");
             });
             return requests;
         };
@@ -53,7 +53,7 @@ impl EventResourcePanel {
         if matches!(self.row_status, LoadStatus::Idle) {
             requests
                 .watches
-                .push(self.request_event_watch(cluster_id.clone()));
+                .push(self.request_cron_job_watch(cluster_id.clone()));
         }
 
         self.show_toolbar(ui, cluster_id, &mut requests);
@@ -80,25 +80,25 @@ impl EventResourcePanel {
                         Err(error) => self.namespace_status = LoadStatus::Error(error),
                     }
                 }
-                ResourceLoadKind::Events { .. } => {
+                ResourceLoadKind::CronJobs { .. } => {
                     if self.row_request_id != Some(request.request_id) {
                         return;
                     }
                     self.row_request_id = None;
                     match result {
                         Ok(list) => {
-                            self.rows = event_rows_from_list(&list.items);
+                            self.rows = cron_job_rows_from_list(&list.items);
                             self.row_status = LoadStatus::Loaded;
                         }
                         Err(error) => self.row_status = LoadStatus::Error(error),
                     }
                 }
                 ResourceLoadKind::Nodes
+                | ResourceLoadKind::Jobs { .. }
                 | ResourceLoadKind::Deployments { .. }
+                | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::StatefulSets { .. }
-                | ResourceLoadKind::CronJobs { .. }
-                | ResourceLoadKind::Jobs { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
@@ -116,13 +116,13 @@ impl EventResourcePanel {
                         Err(error) => self.namespace_status = LoadStatus::Error(error),
                     }
                 }
-                ResourceLoadKind::Events { .. } => {
+                ResourceLoadKind::CronJobs { .. } => {
                     if self.row_watch_request_id != Some(request.request_id) {
                         return;
                     }
                     match result {
                         Ok(miku_api::ResourceEvent::Snapshot(list)) => {
-                            self.rows = event_rows_from_list(&list.items);
+                            self.rows = cron_job_rows_from_list(&list.items);
                             self.row_status = LoadStatus::Loaded;
                         }
                         Ok(_) => {}
@@ -130,11 +130,11 @@ impl EventResourcePanel {
                     }
                 }
                 ResourceLoadKind::Nodes
+                | ResourceLoadKind::Jobs { .. }
                 | ResourceLoadKind::Deployments { .. }
+                | ResourceLoadKind::Events { .. }
                 | ResourceLoadKind::DaemonSets { .. }
                 | ResourceLoadKind::StatefulSets { .. }
-                | ResourceLoadKind::CronJobs { .. }
-                | ResourceLoadKind::Jobs { .. }
                 | ResourceLoadKind::Pods { .. }
                 | ResourceLoadKind::CustomResourceDefinitions => {}
             },
@@ -179,7 +179,7 @@ impl EventResourcePanel {
                 .to_owned();
 
             let mut namespace_changed = false;
-            egui::ComboBox::from_id_salt("event_resource_namespace_filter")
+            egui::ComboBox::from_id_salt("cron_job_resource_namespace_filter")
                 .selected_text(selected_label)
                 .width(220.0)
                 .show_ui(ui, |ui| {
@@ -197,13 +197,11 @@ impl EventResourcePanel {
                     }
                 });
 
-            let search_changed = ui
-                .add(
-                    egui::TextEdit::singleline(&mut self.search_text)
-                        .hint_text("Search Events...")
-                        .desired_width(280.0),
-                )
-                .changed();
+            ui.add(
+                egui::TextEdit::singleline(&mut self.search_text)
+                    .hint_text("Search CronJobs...")
+                    .desired_width(280.0),
+            );
 
             if ui
                 .button(egui_phosphor::regular::ARROWS_CLOCKWISE)
@@ -215,7 +213,7 @@ impl EventResourcePanel {
                     .push(self.request_namespace_watch(cluster_id.clone()));
                 requests
                     .watches
-                    .push(self.request_event_watch(cluster_id.clone()));
+                    .push(self.request_cron_job_watch(cluster_id.clone()));
             }
 
             ui.separator();
@@ -232,11 +230,7 @@ impl EventResourcePanel {
             if namespace_changed {
                 requests
                     .watches
-                    .push(self.request_event_watch(cluster_id.clone()));
-            }
-
-            if search_changed {
-                ui.ctx().request_repaint();
+                    .push(self.request_cron_job_watch(cluster_id.clone()));
             }
         });
     }
@@ -245,7 +239,7 @@ impl EventResourcePanel {
         match &self.row_status {
             LoadStatus::Idle | LoadStatus::Loading if self.rows.is_empty() => {
                 ui.centered_and_justified(|ui| {
-                    ui.label("Loading events...");
+                    ui.label("Loading cronjobs...");
                 });
             }
             LoadStatus::Error(error) => {
@@ -257,40 +251,40 @@ impl EventResourcePanel {
                 let row_indices = self.filtered_row_indices();
                 if row_indices.is_empty() {
                     ui.centered_and_justified(|ui| {
-                        ui.label("No events match the current filters.");
+                        ui.label("No cronjobs match the current filters.");
                     });
                     return;
                 }
 
-                let action = show_event_table(ui, &self.rows, row_indices);
+                let action = show_cron_job_table(ui, &self.rows, row_indices);
                 self.apply_table_action(action);
             }
         }
     }
 
-    fn apply_table_action(&mut self, action: Option<EventTableAction>) {
+    fn apply_table_action(&mut self, action: Option<CronJobTableAction>) {
         match action {
-            Some(EventTableAction::Describe { key }) => {
+            Some(CronJobTableAction::Describe { key }) => {
                 let Some((name, describe)) = self
                     .row_by_key(&key)
-                    .map(|row| (row.name.clone(), event_describe_from_row(row)))
+                    .map(|row| (row.name.clone(), cron_job_describe_from_row(row)))
                 else {
                     return;
                 };
-                self.describe_dialog = Some(EventDescribeDialog {
+                self.describe_dialog = Some(CronJobDescribeDialog {
                     key,
                     name,
                     describe,
                 });
             }
-            Some(EventTableAction::View { key }) => {
+            Some(CronJobTableAction::View { key }) => {
                 let Some((name, yaml)) = self
                     .row_by_key(&key)
                     .map(|row| (row.name.clone(), full_manifest_yaml(&row.raw)))
                 else {
                     return;
                 };
-                self.view_dialog = Some(EventViewDialog { key, name, yaml });
+                self.view_dialog = Some(CronJobViewDialog { key, name, yaml });
             }
             None => {}
         }
@@ -303,23 +297,26 @@ impl EventResourcePanel {
 
         let mut open = true;
         egui::Window::new(format!("Describe {}", dialog.name))
-            .id(egui::Id::new(("event-describe-dialog", &dialog.key)))
+            .id(egui::Id::new(("cron_job-describe-dialog", &dialog.key)))
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .open(&mut open)
             .collapsible(false)
-            .fixed_size([EVENT_DESCRIBE_DIALOG_WIDTH, EVENT_DESCRIBE_DIALOG_HEIGHT])
+            .fixed_size([
+                CRON_JOB_DESCRIBE_DIALOG_WIDTH,
+                CRON_JOB_DESCRIBE_DIALOG_HEIGHT,
+            ])
             .show(ctx, |ui| {
-                ui.set_width(EVENT_DESCRIBE_DIALOG_WIDTH);
-                ui.set_height(EVENT_DESCRIBE_CONTENT_HEIGHT);
+                ui.set_width(CRON_JOB_DESCRIBE_DIALOG_WIDTH);
+                ui.set_height(CRON_JOB_DESCRIBE_CONTENT_HEIGHT);
                 egui::ScrollArea::both()
-                    .id_salt(("event-describe-content", &dialog.key))
-                    .max_width(EVENT_DESCRIBE_DIALOG_WIDTH)
-                    .max_height(EVENT_DESCRIBE_CONTENT_HEIGHT)
+                    .id_salt(("cron_job-describe-content", &dialog.key))
+                    .max_width(CRON_JOB_DESCRIBE_DIALOG_WIDTH)
+                    .max_height(CRON_JOB_DESCRIBE_CONTENT_HEIGHT)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.set_min_width(EVENT_DESCRIBE_CONTENT_WIDTH);
+                        ui.set_min_width(CRON_JOB_DESCRIBE_CONTENT_WIDTH);
                         ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-                        show_event_describe(ui, &dialog.describe);
+                        show_cron_job_describe(ui, &dialog.describe);
                     });
             });
 
@@ -335,7 +332,7 @@ impl EventResourcePanel {
 
         let mut open = true;
         let response = ResourceYamlViewDialog {
-            id: egui::Id::new(("event-view-dialog", &dialog.key)),
+            id: egui::Id::new(("cron_job-view-dialog", &dialog.key)),
             title: format!("View {}", dialog.name),
             yaml: &dialog.yaml,
             open: &mut open,
@@ -348,11 +345,11 @@ impl EventResourcePanel {
     }
 
     #[cfg(test)]
-    fn request_events(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
+    fn request_cronjobs(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
         let request = ResourceLoadRequest {
             request_id: self.allocate_request_id(),
             cluster_id,
-            kind: ResourceLoadKind::Events {
+            kind: ResourceLoadKind::CronJobs {
                 namespace: self.namespace_filter.clone(),
             },
         };
@@ -372,11 +369,11 @@ impl EventResourcePanel {
         request
     }
 
-    fn request_event_watch(&mut self, cluster_id: ClusterId) -> ResourceWatchRequest {
+    fn request_cron_job_watch(&mut self, cluster_id: ClusterId) -> ResourceWatchRequest {
         let request = ResourceWatchRequest {
             request_id: self.allocate_request_id(),
             cluster_id,
-            kind: ResourceLoadKind::Events {
+            kind: ResourceLoadKind::CronJobs {
                 namespace: self.namespace_filter.clone(),
             },
         };
@@ -405,42 +402,42 @@ impl EventResourcePanel {
             .collect()
     }
 
-    fn row_by_key(&self, key: &str) -> Option<&EventRow> {
+    fn row_by_key(&self, key: &str) -> Option<&CronJobRow> {
         self.rows.iter().find(|row| row.key == key)
     }
 }
 
-fn show_event_table(
+fn show_cron_job_table(
     ui: &mut egui::Ui,
-    rows: &[EventRow],
+    rows: &[CronJobRow],
     row_indices: Vec<usize>,
-) -> Option<EventTableAction> {
+) -> Option<CronJobTableAction> {
     let row_height = ui.spacing().interact_size.y;
-    let table_width: f32 = EVENT_COLUMN_WIDTHS.iter().sum::<f32>()
-        + ui.spacing().item_spacing.x * EVENT_COLUMN_WIDTHS.len().saturating_sub(1) as f32;
+    let table_width: f32 = CRON_JOB_COLUMN_WIDTHS.iter().sum::<f32>()
+        + ui.spacing().item_spacing.x * CRON_JOB_COLUMN_WIDTHS.len().saturating_sub(1) as f32;
     let mut action = None;
 
     egui::ScrollArea::horizontal()
-        .id_salt("event_resource_table_horizontal")
+        .id_salt("cron_job_resource_table_horizontal")
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.set_min_width(table_width);
 
             let mut table = TableBuilder::new(ui)
-                .id_salt("event_resource_table")
+                .id_salt("cron_job_resource_table")
                 .striped(true)
                 .resizable(false)
                 .sense(egui::Sense::click())
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .min_scrolled_height(0.0);
 
-            for width in EVENT_COLUMN_WIDTHS {
+            for width in CRON_JOB_COLUMN_WIDTHS {
                 table = table.column(Column::exact(width));
             }
 
             table
                 .header(row_height, |mut header| {
-                    for label in EVENT_COLUMNS {
+                    for label in CRON_JOB_COLUMNS {
                         header.col(|ui| {
                             ui.strong(label);
                         });
@@ -457,31 +454,28 @@ fn show_event_table(
                         };
 
                         table_row.col(|ui| {
+                            ui.label(&row.name);
+                        });
+                        table_row.col(|ui| {
                             ui.label(&row.namespace);
                         });
                         table_row.col(|ui| {
-                            ui.colored_label(
-                                event_type_color(ui, &row.event_type),
-                                &row.event_type,
-                            );
+                            ui.label(&row.schedule);
                         });
                         table_row.col(|ui| {
-                            ui.label(&row.reason);
+                            ui.label(&row.suspend);
                         });
                         table_row.col(|ui| {
-                            ui.label(&row.involved_object);
+                            ui.label(&row.active);
                         });
                         table_row.col(|ui| {
-                            ui.label(&row.message);
+                            ui.label(&row.last_schedule);
                         });
                         table_row.col(|ui| {
-                            ui.label(&row.count);
+                            ui.label(&row.last_success);
                         });
                         table_row.col(|ui| {
-                            ui.label(&row.source);
-                        });
-                        table_row.col(|ui| {
-                            ui.label(&row.last_seen);
+                            ui.label(&row.concurrency);
                         });
                         table_row.col(|ui| {
                             ui.label(&row.age);
@@ -492,7 +486,7 @@ fn show_event_table(
                                 .button(format!("{} Describe", egui_phosphor::regular::INFO))
                                 .clicked()
                             {
-                                action = Some(EventTableAction::Describe {
+                                action = Some(CronJobTableAction::Describe {
                                     key: row.key.clone(),
                                 });
                                 ui.close();
@@ -501,7 +495,7 @@ fn show_event_table(
                                 .button(format!("{} View", egui_phosphor::regular::EYE))
                                 .clicked()
                             {
-                                action = Some(EventTableAction::View {
+                                action = Some(CronJobTableAction::View {
                                     key: row.key.clone(),
                                 });
                                 ui.close();
@@ -514,151 +508,160 @@ fn show_event_table(
     action
 }
 
-const EVENT_COLUMNS: [&str; 9] = [
+const CRON_JOB_COLUMNS: [&str; 9] = [
+    "Name",
     "Namespace",
-    "Type",
-    "Reason",
-    "Object",
-    "Message",
-    "Count",
-    "Source",
-    "Last Seen",
+    "Schedule",
+    "Suspend",
+    "Active",
+    "Last Schedule",
+    "Last Success",
+    "Concurrency",
     "Age",
 ];
-const EVENT_COLUMN_WIDTHS: [f32; 9] = [160.0, 100.0, 180.0, 220.0, 420.0, 80.0, 200.0, 110.0, 90.0];
-const EVENT_DESCRIBE_DIALOG_WIDTH: f32 = 860.0;
-const EVENT_DESCRIBE_DIALOG_HEIGHT: f32 = 580.0;
-const EVENT_DESCRIBE_CONTENT_HEIGHT: f32 = 520.0;
-const EVENT_DESCRIBE_CONTENT_WIDTH: f32 = 1160.0;
-const EVENT_DESCRIBE_SECTION_WIDTH: f32 = 1128.0;
-const EVENT_DESCRIBE_FIELD_LABEL_WIDTH: f32 = 140.0;
-const EVENT_DESCRIBE_FIELD_VALUE_WIDTH: f32 = 370.0;
-const EVENT_DESCRIBE_LINE_WIDTH: f32 = 1080.0;
-
-fn event_type_color(ui: &egui::Ui, event_type: &str) -> egui::Color32 {
-    match event_type {
-        "Normal" => egui::Color32::from_rgb(46, 160, 67),
-        "Warning" => egui::Color32::from_rgb(191, 135, 0),
-        _ => ui.visuals().text_color(),
-    }
-}
+const CRON_JOB_COLUMN_WIDTHS: [f32; 9] =
+    [240.0, 160.0, 180.0, 90.0, 90.0, 180.0, 180.0, 120.0, 90.0];
+const CRON_JOB_DESCRIBE_DIALOG_WIDTH: f32 = 860.0;
+const CRON_JOB_DESCRIBE_DIALOG_HEIGHT: f32 = 580.0;
+const CRON_JOB_DESCRIBE_CONTENT_HEIGHT: f32 = 520.0;
+const CRON_JOB_DESCRIBE_CONTENT_WIDTH: f32 = 1160.0;
+const CRON_JOB_DESCRIBE_SECTION_WIDTH: f32 = 1128.0;
+const CRON_JOB_DESCRIBE_FIELD_LABEL_WIDTH: f32 = 140.0;
+const CRON_JOB_DESCRIBE_FIELD_VALUE_WIDTH: f32 = 370.0;
+const CRON_JOB_DESCRIBE_LINE_WIDTH: f32 = 1080.0;
 
 #[cfg(test)]
-fn filter_event_rows<'a>(rows: &'a [EventRow], search_text: &str) -> Vec<&'a EventRow> {
+fn filter_cron_job_rows<'a>(rows: &'a [CronJobRow], search_text: &str) -> Vec<&'a CronJobRow> {
     rows.iter()
         .filter(|row| row_matches_search(row, search_text))
         .collect()
 }
 
-fn row_matches_search(row: &EventRow, search_text: &str) -> bool {
+fn row_matches_search(row: &CronJobRow, search_text: &str) -> bool {
     let needle = search_text.trim().to_lowercase();
     needle.is_empty()
+        || row.name.to_lowercase().contains(&needle)
         || row.namespace.to_lowercase().contains(&needle)
-        || row.event_type.to_lowercase().contains(&needle)
-        || row.reason.to_lowercase().contains(&needle)
-        || row.involved_object.to_lowercase().contains(&needle)
-        || row.message.to_lowercase().contains(&needle)
-        || row.source.to_lowercase().contains(&needle)
+        || row.schedule.to_lowercase().contains(&needle)
+        || row.suspend.to_lowercase().contains(&needle)
+        || row.concurrency.to_lowercase().contains(&needle)
+        || row.status_summary.to_lowercase().contains(&needle)
 }
 
-fn event_rows_from_list(items: &[ResourceSummary]) -> Vec<EventRow> {
-    let mut rows = items.iter().map(EventRow::from_summary).collect::<Vec<_>>();
+fn cron_job_rows_from_list(items: &[ResourceSummary]) -> Vec<CronJobRow> {
+    let mut rows = items
+        .iter()
+        .map(CronJobRow::from_summary)
+        .collect::<Vec<_>>();
     rows.sort_by(|left, right| {
-        right
-            .sort_timestamp
-            .cmp(&left.sort_timestamp)
-            .then(left.namespace.cmp(&right.namespace))
+        left.namespace
+            .cmp(&right.namespace)
             .then(left.name.cmp(&right.name))
     });
     rows
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct EventRow {
+struct CronJobRow {
     key: String,
     name: String,
     namespace: String,
-    event_type: String,
-    reason: String,
-    involved_object: String,
-    message: String,
-    count: String,
-    source: String,
-    first_seen: String,
-    last_seen: String,
+    schedule: String,
+    suspend: String,
+    active: String,
+    last_schedule: String,
+    last_success: String,
+    concurrency: String,
+    status_summary: String,
     age: String,
-    sort_timestamp: String,
     raw: serde_json::Value,
 }
 
-impl EventRow {
+impl CronJobRow {
     fn from_summary(summary: &ResourceSummary) -> Self {
         let raw = &summary.raw;
         let name = value_str(raw, &["metadata", "name"]).unwrap_or(&summary.name);
         let namespace = value_str(raw, &["metadata", "namespace"])
             .or(summary.namespace.as_deref())
             .unwrap_or("N/A");
-        let event_type = value_str(raw, &["type"]).unwrap_or("N/A");
-        let reason = value_str(raw, &["reason"]).unwrap_or("N/A");
-        let message = value_str(raw, &["message"]).unwrap_or("N/A");
-        let involved_object = involved_object_name(raw);
-        let source = event_source(raw);
-        let first_timestamp = first_event_timestamp(raw);
-        let last_timestamp = last_event_timestamp(raw);
-        let created_timestamp = value_str(raw, &["metadata", "creationTimestamp"]);
-        let sort_timestamp = last_timestamp
-            .or(created_timestamp)
-            .unwrap_or("")
-            .to_owned();
+        let schedule = value_str(raw, &["spec", "schedule"]).unwrap_or("N/A");
+        let suspend = value_bool(raw, &["spec", "suspend"])
+            .map_or_else(|| "N/A".to_owned(), |value| value.to_string());
+        let active = raw
+            .pointer("/status/active")
+            .and_then(serde_json::Value::as_array)
+            .map_or(0, Vec::len);
+        let last_schedule = value_str(raw, &["status", "lastScheduleTime"]).unwrap_or("N/A");
+        let last_success = value_str(raw, &["status", "lastSuccessfulTime"]).unwrap_or("N/A");
+        let concurrency = value_str(raw, &["spec", "concurrencyPolicy"]).unwrap_or("N/A");
 
         Self {
-            key: event_key(namespace, name),
+            key: cron_job_key(namespace, name),
             name: name.to_owned(),
             namespace: namespace.to_owned(),
-            event_type: event_type.to_owned(),
-            reason: reason.to_owned(),
-            involved_object,
-            message: message.to_owned(),
-            count: event_count(raw),
-            source,
-            first_seen: first_timestamp.map(format_timestamp).unwrap_or_else(na),
-            last_seen: last_timestamp.map(format_timestamp).unwrap_or_else(na),
-            age: created_timestamp.map(format_timestamp).unwrap_or_else(na),
-            sort_timestamp,
+            schedule: schedule.to_owned(),
+            suspend,
+            active: active.to_string(),
+            last_schedule: last_schedule.to_owned(),
+            last_success: last_success.to_owned(),
+            concurrency: concurrency.to_owned(),
+            status_summary: cron_job_status_summary(schedule, active, concurrency),
+            age: value_str(raw, &["metadata", "creationTimestamp"])
+                .map(|timestamp| {
+                    human_age_from_rfc3339(timestamp).unwrap_or_else(|| timestamp.to_owned())
+                })
+                .unwrap_or_else(|| "N/A".to_owned()),
             raw: summary.raw.clone(),
         }
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum EventTableAction {
+enum CronJobTableAction {
     Describe { key: String },
     View { key: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct EventDescribeDialog {
+struct CronJobDescribeDialog {
     key: String,
     name: String,
-    describe: EventDescribe,
+    describe: CronJobDescribe,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct EventViewDialog {
+struct CronJobViewDialog {
     key: String,
     name: String,
     yaml: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct EventDescribe {
+struct CronJobDescribe {
     summary: Vec<DescribeField>,
-    involved: Vec<DescribeField>,
-    timing: Vec<DescribeField>,
+    replicas: Vec<DescribeField>,
+    rollout: Vec<DescribeField>,
+    selector: Vec<ResourceMapEntry>,
+    template_labels: Vec<ResourceMapEntry>,
+    containers: Vec<ContainerDescribe>,
+    conditions: Vec<CronJobConditionDescribe>,
     labels: Vec<ResourceMapEntry>,
     annotations: Vec<ResourceMapEntry>,
-    message: String,
     raw_yaml: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ContainerDescribe {
+    name: String,
+    image: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CronJobConditionDescribe {
+    condition_type: String,
+    status: String,
+    reason: String,
+    message: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -667,30 +670,100 @@ struct DescribeField {
     value: String,
 }
 
-fn show_event_describe(ui: &mut egui::Ui, describe: &EventDescribe) {
-    describe_group(ui, egui_phosphor::regular::BELL, "Event", |ui| {
+fn show_cron_job_describe(ui: &mut egui::Ui, describe: &CronJobDescribe) {
+    describe_group(ui, egui_phosphor::regular::STACK, "CronJob", |ui| {
         describe_fields(ui, &describe.summary);
     });
 
     ui.add_space(10.0);
-    describe_group(ui, egui_phosphor::regular::CUBE, "Involved object", |ui| {
-        describe_fields(ui, &describe.involved);
+    describe_group(ui, egui_phosphor::regular::GAUGE, "Schedule", |ui| {
+        describe_fields(ui, &describe.replicas);
     });
 
     ui.add_space(10.0);
-    describe_group(ui, egui_phosphor::regular::CLOCK, "Timing", |ui| {
-        describe_fields(ui, &describe.timing);
+    describe_group(
+        ui,
+        egui_phosphor::regular::ARROWS_CLOCKWISE,
+        "Status",
+        |ui| {
+            describe_fields(ui, &describe.rollout);
+        },
+    );
+
+    ui.add_space(10.0);
+    describe_group(ui, egui_phosphor::regular::FUNNEL, "Selector", |ui| {
+        ResourceMapView {
+            id_salt: "cron_job-describe-selector",
+            icon: egui_phosphor::regular::FUNNEL,
+            title: "Match labels",
+            entries: &describe.selector,
+            empty_label: "No selector labels.",
+        }
+        .show(ui);
     });
 
     ui.add_space(10.0);
-    describe_group(ui, egui_phosphor::regular::CHAT_TEXT, "Message", |ui| {
-        non_wrapping_value(ui, &describe.message, EVENT_DESCRIBE_LINE_WIDTH);
+    describe_group(ui, egui_phosphor::regular::CUBE, "Pod template", |ui| {
+        ResourceMapView {
+            id_salt: "cron_job-describe-template-labels",
+            icon: egui_phosphor::regular::TAG,
+            title: "Labels",
+            entries: &describe.template_labels,
+            empty_label: "No template labels.",
+        }
+        .show(ui);
+        ui.add_space(8.0);
+        if describe.containers.is_empty() {
+            non_wrapping_value(ui, "N/A", CRON_JOB_DESCRIBE_LINE_WIDTH);
+        } else {
+            for container in &describe.containers {
+                non_wrapping_value(
+                    ui,
+                    &format!("{}: {}", container.name, container.image),
+                    CRON_JOB_DESCRIBE_LINE_WIDTH,
+                );
+            }
+        }
     });
+
+    ui.add_space(10.0);
+    describe_group(
+        ui,
+        egui_phosphor::regular::CHECK_CIRCLE,
+        "Conditions",
+        |ui| {
+            if describe.conditions.is_empty() {
+                non_wrapping_value(ui, "N/A", CRON_JOB_DESCRIBE_LINE_WIDTH);
+            } else {
+                egui::Grid::new("cron_job-describe-conditions")
+                    .num_columns(4)
+                    .spacing([18.0, 4.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.strong("Type");
+                        ui.strong("Status");
+                        ui.strong("Reason");
+                        ui.strong("Message");
+                        ui.end_row();
+                        for condition in &describe.conditions {
+                            non_wrapping_value(ui, &condition.condition_type, 180.0);
+                            ui.colored_label(
+                                condition_color(ui, &condition.status),
+                                &condition.status,
+                            );
+                            non_wrapping_value(ui, &condition.reason, 220.0);
+                            non_wrapping_value(ui, &condition.message, 520.0);
+                            ui.end_row();
+                        }
+                    });
+            }
+        },
+    );
 
     ui.add_space(10.0);
     describe_group(ui, egui_phosphor::regular::TAG, "Metadata", |ui| {
         ResourceMapView {
-            id_salt: "event-describe-labels",
+            id_salt: "cron_job-describe-labels",
             icon: egui_phosphor::regular::TAG,
             title: "Labels",
             entries: &describe.labels,
@@ -699,7 +772,7 @@ fn show_event_describe(ui: &mut egui::Ui, describe: &EventDescribe) {
         .show(ui);
         ui.add_space(8.0);
         ResourceMapView {
-            id_salt: "event-describe-annotations",
+            id_salt: "cron_job-describe-annotations",
             icon: egui_phosphor::regular::NOTE,
             title: "Annotations",
             entries: &describe.annotations,
@@ -711,7 +784,7 @@ fn show_event_describe(ui: &mut egui::Ui, describe: &EventDescribe) {
     ui.add_space(10.0);
     describe_group(ui, egui_phosphor::regular::CODE, "Raw manifest", |ui| {
         egui::ScrollArea::both()
-            .id_salt("event-describe-raw-manifest-content")
+            .id_salt("cron_job-describe-raw-manifest-content")
             .max_height(180.0)
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -739,7 +812,7 @@ fn describe_group(
         .corner_radius(egui::CornerRadius::same(4))
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
-            ui.set_min_width(EVENT_DESCRIBE_SECTION_WIDTH);
+            ui.set_min_width(CRON_JOB_DESCRIBE_SECTION_WIDTH);
             ui.horizontal(|ui| {
                 ui.label(icon);
                 ui.strong(title);
@@ -757,11 +830,11 @@ fn describe_fields(ui: &mut egui::Ui, fields: &[DescribeField]) {
             for chunk in fields.chunks(2) {
                 for field in chunk {
                     ui.add_sized(
-                        [EVENT_DESCRIBE_FIELD_LABEL_WIDTH, 0.0],
+                        [CRON_JOB_DESCRIBE_FIELD_LABEL_WIDTH, 0.0],
                         egui::Label::new(egui::RichText::new(&field.label).weak())
                             .wrap_mode(TextWrapMode::Extend),
                     );
-                    non_wrapping_value(ui, &field.value, EVENT_DESCRIBE_FIELD_VALUE_WIDTH);
+                    non_wrapping_value(ui, &field.value, CRON_JOB_DESCRIBE_FIELD_VALUE_WIDTH);
                 }
                 if chunk.len() == 1 {
                     ui.label("");
@@ -781,6 +854,15 @@ fn non_wrapping_value(ui: &mut egui::Ui, value: &str, width: f32) {
     );
 }
 
+fn condition_color(ui: &egui::Ui, status: &str) -> egui::Color32 {
+    match status {
+        "True" | "Available" => egui::Color32::from_rgb(46, 160, 67),
+        "False" | "Progressing" => egui::Color32::from_rgb(191, 135, 0),
+        "Unknown" => ui.visuals().error_fg_color,
+        _ => ui.visuals().text_color(),
+    }
+}
+
 impl DescribeField {
     fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
@@ -790,101 +872,89 @@ impl DescribeField {
     }
 }
 
-fn event_describe_from_row(row: &EventRow) -> EventDescribe {
+fn cron_job_describe_from_row(row: &CronJobRow) -> CronJobDescribe {
     let raw = &row.raw;
-    EventDescribe {
+    CronJobDescribe {
         summary: vec![
             DescribeField::new("Name", row.name.clone()),
             DescribeField::new("Namespace", row.namespace.clone()),
-            DescribeField::new("Type", row.event_type.clone()),
-            DescribeField::new("Reason", row.reason.clone()),
-            DescribeField::new("Count", row.count.clone()),
-            DescribeField::new("Source", row.source.clone()),
+            DescribeField::new("Age", row.age.clone()),
+            DescribeField::new("Concurrency", row.concurrency.clone()),
         ],
-        involved: vec![
-            DescribeField::new("Object", row.involved_object.clone()),
-            DescribeField::new(
-                "Kind",
-                value_str(raw, &["involvedObject", "kind"]).unwrap_or("N/A"),
-            ),
-            DescribeField::new(
-                "Name",
-                value_str(raw, &["involvedObject", "name"]).unwrap_or("N/A"),
-            ),
-            DescribeField::new(
-                "Namespace",
-                value_str(raw, &["involvedObject", "namespace"]).unwrap_or("N/A"),
-            ),
-            DescribeField::new(
-                "UID",
-                value_str(raw, &["involvedObject", "uid"]).unwrap_or("N/A"),
-            ),
-            DescribeField::new(
-                "Field path",
-                value_str(raw, &["involvedObject", "fieldPath"]).unwrap_or("N/A"),
-            ),
+        replicas: vec![
+            DescribeField::new("Schedule", row.schedule.clone()),
+            DescribeField::new("Suspend", row.suspend.clone()),
+            DescribeField::new("Last schedule", row.last_schedule.clone()),
+            DescribeField::new("Last success", row.last_success.clone()),
         ],
-        timing: vec![
-            DescribeField::new("First seen", row.first_seen.clone()),
-            DescribeField::new("Last seen", row.last_seen.clone()),
-            DescribeField::new("Created", row.age.clone()),
+        rollout: vec![
+            DescribeField::new("Active", row.active.clone()),
             DescribeField::new(
-                "Reporting controller",
-                value_str(raw, &["reportingController"]).unwrap_or("N/A"),
+                "Successful history",
+                value_u64(raw, &["spec", "successfulJobsHistoryLimit"])
+                    .map_or_else(|| "N/A".to_owned(), |value| value.to_string()),
             ),
             DescribeField::new(
-                "Reporting instance",
-                value_str(raw, &["reportingInstance"]).unwrap_or("N/A"),
+                "Failed history",
+                value_u64(raw, &["spec", "failedJobsHistoryLimit"])
+                    .map_or_else(|| "N/A".to_owned(), |value| value.to_string()),
+            ),
+            DescribeField::new(
+                "Starting deadline",
+                value_u64(raw, &["spec", "startingDeadlineSeconds"])
+                    .map_or_else(|| "N/A".to_owned(), |value| value.to_string()),
             ),
         ],
+        selector: string_map_entries(raw.pointer("/spec/jobTemplate/spec/selector/matchLabels")),
+        template_labels: string_map_entries(
+            raw.pointer("/spec/jobTemplate/spec/template/metadata/labels"),
+        ),
+        containers: cron_job_containers(raw),
+        conditions: cron_job_condition_describes(raw),
         labels: string_map_entries(raw.pointer("/metadata/labels")),
         annotations: string_map_entries(raw.pointer("/metadata/annotations")),
-        message: row.message.clone(),
         raw_yaml: full_manifest_yaml(raw),
     }
 }
 
-fn event_key(namespace: &str, name: &str) -> String {
+fn cron_job_key(namespace: &str, name: &str) -> String {
     format!("{namespace}/{name}")
 }
 
-fn involved_object_name(raw: &serde_json::Value) -> String {
-    let kind = value_str(raw, &["involvedObject", "kind"]).unwrap_or("N/A");
-    let name = value_str(raw, &["involvedObject", "name"]).unwrap_or("N/A");
-    format!("{kind}/{name}")
+fn cron_job_status_summary(schedule: &str, active: usize, concurrency: &str) -> String {
+    format!("schedule={schedule}, active={active}, concurrency={concurrency}")
 }
 
-fn event_source(raw: &serde_json::Value) -> String {
-    value_str(raw, &["source", "component"])
-        .or_else(|| value_str(raw, &["reportingController"]))
-        .or_else(|| value_str(raw, &["reportingInstance"]))
-        .unwrap_or("N/A")
-        .to_owned()
-}
-
-fn event_count(raw: &serde_json::Value) -> String {
-    raw.get("count")
-        .and_then(serde_json::Value::as_u64)
-        .or_else(|| {
-            raw.get("series")
-                .and_then(|series| series.get("count"))
-                .and_then(serde_json::Value::as_u64)
+fn cron_job_containers(raw: &serde_json::Value) -> Vec<ContainerDescribe> {
+    raw.pointer("/spec/jobTemplate/spec/template/spec/containers")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|container| ContainerDescribe {
+            name: value_str(container, &["name"]).unwrap_or("N/A").to_owned(),
+            image: value_str(container, &["image"]).unwrap_or("N/A").to_owned(),
         })
-        .map_or_else(na, |count| count.to_string())
+        .collect()
 }
 
-fn first_event_timestamp(raw: &serde_json::Value) -> Option<&str> {
-    value_str(raw, &["firstTimestamp"]).or_else(|| value_str(raw, &["eventTime"]))
-}
-
-fn last_event_timestamp(raw: &serde_json::Value) -> Option<&str> {
-    value_str(raw, &["lastTimestamp"])
-        .or_else(|| value_str(raw, &["eventTime"]))
-        .or_else(|| value_str(raw, &["metadata", "creationTimestamp"]))
-}
-
-fn format_timestamp(timestamp: &str) -> String {
-    human_age_from_rfc3339(timestamp).unwrap_or_else(|| timestamp.to_owned())
+fn cron_job_condition_describes(raw: &serde_json::Value) -> Vec<CronJobConditionDescribe> {
+    raw.pointer("/status/conditions")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|condition| CronJobConditionDescribe {
+            condition_type: value_str(condition, &["type"]).unwrap_or("N/A").to_owned(),
+            status: value_str(condition, &["status"])
+                .unwrap_or("N/A")
+                .to_owned(),
+            reason: value_str(condition, &["reason"])
+                .unwrap_or("N/A")
+                .to_owned(),
+            message: value_str(condition, &["message"])
+                .unwrap_or("N/A")
+                .to_owned(),
+        })
+        .collect()
 }
 
 fn string_map_entries(value: Option<&serde_json::Value>) -> Vec<ResourceMapEntry> {
@@ -918,8 +988,20 @@ fn value_str<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a str>
     current.as_str()
 }
 
-fn na() -> String {
-    "N/A".to_owned()
+fn value_u64(value: &serde_json::Value, path: &[&str]) -> Option<u64> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_u64()
+}
+
+fn value_bool(value: &serde_json::Value, path: &[&str]) -> Option<bool> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_bool()
 }
 
 #[cfg(test)]
@@ -928,146 +1010,112 @@ mod tests {
     use miku_api::ResourceList;
 
     #[test]
-    fn event_request_query_uses_selected_namespace() {
-        let mut panel = EventResourcePanel {
+    fn cron_job_request_query_uses_selected_namespace() {
+        let mut panel = CronJobResourcePanel {
             namespace_filter: Some("production".to_owned()),
-            ..EventResourcePanel::default()
+            ..CronJobResourcePanel::default()
         };
 
-        let request = panel.request_events(ClusterId::new("local"));
+        let request = panel.request_cronjobs(ClusterId::new("local"));
         let query = request.query();
 
-        assert_eq!(query.resource.plural, "events");
+        assert_eq!(query.resource.plural, "cronjobs");
+        assert_eq!(query.resource.group.as_deref(), Some("batch"));
         assert_eq!(query.namespace.as_deref(), Some("production"));
     }
 
     #[test]
-    fn event_row_extracts_table_fields_from_raw_summary() {
-        let row = EventRow::from_summary(&event_summary(
-            "api.17",
-            "default",
-            "Warning",
-            "BackOff",
-            "2026-05-18T10:04:00Z",
-        ));
+    fn cron_job_row_extracts_table_fields_from_raw_summary() {
+        let row = CronJobRow::from_summary(&cron_job_summary());
 
-        assert_eq!(row.name, "api.17");
+        assert_eq!(row.name, "backup");
         assert_eq!(row.namespace, "default");
-        assert_eq!(row.event_type, "Warning");
-        assert_eq!(row.reason, "BackOff");
-        assert_eq!(row.involved_object, "Pod/api");
-        assert_eq!(row.message, "Back-off restarting failed container");
-        assert_eq!(row.count, "7");
-        assert_eq!(row.source, "kubelet");
-        assert!(row.first_seen.ends_with(" ago"));
-        assert!(row.last_seen.ends_with(" ago"));
+        assert_eq!(row.schedule, "*/5 * * * *");
+        assert_eq!(row.suspend, "false");
+        assert_eq!(row.active, "2");
+        assert_eq!(row.last_schedule, "2026-05-18T10:00:00Z");
+        assert_eq!(row.last_success, "2026-05-18T09:55:00Z");
+        assert_eq!(row.concurrency, "Forbid");
+        assert_eq!(
+            row.status_summary,
+            "schedule=*/5 * * * *, active=2, concurrency=Forbid"
+        );
         assert!(row.age.ends_with(" ago"));
     }
 
     #[test]
-    fn event_row_handles_missing_optional_fields() {
-        let row = EventRow::from_summary(&ResourceSummary {
+    fn cron_job_row_handles_missing_optional_fields() {
+        let row = CronJobRow::from_summary(&ResourceSummary {
             name: "minimal".to_owned(),
-            namespace: None,
-            kind: "Event".to_owned(),
+            namespace: Some("default".to_owned()),
+            kind: "CronJob".to_owned(),
             status: None,
-            raw: serde_json::json!({"metadata": {"name": "minimal"}}),
+            raw: serde_json::json!({"metadata": {"name": "minimal", "namespace": "default"}}),
         });
 
-        assert_eq!(row.namespace, "N/A");
-        assert_eq!(row.event_type, "N/A");
-        assert_eq!(row.reason, "N/A");
-        assert_eq!(row.involved_object, "N/A/N/A");
-        assert_eq!(row.message, "N/A");
-        assert_eq!(row.count, "N/A");
-        assert_eq!(row.source, "N/A");
-        assert_eq!(row.last_seen, "N/A");
+        assert_eq!(row.schedule, "N/A");
+        assert_eq!(row.suspend, "N/A");
+        assert_eq!(row.active, "0");
+        assert_eq!(row.last_schedule, "N/A");
+        assert_eq!(row.last_success, "N/A");
+        assert_eq!(row.concurrency, "N/A");
     }
 
     #[test]
-    fn event_rows_filter_by_multiple_fields_case_insensitively() {
+    fn cron_job_rows_filter_by_multiple_fields_case_insensitively() {
         let rows = vec![
-            EventRow::from_summary(&event_summary(
-                "api.17",
-                "default",
-                "Warning",
-                "BackOff",
-                "2026-05-18T10:04:00Z",
-            )),
-            EventRow::from_summary(&event_summary(
-                "worker.11",
-                "production",
-                "Normal",
-                "Pulled",
-                "2026-05-18T10:05:00Z",
-            )),
+            CronJobRow::from_summary(&cron_job_summary()),
+            CronJobRow::from_summary(&cron_job_summary_with_name("production", "worker")),
         ];
 
-        assert_eq!(filter_event_rows(&rows, "back-off").len(), 1);
-        assert_eq!(filter_event_rows(&rows, "PRODUCTION").len(), 1);
-        assert_eq!(filter_event_rows(&rows, "pod/API").len(), 1);
+        assert_eq!(filter_cron_job_rows(&rows, "BACKUP").len(), 1);
+        assert_eq!(filter_cron_job_rows(&rows, "PRODUCTION").len(), 1);
+        assert_eq!(filter_cron_job_rows(&rows, "FORBID").len(), 2);
+        assert_eq!(filter_cron_job_rows(&rows, "*/5").len(), 2);
     }
 
     #[test]
-    fn event_rows_are_sorted_by_last_seen_descending() {
-        let rows = event_rows_from_list(&[
-            event_summary(
-                "older",
-                "default",
-                "Normal",
-                "Pulled",
-                "2026-05-18T10:00:00Z",
-            ),
-            event_summary(
-                "newer",
-                "default",
-                "Warning",
-                "BackOff",
-                "2026-05-18T10:05:00Z",
-            ),
+    fn cron_job_rows_are_sorted_by_namespace_and_name() {
+        let rows = cron_job_rows_from_list(&[
+            cron_job_summary_with_name("zeta", "worker"),
+            cron_job_summary_with_name("default", "backup"),
+            cron_job_summary_with_name("default", "archive"),
         ]);
 
-        let names = rows.into_iter().map(|row| row.name).collect::<Vec<_>>();
-        assert_eq!(names, vec!["newer", "older"]);
+        let keys = rows.into_iter().map(|row| row.key).collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            vec!["default/archive", "default/backup", "zeta/worker"]
+        );
     }
 
     #[test]
-    fn event_describe_extracts_metadata() {
-        let row = EventRow::from_summary(&event_summary(
-            "api.17",
-            "default",
-            "Warning",
-            "BackOff",
-            "2026-05-18T10:04:00Z",
-        ));
-        let describe = event_describe_from_row(&row);
+    fn cron_job_describe_extracts_details() {
+        let row = CronJobRow::from_summary(&cron_job_summary());
+        let describe = cron_job_describe_from_row(&row);
 
+        assert_eq!(describe.template_labels.len(), 1);
+        assert_eq!(describe.containers.len(), 1);
         assert!(describe.labels.iter().any(|entry| entry.key == "app"));
-        assert!(describe.annotations.iter().any(|entry| entry.key == "note"));
         assert!(
-            describe.involved.iter().any(|field| {
-                field.label == "Field path" && field.value == "spec.containers{api}"
-            })
+            describe
+                .summary
+                .iter()
+                .any(|field| field.label == "Concurrency" && field.value == "Forbid")
         );
     }
 
     #[test]
     fn stale_resource_events_do_not_replace_current_rows() {
-        let mut panel = EventResourcePanel::default();
+        let mut panel = CronJobResourcePanel::default();
         let cluster_id = ClusterId::new("local");
-        let first = panel.request_events(cluster_id.clone());
-        let second = panel.request_events(cluster_id);
+        let first = panel.request_cronjobs(cluster_id.clone());
+        let second = panel.request_cronjobs(cluster_id);
 
         panel.apply_event(ResourceUiEvent::ResourcesLoaded {
             request: first,
             result: Ok(ResourceList {
-                items: vec![event_summary(
-                    "stale",
-                    "default",
-                    "Normal",
-                    "Pulled",
-                    "2026-05-18T10:00:00Z",
-                )],
+                items: vec![cron_job_summary_with_name("default", "stale")],
                 continue_token: None,
             }),
         });
@@ -1076,38 +1124,25 @@ mod tests {
         panel.apply_event(ResourceUiEvent::ResourcesLoaded {
             request: second,
             result: Ok(ResourceList {
-                items: vec![event_summary(
-                    "api.17",
-                    "default",
-                    "Warning",
-                    "BackOff",
-                    "2026-05-18T10:04:00Z",
-                )],
+                items: vec![cron_job_summary()],
                 continue_token: None,
             }),
         });
 
-        assert_eq!(panel.rows.len(), 1);
-        assert_eq!(panel.rows[0].name, "api.17");
+        assert_eq!(panel.rows[0].name, "backup");
     }
 
     #[test]
     fn stale_watch_events_do_not_replace_current_rows() {
-        let mut panel = EventResourcePanel::default();
+        let mut panel = CronJobResourcePanel::default();
         let cluster_id = ClusterId::new("local");
-        let first = panel.request_event_watch(cluster_id.clone());
-        let second = panel.request_event_watch(cluster_id);
+        let first = panel.request_cron_job_watch(cluster_id.clone());
+        let second = panel.request_cron_job_watch(cluster_id);
 
         panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
             request: first,
             result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
-                items: vec![event_summary(
-                    "stale",
-                    "default",
-                    "Normal",
-                    "Pulled",
-                    "2026-05-18T10:00:00Z",
-                )],
+                items: vec![cron_job_summary_with_name("default", "stale")],
                 continue_token: None,
             })),
         });
@@ -1116,32 +1151,23 @@ mod tests {
         panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
             request: second,
             result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
-                items: vec![event_summary(
-                    "api.17",
-                    "default",
-                    "Warning",
-                    "BackOff",
-                    "2026-05-18T10:04:00Z",
-                )],
+                items: vec![cron_job_summary()],
                 continue_token: None,
             })),
         });
 
-        assert_eq!(panel.rows.len(), 1);
-        assert_eq!(panel.rows[0].name, "api.17");
+        assert_eq!(panel.rows[0].name, "backup");
     }
 
     #[test]
     fn namespace_watch_events_from_shared_request_update_selector() {
-        let mut panel = EventResourcePanel::default();
-        let request = ResourceWatchRequest {
-            request_id: 42,
-            cluster_id: ClusterId::new("local"),
-            kind: ResourceLoadKind::Namespaces,
-        };
-
+        let mut panel = CronJobResourcePanel::default();
         panel.apply_event(ResourceUiEvent::ResourceWatchUpdated {
-            request,
+            request: ResourceWatchRequest {
+                request_id: 42,
+                cluster_id: ClusterId::new("local"),
+                kind: ResourceLoadKind::Namespaces,
+            },
             result: Ok(miku_api::ResourceEvent::Snapshot(ResourceList {
                 items: vec![namespace_summary("production")],
                 continue_token: None,
@@ -1149,57 +1175,52 @@ mod tests {
         });
 
         assert_eq!(panel.namespaces, vec!["production".to_owned()]);
-        assert_eq!(panel.namespace_status, LoadStatus::Loaded);
     }
 
-    fn event_summary(
-        name: &str,
-        namespace: &str,
-        event_type: &str,
-        reason: &str,
-        last_timestamp: &str,
-    ) -> ResourceSummary {
-        let message = if reason == "BackOff" {
-            "Back-off restarting failed container"
-        } else {
-            "Successfully pulled container image"
-        };
-        let involved_name = name.split('.').next().unwrap_or("api");
+    fn cron_job_summary() -> ResourceSummary {
+        cron_job_summary_with_name("default", "backup")
+    }
+
+    fn cron_job_summary_with_name(namespace: &str, name: &str) -> ResourceSummary {
         ResourceSummary {
             name: name.to_owned(),
             namespace: Some(namespace.to_owned()),
-            kind: "Event".to_owned(),
+            kind: "CronJob".to_owned(),
             status: None,
             raw: serde_json::json!({
                 "metadata": {
                     "name": name,
                     "namespace": namespace,
-                    "creationTimestamp": "2026-05-18T09:58:00Z",
-                    "labels": {
-                        "app": "api"
-                    },
-                    "annotations": {
-                        "note": "example"
+                    "creationTimestamp": "2026-05-18T10:00:00Z",
+                    "labels": {"app": name}
+                },
+                "spec": {
+                    "schedule": "*/5 * * * *",
+                    "suspend": false,
+                    "concurrencyPolicy": "Forbid",
+                    "successfulJobsHistoryLimit": 3,
+                    "failedJobsHistoryLimit": 1,
+                    "jobTemplate": {
+                        "spec": {
+                            "template": {
+                                "metadata": {"labels": {"job-name": name}},
+                                "spec": {
+                                    "containers": [
+                                        {"name": name, "image": "ghcr.io/example/backup:1.0.0"}
+                                    ]
+                                }
+                            }
+                        }
                     }
                 },
-                "type": event_type,
-                "reason": reason,
-                "message": message,
-                "count": 7,
-                "firstTimestamp": "2026-05-18T10:00:00Z",
-                "lastTimestamp": last_timestamp,
-                "source": {
-                    "component": "kubelet"
-                },
-                "involvedObject": {
-                    "kind": "Pod",
-                    "name": involved_name,
-                    "namespace": namespace,
-                    "uid": "pod-uid",
-                    "fieldPath": "spec.containers{api}"
-                },
-                "reportingController": "kubelet",
-                "reportingInstance": "kind-worker"
+                "status": {
+                    "active": [
+                        {"name": "backup-1"},
+                        {"name": "backup-2"}
+                    ],
+                    "lastScheduleTime": "2026-05-18T10:00:00Z",
+                    "lastSuccessfulTime": "2026-05-18T09:55:00Z"
+                }
             }),
         }
     }
