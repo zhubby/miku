@@ -104,7 +104,8 @@ impl NamespaceResourcePanel {
                 | ResourceLoadKind::Leases { .. }
                 | ResourceLoadKind::MutatingWebhookConfigurations
                 | ResourceLoadKind::ValidatingWebhookConfigurations
-                | ResourceLoadKind::CustomResourceDefinitions => {}
+                | ResourceLoadKind::CustomResourceDefinitions
+                | ResourceLoadKind::CustomResources { .. } => {}
             },
             ResourceUiEvent::ResourceWatchUpdated { request, result } => match request.kind {
                 ResourceLoadKind::Namespaces => {
@@ -154,7 +155,8 @@ impl NamespaceResourcePanel {
                 | ResourceLoadKind::Leases { .. }
                 | ResourceLoadKind::MutatingWebhookConfigurations
                 | ResourceLoadKind::ValidatingWebhookConfigurations
-                | ResourceLoadKind::CustomResourceDefinitions => {}
+                | ResourceLoadKind::CustomResourceDefinitions
+                | ResourceLoadKind::CustomResources { .. } => {}
             },
             ResourceUiEvent::ResourceActionCompleted { .. }
             | ResourceUiEvent::PodLogsLoaded { .. }

@@ -186,6 +186,7 @@ pub(crate) enum ResourceLoadKind {
     ValidatingWebhookConfigurations,
     Pods { namespace: Option<String> },
     CustomResourceDefinitions,
+    CustomResources { resource: ResourceRef },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -314,6 +315,9 @@ impl ResourceWatchRequest {
             ResourceLoadKind::CustomResourceDefinitions => {
                 ResourceLoadKind::CustomResourceDefinitions
             }
+            ResourceLoadKind::CustomResources { resource } => ResourceLoadKind::CustomResources {
+                resource: resource.clone(),
+            },
         };
         ResourceWatchKey {
             cluster_id: self.cluster_id.clone(),
@@ -752,6 +756,9 @@ fn resource_query_for_kind(
             ResourceRef::grouped("apiextensions.k8s.io", "v1", "customresourcedefinitions")
                 .cluster_scoped(),
         ),
+        ResourceLoadKind::CustomResources { resource } => {
+            miku_api::ResourceQuery::new(cluster_id, resource.clone())
+        }
     }
 }
 
@@ -771,6 +778,20 @@ mod tests {
             ResourceRef::grouped("apiextensions.k8s.io", "v1", "customresourcedefinitions")
                 .cluster_scoped()
         );
+        assert_eq!(query.namespace, None);
+    }
+
+    #[test]
+    fn custom_resources_query_uses_selected_dynamic_resource() {
+        let resource = ResourceRef::grouped("example.com", "v1", "widgets").cluster_scoped();
+        let query = resource_query_for_kind(
+            ClusterId::new("local"),
+            &ResourceLoadKind::CustomResources {
+                resource: resource.clone(),
+            },
+        );
+
+        assert_eq!(query.resource, resource);
         assert_eq!(query.namespace, None);
     }
 

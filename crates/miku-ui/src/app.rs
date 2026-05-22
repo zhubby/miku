@@ -736,7 +736,8 @@ impl MikuApp {
         let workspace = self.ensure_workspace(cluster_id);
         match &event {
             ResourceUiEvent::ResourcesLoaded { request, .. } => match request.kind {
-                ResourceLoadKind::CustomResourceDefinitions => {
+                ResourceLoadKind::CustomResourceDefinitions
+                | ResourceLoadKind::CustomResources { .. } => {
                     workspace.custom_resources_panel.apply_event(event);
                 }
                 ResourceLoadKind::Namespaces => {
@@ -916,7 +917,8 @@ impl MikuApp {
                 }
             },
             ResourceUiEvent::ResourceWatchUpdated { request, .. } => match request.kind {
-                ResourceLoadKind::CustomResourceDefinitions => {
+                ResourceLoadKind::CustomResourceDefinitions
+                | ResourceLoadKind::CustomResources { .. } => {
                     workspace.custom_resources_panel.apply_event(event);
                 }
                 ResourceLoadKind::Namespaces => {

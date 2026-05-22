@@ -154,7 +154,8 @@ impl PodResourcePanel {
                 | ResourceLoadKind::Leases { .. }
                 | ResourceLoadKind::MutatingWebhookConfigurations
                 | ResourceLoadKind::ValidatingWebhookConfigurations
-                | ResourceLoadKind::CustomResourceDefinitions => {}
+                | ResourceLoadKind::CustomResourceDefinitions
+                | ResourceLoadKind::CustomResources { .. } => {}
             },
             ResourceUiEvent::ResourceActionCompleted { request, result } => {
                 if self.action_request_id != Some(request.request_id) {
@@ -315,7 +316,8 @@ impl PodResourcePanel {
                 | ResourceLoadKind::Leases { .. }
                 | ResourceLoadKind::MutatingWebhookConfigurations
                 | ResourceLoadKind::ValidatingWebhookConfigurations
-                | ResourceLoadKind::CustomResourceDefinitions => {}
+                | ResourceLoadKind::CustomResourceDefinitions
+                | ResourceLoadKind::CustomResources { .. } => {}
             },
         }
     }
