@@ -939,26 +939,23 @@ fn agent_bubble_width(ui: &egui::Ui) -> f32 {
 }
 
 fn show_agent_tool_activity(ui: &mut egui::Ui, events: &[AgentEvent]) {
-    egui::CollapsingHeader::new(format!(
-        "{} Tool activity",
-        egui_phosphor::regular::WRENCH
-    ))
-    .default_open(false)
-    .show(ui, |ui| {
-        for event in events {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(agent_event_icon(event))
-                        .color(agent_event_color(ui, event)),
-                );
-                ui.label(
-                    egui::RichText::new(format_agent_event(event))
-                        .small()
-                        .color(ui.visuals().weak_text_color()),
-                );
-            });
-        }
-    });
+    egui::CollapsingHeader::new(format!("{} Tool activity", egui_phosphor::regular::WRENCH))
+        .default_open(false)
+        .show(ui, |ui| {
+            for event in events {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(agent_event_icon(event))
+                            .color(agent_event_color(ui, event)),
+                    );
+                    ui.label(
+                        egui::RichText::new(format_agent_event(event))
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                });
+            }
+        });
 }
 
 fn show_agent_error(ui: &mut egui::Ui, error: &str) {
@@ -1048,14 +1045,6 @@ fn agent_event_color(ui: &egui::Ui, event: &AgentEvent) -> egui::Color32 {
             ui.visuals().weak_text_color()
         }
         AgentEvent::ToolFailed { .. } => ui.visuals().error_fg_color,
-    }
-}
-
-fn role_label(role: &AgentRole) -> &'static str {
-    match role {
-        AgentRole::User => "You",
-        AgentRole::Assistant => "Miku",
-        AgentRole::Tool => "Tool",
     }
 }
 
