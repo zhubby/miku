@@ -10,7 +10,11 @@ use miku_api::{
     KubernetesResourceReader, PodLogService, ServiceBounds,
 };
 
-pub use provider::{LlmProvider, OpenAiCompatibleProvider, ProviderConfig};
+pub use provider::{
+    ChatMessage, ChatMessageDelta, LlmProvider, OpenAiCompatibleProvider, ProviderChatRequest,
+    ProviderChatResponse, ProviderChatStream, ProviderChatStreamEvent, ProviderConfig,
+    ToolCallDelta, ToolCallFunctionDelta, ToolDefinition,
+};
 pub use runtime::{AgentRuntime, RunLimits};
 
 pub trait AgentToolServices:
@@ -49,8 +53,13 @@ where
         self
     }
 
-    pub fn from_env(services: Arc<S>) -> miku_core::Result<Self> {
-        let provider = Arc::new(OpenAiCompatibleProvider::from_env()?);
+    pub fn from_settings(
+        settings: miku_api::LlmProviderSettings,
+        services: Arc<S>,
+    ) -> miku_core::Result<Self> {
+        let provider = Arc::new(OpenAiCompatibleProvider::new(
+            ProviderConfig::from_settings(settings)?,
+        ));
         Ok(Self::new(provider, services))
     }
 }

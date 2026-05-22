@@ -39,6 +39,30 @@ pub struct CreateClusterRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LlmProviderSettings {
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+    #[serde(default = "default_llm_stream")]
+    pub stream: bool,
+}
+
+impl Default for LlmProviderSettings {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            api_key: String::new(),
+            model: String::new(),
+            stream: true,
+        }
+    }
+}
+
+fn default_llm_stream() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ClusterInitializeRequest {
     pub cluster_id: ClusterId,
 }
@@ -440,6 +464,14 @@ pub trait LocalPreferenceStore: ServiceBounds {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait LlmSettingsStore: ServiceBounds {
+    async fn get_llm_settings(&self) -> miku_core::Result<LlmProviderSettings>;
+
+    async fn set_llm_settings(&self, settings: LlmProviderSettings) -> miku_core::Result<()>;
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait AgentService: ServiceBounds {
     async fn run_agent_turn(
         &self,
@@ -462,6 +494,7 @@ pub trait MikuServices:
     + PodLogService
     + PodAttachService
     + LocalPreferenceStore
+    + LlmSettingsStore
     + AgentService
     + ServiceBounds
 {
@@ -695,6 +728,20 @@ mod tests {
                 &self,
                 _key: &str,
                 _value: serde_json::Value,
+            ) -> miku_core::Result<()> {
+                Ok(())
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl LlmSettingsStore for Dummy {
+            async fn get_llm_settings(&self) -> miku_core::Result<LlmProviderSettings> {
+                Ok(LlmProviderSettings::default())
+            }
+
+            async fn set_llm_settings(
+                &self,
+                _settings: LlmProviderSettings,
             ) -> miku_core::Result<()> {
                 Ok(())
             }

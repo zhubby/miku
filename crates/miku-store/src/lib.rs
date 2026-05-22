@@ -5,6 +5,7 @@ mod paths;
 mod preference_store;
 mod preferences;
 mod schema;
+mod settings;
 mod store;
 #[cfg(test)]
 mod tests;

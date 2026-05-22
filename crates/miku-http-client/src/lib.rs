@@ -9,9 +9,10 @@ use miku_api::{
     ClusterInitializeRequest, ClusterInitializer, ClusterRegistry, ClusterStatusReader,
     ClusterStatusReport, ClusterStatusRequest, ClusterSummary, CreateClusterRequest,
     KubernetesResourceReader, KubernetesResourceWriter, KubernetesWatchService,
-    LocalPreferenceStore, LogLine, MikuServices, PodAttachRequest, PodAttachService,
-    PodAttachSession, PodEvictRequest, PodLogQuery, PodLogService, ResourceApplyRequest,
-    ResourceDeleteRequest, ResourceEvent, ResourceList, ResourceQuery, ResourceSummary,
+    LlmProviderSettings, LlmSettingsStore, LocalPreferenceStore, LogLine, MikuServices,
+    PodAttachRequest, PodAttachService, PodAttachSession, PodEvictRequest, PodLogQuery,
+    PodLogService, ResourceApplyRequest, ResourceDeleteRequest, ResourceEvent, ResourceList,
+    ResourceQuery, ResourceSummary,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use miku_api::{PodAttachInput, PodAttachOutput};
@@ -328,6 +329,40 @@ impl LocalPreferenceStore for HttpMikuClient {
         Err(miku_core::MikuError::UnsupportedRuntime(
             "preferences are local to the native process".to_owned(),
         ))
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl LlmSettingsStore for HttpMikuClient {
+    #[tracing::instrument(name = "http_client.get_llm_settings", skip(self))]
+    async fn get_llm_settings(&self) -> miku_core::Result<LlmProviderSettings> {
+        let endpoint = self.endpoint("/api/settings/llm");
+        self.client
+            .get(endpoint)
+            .send()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .json()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))
+    }
+
+    #[tracing::instrument(name = "http_client.set_llm_settings", skip(self, settings))]
+    async fn set_llm_settings(&self, settings: LlmProviderSettings) -> miku_core::Result<()> {
+        let endpoint = self.endpoint("/api/settings/llm");
+        self.client
+            .put(endpoint)
+            .json(&settings)
+            .send()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?;
+
+        Ok(())
     }
 }
 

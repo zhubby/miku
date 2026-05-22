@@ -28,6 +28,7 @@ use crate::resource_panel::{
     ValidatingWebhookConfigurationResourcePanel,
 };
 use crate::resources::ResourceNavItem;
+use crate::settings::SettingsPanel;
 use crate::state::{AppState, ClusterConnectionState, RuntimeMode};
 use crate::tabs::{
     AgentPanel, AgentTurnUiRequest, AppTab, AppTabViewer, ClusterStatusLoadRequest,
@@ -64,6 +65,9 @@ pub struct MikuApp {
     pub(crate) cluster_event_sender: resource_mpsc::Sender<ClusterUiEvent>,
     pub(crate) cluster_event_receiver: resource_mpsc::Receiver<ClusterUiEvent>,
     pub(crate) settings_open: bool,
+    pub(crate) settings_panel: SettingsPanel,
+    pub(crate) settings_event_sender: resource_mpsc::Sender<SettingsUiEvent>,
+    pub(crate) settings_event_receiver: resource_mpsc::Receiver<SettingsUiEvent>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) file_dialog: egui_file_dialog::FileDialog,
 }
@@ -179,6 +183,16 @@ pub(crate) enum AgentUiEvent {
     },
 }
 
+#[derive(Clone, Debug)]
+pub(crate) enum SettingsUiEvent {
+    LlmLoaded {
+        result: Result<miku_api::LlmProviderSettings, String>,
+    },
+    LlmSaved {
+        result: Result<(), String>,
+    },
+}
+
 impl MikuApp {
     pub fn new(runtime_mode: RuntimeMode) -> Self {
         tracing::debug!(?runtime_mode, "creating Miku app");
@@ -186,6 +200,7 @@ impl MikuApp {
         let (resource_event_sender, resource_event_receiver) = resource_mpsc::channel();
         let (status_event_sender, status_event_receiver) = resource_mpsc::channel();
         let (agent_event_sender, agent_event_receiver) = resource_mpsc::channel();
+        let (settings_event_sender, settings_event_receiver) = resource_mpsc::channel();
         let left_dock_state = DockState::new(vec![AppTab::Clusters, AppTab::Resources]);
         let right_dock_state = DockState::new(vec![AppTab::Agent(1)]);
 
@@ -216,6 +231,9 @@ impl MikuApp {
             cluster_event_sender,
             cluster_event_receiver,
             settings_open: false,
+            settings_panel: SettingsPanel::default(),
+            settings_event_sender,
+            settings_event_receiver,
             #[cfg(not(target_arch = "wasm32"))]
             file_dialog: egui_file_dialog::FileDialog::new(),
         }
@@ -257,6 +275,7 @@ impl eframe::App for MikuApp {
             self.process_resource_events(ui.ctx());
             self.process_status_events();
             self.process_agent_events();
+            self.process_settings_events();
         }
         self.update_file_dialog(ui.ctx());
 
@@ -712,6 +731,12 @@ impl MikuApp {
         }
     }
 
+    fn process_settings_events(&mut self) {
+        while let Ok(event) = self.settings_event_receiver.try_recv() {
+            self.apply_settings_event(event);
+        }
+    }
+
     fn apply_status_event(&mut self, event: ClusterStatusUiEvent) {
         match event {
             ClusterStatusUiEvent::Loaded { request, result } => {
@@ -830,6 +855,90 @@ impl MikuApp {
                     result,
                 });
             });
+        }
+    }
+
+    pub(crate) fn request_llm_settings_load(&mut self) {
+        let Some(services) = self.services.clone() else {
+            self.apply_settings_event(SettingsUiEvent::LlmLoaded {
+                result: Err("settings services are not available".to_owned()),
+            });
+            return;
+        };
+        self.settings_panel.start_load();
+        let sender = self.settings_event_sender.clone();
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(runtime) = self.runtime.as_ref() else {
+                self.apply_settings_event(SettingsUiEvent::LlmLoaded {
+                    result: Err("settings runtime is not available".to_owned()),
+                });
+                return;
+            };
+            runtime.spawn(async move {
+                let result = services
+                    .get_llm_settings()
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(SettingsUiEvent::LlmLoaded { result });
+            });
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            wasm_bindgen_futures::spawn_local(async move {
+                let result = services
+                    .get_llm_settings()
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(SettingsUiEvent::LlmLoaded { result });
+            });
+        }
+    }
+
+    pub(crate) fn request_llm_settings_save(&mut self, settings: miku_api::LlmProviderSettings) {
+        let Some(services) = self.services.clone() else {
+            self.apply_settings_event(SettingsUiEvent::LlmSaved {
+                result: Err("settings services are not available".to_owned()),
+            });
+            return;
+        };
+        let sender = self.settings_event_sender.clone();
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(runtime) = self.runtime.as_ref() else {
+                self.apply_settings_event(SettingsUiEvent::LlmSaved {
+                    result: Err("settings runtime is not available".to_owned()),
+                });
+                return;
+            };
+            runtime.spawn(async move {
+                let result = services
+                    .set_llm_settings(settings)
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(SettingsUiEvent::LlmSaved { result });
+            });
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            wasm_bindgen_futures::spawn_local(async move {
+                let result = services
+                    .set_llm_settings(settings)
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(SettingsUiEvent::LlmSaved { result });
+            });
+        }
+    }
+
+    fn apply_settings_event(&mut self, event: SettingsUiEvent) {
+        match event {
+            SettingsUiEvent::LlmLoaded { result } => self.settings_panel.apply_loaded(result),
+            SettingsUiEvent::LlmSaved { result } => self.settings_panel.apply_saved(result),
         }
     }
 

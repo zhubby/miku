@@ -1,6 +1,9 @@
 use std::fs;
 
-use miku_api::{ClusterConfigStore, ClusterRegistry, CreateClusterRequest, LocalPreferenceStore};
+use miku_api::{
+    ClusterConfigStore, ClusterRegistry, CreateClusterRequest, LlmProviderSettings,
+    LlmSettingsStore, LocalPreferenceStore,
+};
 use sea_orm::{ColumnTrait, ConnectionTrait, Database, EntityTrait, QueryFilter, Set, Statement};
 
 use crate::clusters;
@@ -37,6 +40,62 @@ async fn preferences_round_trip_as_json() {
 
     let value = store.get_preference("ui.theme").await.unwrap();
     assert_eq!(value, Some(serde_json::json!("dark")));
+}
+
+#[tokio::test]
+async fn missing_config_file_returns_empty_llm_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = StorePaths::from_root(temp.path().join(".miku"));
+    let store = SqliteStore::initialize(paths.clone()).await.unwrap();
+
+    let settings = store.get_llm_settings().await.unwrap();
+
+    assert_eq!(settings, LlmProviderSettings::default());
+    assert!(!paths.config_path().exists());
+}
+
+#[tokio::test]
+async fn llm_settings_round_trip_through_config_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = StorePaths::from_root(temp.path().join(".miku"));
+    let store = SqliteStore::initialize(paths.clone()).await.unwrap();
+    let settings = LlmProviderSettings {
+        base_url: "https://api.openai.com/v1".to_owned(),
+        api_key: "sk-test".to_owned(),
+        model: "gpt-5.1".to_owned(),
+        stream: true,
+    };
+
+    store.set_llm_settings(settings.clone()).await.unwrap();
+
+    assert_eq!(store.get_llm_settings().await.unwrap(), settings);
+    let contents = fs::read_to_string(paths.config_path()).unwrap();
+    assert!(contents.contains("[llm]"));
+    assert!(contents.contains("base_url = \"https://api.openai.com/v1\""));
+    assert!(contents.contains("api_key = \"sk-test\""));
+    assert!(contents.contains("model = \"gpt-5.1\""));
+    assert!(contents.contains("stream = true"));
+}
+
+#[tokio::test]
+async fn llm_settings_default_stream_when_field_is_missing() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = StorePaths::from_root(temp.path().join(".miku"));
+    fs::create_dir_all(paths.root()).unwrap();
+    fs::write(
+        paths.config_path(),
+        r#"[llm]
+base_url = "https://api.openai.com/v1"
+api_key = "sk-test"
+model = "gpt-5.1"
+"#,
+    )
+    .unwrap();
+    let store = SqliteStore::initialize(paths).await.unwrap();
+
+    let settings = store.get_llm_settings().await.unwrap();
+
+    assert!(settings.stream);
 }
 
 #[tokio::test]

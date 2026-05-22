@@ -11,7 +11,7 @@ pub use resources::{api_resource, resource_query_path};
 use async_trait::async_trait;
 use miku_api::{
     AgentService, AgentTurnRequest, AgentTurnResponse, ClusterConfigStore, ClusterRegistry,
-    LocalPreferenceStore, MikuServices,
+    LlmProviderSettings, LlmSettingsStore, LocalPreferenceStore, MikuServices,
 };
 use std::sync::Arc;
 
@@ -30,20 +30,85 @@ where
 }
 
 #[async_trait]
+impl<S> LlmSettingsStore for KubeServices<S>
+where
+    S: LlmSettingsStore + Clone + Send + Sync,
+{
+    async fn get_llm_settings(&self) -> miku_core::Result<LlmProviderSettings> {
+        self.store.get_llm_settings().await
+    }
+
+    async fn set_llm_settings(&self, settings: LlmProviderSettings) -> miku_core::Result<()> {
+        self.store.set_llm_settings(settings).await
+    }
+}
+
+#[async_trait]
 impl<S> AgentService for KubeServices<S>
 where
-    S: ClusterConfigStore + ClusterRegistry + LocalPreferenceStore + Clone + Send + Sync + 'static,
+    S: ClusterConfigStore
+        + ClusterRegistry
+        + LocalPreferenceStore
+        + LlmSettingsStore
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
     async fn run_agent_turn(
         &self,
         request: AgentTurnRequest,
     ) -> miku_core::Result<AgentTurnResponse> {
-        let agent = miku_agent::MikuAgentService::from_env(Arc::new(self.clone()))?;
+        let settings = self.get_llm_settings().await?;
+        let provider_config = miku_agent::ProviderConfig::from_settings(settings)?;
+        let provider = Arc::new(miku_agent::OpenAiCompatibleProvider::new(provider_config));
+        let agent = miku_agent::MikuAgentService::new(provider, Arc::new(self.clone()));
         agent.run_agent_turn(request).await
     }
 }
 
 impl<S> MikuServices for KubeServices<S> where
-    S: ClusterConfigStore + ClusterRegistry + LocalPreferenceStore + Clone + Send + Sync + 'static
+    S: ClusterConfigStore
+        + ClusterRegistry
+        + LocalPreferenceStore
+        + LlmSettingsStore
+        + Clone
+        + Send
+        + Sync
+        + 'static
 {
+}
+
+#[cfg(test)]
+mod tests {
+    use miku_api::{AgentContext, AgentService, AgentTurnRequest};
+
+    use crate::KubeServices;
+
+    #[tokio::test]
+    async fn run_agent_turn_requires_file_llm_settings() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = miku_store::SqliteStore::initialize(miku_store::StorePaths::from_root(
+            temp.path().join(".miku"),
+        ))
+        .await
+        .unwrap();
+        let services = KubeServices::new_offline(store);
+
+        let result = services
+            .run_agent_turn(AgentTurnRequest {
+                session_id: "agent-1".to_owned(),
+                message: "hello".to_owned(),
+                context: AgentContext {
+                    cluster_id: None,
+                    cluster_name: None,
+                    selected_resource: None,
+                    namespace: None,
+                },
+                history: Vec::new(),
+            })
+            .await;
+
+        assert!(result.unwrap_err().to_string().contains("llm.base_url"));
+    }
 }

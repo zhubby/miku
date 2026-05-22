@@ -4,7 +4,8 @@ use crate::app::MikuApp;
 
 const NEW_CLUSTER_DIALOG_WIDTH: f32 = 420.0;
 const CONFIG_TEXT_HEIGHT: f32 = 180.0;
-const SETTINGS_PANEL_WIDTH: f32 = 420.0;
+const SETTINGS_PANEL_WIDTH: f32 = 520.0;
+const SETTINGS_PANEL_HEIGHT: f32 = 360.0;
 
 impl MikuApp {
     #[cfg(target_arch = "wasm32")]
@@ -81,17 +82,31 @@ impl MikuApp {
             return;
         }
 
+        if self.settings_panel.should_load() {
+            self.request_llm_settings_load();
+        }
+
+        let mut open = self.settings_open;
+        let mut requests = Vec::new();
         egui::Window::new("Settings")
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .collapsible(false)
-            .resizable(false)
-            .open(&mut self.settings_open)
+            .resizable(true)
+            .open(&mut open)
             .show(ctx, |ui| {
                 ui.set_min_width(SETTINGS_PANEL_WIDTH);
-                ui.heading("Settings");
-                ui.separator();
-                ui.label("Settings will be available here.");
+                ui.set_min_height(SETTINGS_PANEL_HEIGHT);
+                requests = self.settings_panel.show(ui);
             });
+        self.settings_open = open;
+
+        for request in requests {
+            match request {
+                crate::settings::SettingsUiRequest::SaveLlm(settings) => {
+                    self.request_llm_settings_save(settings);
+                }
+            }
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]

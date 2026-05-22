@@ -1,8 +1,12 @@
 use futures::StreamExt;
 use miku_api::*;
 use miku_core::ClusterId;
+use std::sync::{LazyLock, Mutex};
 
 pub(crate) struct DummyServices;
+
+static LLM_SETTINGS: LazyLock<Mutex<LlmProviderSettings>> =
+    LazyLock::new(|| Mutex::new(LlmProviderSettings::default()));
 
 #[async_trait::async_trait]
 impl ClusterRegistry for DummyServices {
@@ -177,6 +181,18 @@ impl LocalPreferenceStore for DummyServices {
     }
 
     async fn set_preference(&self, _key: &str, _value: serde_json::Value) -> miku_core::Result<()> {
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmSettingsStore for DummyServices {
+    async fn get_llm_settings(&self) -> miku_core::Result<LlmProviderSettings> {
+        Ok(LLM_SETTINGS.lock().unwrap().clone())
+    }
+
+    async fn set_llm_settings(&self, settings: LlmProviderSettings) -> miku_core::Result<()> {
+        *LLM_SETTINGS.lock().unwrap() = settings;
         Ok(())
     }
 }

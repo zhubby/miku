@@ -283,8 +283,9 @@ mod tests {
         AgentContext, ClusterConnectionInfo, ClusterInitializeRequest, ClusterInitializer,
         ClusterStatusOverview, ClusterStatusReader, ClusterStatusReport, ClusterStatusRequest,
         ClusterStatusWorkloadSummary, ClusterSummary, CreateClusterRequest,
-        KubernetesResourceWriter, KubernetesWatchService, LocalPreferenceStore, LogLine,
-        PodAttachService, PodEvictRequest, PodLogQuery, PodLogService, ResourceList, ResourceQuery,
+        KubernetesResourceWriter, KubernetesWatchService, LlmProviderSettings, LlmSettingsStore,
+        LocalPreferenceStore, LogLine, PodAttachService, PodEvictRequest, PodLogQuery,
+        PodLogService, ResourceList, ResourceQuery,
     };
     use miku_core::ClusterId;
     use tokio::sync::Mutex;
@@ -415,6 +416,17 @@ mod tests {
         }
 
         async fn set_preference(&self, _key: &str, _value: Value) -> miku_core::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl LlmSettingsStore for DummyServices {
+        async fn get_llm_settings(&self) -> miku_core::Result<LlmProviderSettings> {
+            Ok(LlmProviderSettings::default())
+        }
+
+        async fn set_llm_settings(&self, _settings: LlmProviderSettings) -> miku_core::Result<()> {
             Ok(())
         }
     }

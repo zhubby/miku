@@ -635,59 +635,16 @@ impl AgentPanel {
     ) -> Option<AgentTurnUiRequest> {
         let mut request = None;
 
-        ui.heading("Agent");
-        ui.separator();
-        ui.label(format!(
-            "Cluster: {}",
-            selected_cluster_name.unwrap_or("No cluster selected")
-        ));
-        ui.label(format!(
-            "Resource: {}",
-            active_resource
-                .map(|resource| resource.name)
-                .unwrap_or("None")
-        ));
-        ui.separator();
+        show_agent_header(ui, self);
+        ui.add_space(6.0);
+        show_agent_context(ui, selected_cluster_name, active_resource);
+        ui.add_space(8.0);
 
-        egui::ScrollArea::vertical()
-            .id_salt(("agent_messages", panel_id))
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
-                if self.messages.is_empty() {
-                    ui.label("Ask Miku to inspect clusters, explain resources, or read pod logs.");
-                }
-                for message in &self.messages {
-                    ui.group(|ui| {
-                        ui.strong(role_label(&message.role));
-                        ui.label(&message.content);
-                    });
-                }
-                if !self.events.is_empty() {
-                    ui.collapsing("Tool activity", |ui| {
-                        for event in &self.events {
-                            ui.label(format_agent_event(event));
-                        }
-                    });
-                }
-                if let Some(error) = &self.error {
-                    ui.colored_label(ui.visuals().error_fg_color, error);
-                }
-                if self.in_flight.is_some() {
-                    ui.label("Thinking...");
-                }
-            });
+        let message_height = (ui.available_height() - 118.0).max(120.0);
+        show_agent_messages(ui, panel_id, message_height, self);
 
-        ui.separator();
-        ui.add(
-            egui::TextEdit::multiline(&mut self.input)
-                .desired_rows(3)
-                .hint_text("Ask about the selected cluster..."),
-        );
         let can_send = self.in_flight.is_none() && !self.input.trim().is_empty();
-        if ui
-            .add_enabled(can_send, egui::Button::new("Send"))
-            .clicked()
-        {
+        if show_agent_composer(ui, &mut self.input, can_send) {
             let message = self.input.trim().to_owned();
             self.input.clear();
             self.error = None;
@@ -744,6 +701,356 @@ impl AgentPanel {
     }
 }
 
+fn show_agent_header(ui: &mut egui::Ui, panel: &AgentPanel) {
+    let (status_icon, status_text, status_color) = if panel.in_flight.is_some() {
+        (
+            egui_phosphor::regular::CIRCLE_NOTCH,
+            "Thinking",
+            ui.visuals().hyperlink_color,
+        )
+    } else if panel.error.is_some() {
+        (
+            egui_phosphor::regular::WARNING_CIRCLE,
+            "Needs attention",
+            ui.visuals().error_fg_color,
+        )
+    } else {
+        (
+            egui_phosphor::regular::SPARKLE,
+            "Ready",
+            ui.visuals().weak_text_color(),
+        )
+    };
+
+    egui::Frame::new()
+        .fill(ui.visuals().widgets.inactive.bg_fill)
+        .stroke(ui.visuals().widgets.inactive.bg_stroke)
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(egui_phosphor::regular::SPARKLE)
+                        .color(ui.visuals().hyperlink_color),
+                );
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("Miku Agent").strong());
+                    ui.label(
+                        egui::RichText::new("Kubernetes assistant")
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(status_text).small().color(status_color));
+                    ui.label(egui::RichText::new(status_icon).color(status_color));
+                });
+            });
+        });
+}
+
+fn show_agent_context(
+    ui: &mut egui::Ui,
+    selected_cluster_name: Option<&str>,
+    active_resource: Option<ResourceNavItem>,
+) {
+    ui.horizontal_wrapped(|ui| {
+        context_chip(
+            ui,
+            egui_phosphor::regular::TREE_STRUCTURE,
+            selected_cluster_name.unwrap_or("No cluster selected"),
+        );
+        context_chip(
+            ui,
+            egui_phosphor::regular::CUBE,
+            active_resource
+                .map(|resource| resource.name)
+                .unwrap_or("No resource"),
+        );
+    });
+}
+
+fn context_chip(ui: &mut egui::Ui, icon: &str, text: &str) {
+    egui::Frame::new()
+        .fill(ui.visuals().extreme_bg_color)
+        .stroke(egui::Stroke::new(
+            1.0,
+            ui.visuals().widgets.noninteractive.bg_stroke.color,
+        ))
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(icon)
+                        .small()
+                        .color(ui.visuals().weak_text_color()),
+                );
+                ui.label(egui::RichText::new(text).small());
+            });
+        });
+}
+
+fn show_agent_messages(
+    ui: &mut egui::Ui,
+    panel_id: usize,
+    message_height: f32,
+    panel: &AgentPanel,
+) {
+    egui::Frame::new()
+        .fill(ui.visuals().panel_fill)
+        .stroke(egui::Stroke::new(
+            1.0,
+            ui.visuals().widgets.noninteractive.bg_stroke.color,
+        ))
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt(("agent_messages", panel_id))
+                .max_height(message_height)
+                .min_scrolled_height(message_height)
+                .auto_shrink([false, false])
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    if panel.messages.is_empty() {
+                        show_agent_empty_state(ui);
+                    }
+
+                    for message in &panel.messages {
+                        show_agent_message(ui, message);
+                        ui.add_space(8.0);
+                    }
+
+                    if !panel.events.is_empty() {
+                        show_agent_tool_activity(ui, &panel.events);
+                        ui.add_space(8.0);
+                    }
+
+                    if let Some(error) = &panel.error {
+                        show_agent_error(ui, error);
+                    }
+
+                    if panel.in_flight.is_some() {
+                        show_agent_thinking(ui);
+                    }
+                });
+        });
+    ui.add_space(8.0);
+}
+
+fn show_agent_empty_state(ui: &mut egui::Ui) {
+    ui.add_space(24.0);
+    ui.vertical_centered(|ui| {
+        ui.label(
+            egui::RichText::new(egui_phosphor::regular::SPARKLE)
+                .size(22.0)
+                .color(ui.visuals().hyperlink_color),
+        );
+        ui.label(egui::RichText::new("Ask Miku about this cluster").strong());
+        ui.label(
+            egui::RichText::new("Check status, explain resources, or read pod logs.")
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+    });
+}
+
+fn show_agent_message(ui: &mut egui::Ui, message: &AgentMessage) {
+    match message.role {
+        AgentRole::User => show_user_message(ui, message),
+        AgentRole::Assistant => show_assistant_message(ui, message),
+        AgentRole::Tool => show_tool_message(ui, message),
+    }
+}
+
+fn show_user_message(ui: &mut egui::Ui, message: &AgentMessage) {
+    let width = agent_bubble_width(ui);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+        message_bubble(
+            ui,
+            "You",
+            egui_phosphor::regular::USER,
+            &message.content,
+            width,
+            ui.visuals().selection.bg_fill,
+            ui.visuals().selection.stroke,
+            ui.visuals().selection.stroke.color,
+        );
+    });
+}
+
+fn show_assistant_message(ui: &mut egui::Ui, message: &AgentMessage) {
+    message_bubble(
+        ui,
+        "Miku",
+        egui_phosphor::regular::SPARKLE,
+        &message.content,
+        agent_bubble_width(ui),
+        ui.visuals().extreme_bg_color,
+        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+        ui.visuals().hyperlink_color,
+    );
+}
+
+fn show_tool_message(ui: &mut egui::Ui, message: &AgentMessage) {
+    message_bubble(
+        ui,
+        "Tool",
+        egui_phosphor::regular::WRENCH,
+        &message.content,
+        agent_bubble_width(ui),
+        ui.visuals().widgets.inactive.bg_fill,
+        ui.visuals().widgets.inactive.bg_stroke,
+        ui.visuals().weak_text_color(),
+    );
+}
+
+fn message_bubble(
+    ui: &mut egui::Ui,
+    label: &str,
+    icon: &str,
+    content: &str,
+    max_width: f32,
+    fill: egui::Color32,
+    stroke: egui::Stroke,
+    accent: egui::Color32,
+) {
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(stroke)
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_max_width(max_width);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(icon).small().color(accent));
+                ui.label(egui::RichText::new(label).small().strong().color(accent));
+            });
+            ui.add(
+                egui::Label::new(egui::RichText::new(content).color(ui.visuals().text_color()))
+                    .wrap(),
+            );
+        });
+}
+
+fn agent_bubble_width(ui: &egui::Ui) -> f32 {
+    (ui.available_width() * 0.82).max(120.0)
+}
+
+fn show_agent_tool_activity(ui: &mut egui::Ui, events: &[AgentEvent]) {
+    egui::CollapsingHeader::new(format!(
+        "{} Tool activity",
+        egui_phosphor::regular::WRENCH
+    ))
+    .default_open(false)
+    .show(ui, |ui| {
+        for event in events {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(agent_event_icon(event))
+                        .color(agent_event_color(ui, event)),
+                );
+                ui.label(
+                    egui::RichText::new(format_agent_event(event))
+                        .small()
+                        .color(ui.visuals().weak_text_color()),
+                );
+            });
+        }
+    });
+}
+
+fn show_agent_error(ui: &mut egui::Ui, error: &str) {
+    status_frame(ui, ui.visuals().error_fg_color, |ui| {
+        ui.label(
+            egui::RichText::new(egui_phosphor::regular::WARNING_CIRCLE)
+                .color(ui.visuals().error_fg_color),
+        );
+        ui.label(egui::RichText::new(error).color(ui.visuals().error_fg_color));
+    });
+}
+
+fn show_agent_thinking(ui: &mut egui::Ui) {
+    status_frame(ui, ui.visuals().hyperlink_color, |ui| {
+        ui.add(egui::Spinner::new().size(14.0));
+        ui.label(
+            egui::RichText::new("Miku is thinking...")
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+    });
+}
+
+fn status_frame<R>(
+    ui: &mut egui::Ui,
+    color: egui::Color32,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) {
+    egui::Frame::new()
+        .fill(ui.visuals().widgets.inactive.bg_fill)
+        .stroke(egui::Stroke::new(1.0, color))
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            ui.horizontal(add_contents);
+        });
+}
+
+fn show_agent_composer(ui: &mut egui::Ui, input: &mut String, can_send: bool) -> bool {
+    let mut send_clicked = false;
+    egui::Frame::new()
+        .fill(ui.visuals().extreme_bg_color)
+        .stroke(egui::Stroke::new(
+            1.0,
+            ui.visuals().widgets.noninteractive.bg_stroke.color,
+        ))
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(8, 8))
+        .show(ui, |ui| {
+            ui.set_min_height(92.0);
+            ui.add(
+                egui::TextEdit::multiline(input)
+                    .desired_rows(3)
+                    .desired_width(ui.available_width())
+                    .hint_text("Ask about the selected cluster..."),
+            );
+            ui.add_space(4.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let send_text = egui::RichText::new(egui_phosphor::regular::PAPER_PLANE_TILT)
+                    .color(if can_send {
+                        ui.visuals().hyperlink_color
+                    } else {
+                        ui.visuals().weak_text_color()
+                    });
+                send_clicked = ui
+                    .add_enabled(can_send, egui::Button::new(send_text))
+                    .on_hover_text("Send")
+                    .clicked();
+            });
+        });
+    send_clicked
+}
+
+fn agent_event_icon(event: &AgentEvent) -> &'static str {
+    match event {
+        AgentEvent::ToolStarted { .. } => egui_phosphor::regular::CIRCLE_NOTCH,
+        AgentEvent::ToolFinished { .. } => egui_phosphor::regular::CHECK_CIRCLE,
+        AgentEvent::ToolFailed { .. } => egui_phosphor::regular::WARNING_CIRCLE,
+        AgentEvent::Completed { .. } => egui_phosphor::regular::CHECK,
+    }
+}
+
+fn agent_event_color(ui: &egui::Ui, event: &AgentEvent) -> egui::Color32 {
+    match event {
+        AgentEvent::ToolStarted { .. } => ui.visuals().hyperlink_color,
+        AgentEvent::ToolFinished { .. } | AgentEvent::Completed { .. } => {
+            ui.visuals().weak_text_color()
+        }
+        AgentEvent::ToolFailed { .. } => ui.visuals().error_fg_color,
+    }
+}
+
 fn role_label(role: &AgentRole) -> &'static str {
     match role {
         AgentRole::User => "You",
@@ -772,8 +1079,6 @@ impl ClusterStatusPanel {
         if let Some(request) = self.request_status_if_idle(cluster_id.clone()) {
             requests.push(request);
         }
-
-        let page_rect = ui.available_rect_before_wrap();
 
         ui.horizontal(|ui| {
             ui.heading(cluster_name);
@@ -815,6 +1120,7 @@ impl ClusterStatusPanel {
             });
         });
         ui.separator();
+        let page_rect = ui.available_rect_before_wrap();
 
         match &self.state {
             ClusterStatusPanelState::Idle => {
@@ -894,13 +1200,15 @@ fn show_centered_in_rect<R>(
     rect: egui::Rect,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<R> {
+    let top_space = (rect.height() * 0.5 - 16.0).max(0.0);
     ui.scope_builder(
         egui::UiBuilder::new()
             .max_rect(rect)
-            .layout(egui::Layout::centered_and_justified(
-                egui::Direction::TopDown,
-            )),
-        add_contents,
+            .layout(egui::Layout::top_down(egui::Align::Center)),
+        |ui| {
+            ui.add_space(top_space);
+            add_contents(ui)
+        },
     )
 }
 

@@ -10,6 +10,7 @@ mod menu;
 mod native;
 mod resource_panel;
 mod resources;
+mod settings;
 mod state;
 mod tabs;
 mod time;
