@@ -181,4 +181,26 @@ impl LocalPreferenceStore for DummyServices {
     }
 }
 
+#[async_trait::async_trait]
+impl AgentService for DummyServices {
+    async fn run_agent_turn(
+        &self,
+        request: AgentTurnRequest,
+    ) -> miku_core::Result<AgentTurnResponse> {
+        Ok(AgentTurnResponse {
+            session_id: request.session_id,
+            message: AgentMessage {
+                role: AgentRole::Assistant,
+                content: "Agent response".to_owned(),
+            },
+            status: AgentTurnStatus::Completed,
+            tool_calls: Vec::new(),
+            events: vec![AgentEvent::Completed {
+                status: AgentTurnStatus::Completed,
+                summary: "Agent response".to_owned(),
+            }],
+        })
+    }
+}
+
 impl MikuServices for DummyServices {}

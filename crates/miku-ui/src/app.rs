@@ -29,7 +29,10 @@ use crate::resource_panel::{
 };
 use crate::resources::ResourceNavItem;
 use crate::state::{AppState, ClusterConnectionState, RuntimeMode};
-use crate::tabs::{AppTab, AppTabViewer, ClusterStatusLoadRequest, ClusterStatusPanel};
+use crate::tabs::{
+    AgentPanel, AgentTurnUiRequest, AppTab, AppTabViewer, ClusterStatusLoadRequest,
+    ClusterStatusPanel,
+};
 
 const MAX_RESOURCE_EVENTS_PER_PASS: usize = 8;
 
@@ -43,7 +46,8 @@ pub struct MikuApp {
     pub(crate) left_dock_state: DockState<AppTab>,
     pub(crate) right_dock_state: DockState<AppTab>,
     pub(crate) workspaces: HashMap<miku_core::ClusterId, ClusterWorkspace>,
-    pub(crate) next_inspector_id: usize,
+    pub(crate) agent_panels: HashMap<usize, AgentPanel>,
+    pub(crate) next_agent_id: usize,
     pub(crate) services: Option<Arc<dyn MikuServices>>,
     pub(crate) resource_event_sender: resource_mpsc::Sender<ResourceUiEvent>,
     pub(crate) resource_event_receiver: resource_mpsc::Receiver<ResourceUiEvent>,
@@ -53,10 +57,13 @@ pub struct MikuApp {
     pub(crate) resource_watch_tasks: HashMap<ResourceWatchKey, tokio::task::JoinHandle<()>>,
     pub(crate) status_event_sender: resource_mpsc::Sender<ClusterStatusUiEvent>,
     pub(crate) status_event_receiver: resource_mpsc::Receiver<ClusterStatusUiEvent>,
+    pub(crate) agent_event_sender: resource_mpsc::Sender<AgentUiEvent>,
+    pub(crate) agent_event_receiver: resource_mpsc::Receiver<AgentUiEvent>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) runtime: Option<tokio::runtime::Handle>,
     pub(crate) cluster_event_sender: resource_mpsc::Sender<ClusterUiEvent>,
     pub(crate) cluster_event_receiver: resource_mpsc::Receiver<ClusterUiEvent>,
+    pub(crate) settings_open: bool,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) file_dialog: egui_file_dialog::FileDialog,
 }
@@ -163,14 +170,24 @@ pub(crate) enum ClusterStatusUiEvent {
     },
 }
 
+#[derive(Clone, Debug)]
+pub(crate) enum AgentUiEvent {
+    TurnCompleted {
+        request_id: u64,
+        panel_id: usize,
+        result: Result<miku_api::AgentTurnResponse, String>,
+    },
+}
+
 impl MikuApp {
     pub fn new(runtime_mode: RuntimeMode) -> Self {
         tracing::debug!(?runtime_mode, "creating Miku app");
         let (cluster_event_sender, cluster_event_receiver) = resource_mpsc::channel();
         let (resource_event_sender, resource_event_receiver) = resource_mpsc::channel();
         let (status_event_sender, status_event_receiver) = resource_mpsc::channel();
+        let (agent_event_sender, agent_event_receiver) = resource_mpsc::channel();
         let left_dock_state = DockState::new(vec![AppTab::Clusters, AppTab::Resources]);
-        let right_dock_state = DockState::new(vec![AppTab::Inspector(1)]);
+        let right_dock_state = DockState::new(vec![AppTab::Agent(1)]);
 
         Self {
             state: AppState::new(runtime_mode),
@@ -182,7 +199,8 @@ impl MikuApp {
             left_dock_state,
             right_dock_state,
             workspaces: HashMap::new(),
-            next_inspector_id: 2,
+            agent_panels: HashMap::from([(1, AgentPanel::default())]),
+            next_agent_id: 2,
             services: None,
             resource_event_sender,
             resource_event_receiver,
@@ -191,10 +209,13 @@ impl MikuApp {
             resource_watch_tasks: HashMap::new(),
             status_event_sender,
             status_event_receiver,
+            agent_event_sender,
+            agent_event_receiver,
             #[cfg(not(target_arch = "wasm32"))]
             runtime: None,
             cluster_event_sender,
             cluster_event_receiver,
+            settings_open: false,
             #[cfg(not(target_arch = "wasm32"))]
             file_dialog: egui_file_dialog::FileDialog::new(),
         }
@@ -235,6 +256,7 @@ impl eframe::App for MikuApp {
             self.process_cluster_events();
             self.process_resource_events(ui.ctx());
             self.process_status_events();
+            self.process_agent_events();
         }
         self.update_file_dialog(ui.ctx());
 
@@ -258,6 +280,10 @@ impl eframe::App for MikuApp {
             });
 
         let dock_style = Style::from_egui(ui.style().as_ref());
+        let mut dock_style_without_tab_scroll_bar = dock_style.clone();
+        dock_style_without_tab_scroll_bar
+            .tab_bar
+            .show_scroll_bar_on_overflow = false;
 
         egui::Panel::left("left_sidebar")
             .resizable(true)
@@ -317,6 +343,8 @@ impl eframe::App for MikuApp {
                     stateful_set_resource_panel: None,
                     validating_webhook_configuration_resource_panel: None,
                     custom_resources_panel: None,
+                    agent_panels: None,
+                    agent_turn_requests: Vec::new(),
                     status_load_requests: Vec::new(),
                     resource_load_requests: Vec::new(),
                     resource_watch_requests: Vec::new(),
@@ -357,6 +385,8 @@ impl eframe::App for MikuApp {
             .size_range(180.0..=420.0)
             .frame(egui::Frame::NONE)
             .show_inside(ui, |ui| {
+                let active_resource = self.selected_workspace_resource();
+                let selected_cluster_id = self.selected_cluster_id();
                 let mut tab_viewer = AppTabViewer {
                     state: &self.state,
                     clusters: &self.clusters,
@@ -365,13 +395,13 @@ impl eframe::App for MikuApp {
                     cluster_load_error: self.cluster_load_error.as_deref(),
                     closeable: true,
                     allow_windows: false,
-                    add_tab: Some(AppTab::Inspector(self.next_inspector_id)),
+                    add_tab: Some(AppTab::Agent(self.next_agent_id)),
                     add_requested: false,
                     new_cluster_requested: false,
                     selected_cluster: None,
-                    active_resource: self.selected_workspace_resource(),
+                    active_resource,
                     selected_resource: None,
-                    selected_cluster_id: self.selected_cluster_id(),
+                    selected_cluster_id,
                     cluster_status_panel: None,
                     cluster_role_binding_resource_panel: None,
                     cluster_role_resource_panel: None,
@@ -409,6 +439,8 @@ impl eframe::App for MikuApp {
                     stateful_set_resource_panel: None,
                     validating_webhook_configuration_resource_panel: None,
                     custom_resources_panel: None,
+                    agent_panels: Some(&mut self.agent_panels),
+                    agent_turn_requests: Vec::new(),
                     status_load_requests: Vec::new(),
                     resource_load_requests: Vec::new(),
                     resource_watch_requests: Vec::new(),
@@ -421,7 +453,7 @@ impl eframe::App for MikuApp {
                 show_dock_region(ui, |ui| {
                     DockArea::new(&mut self.right_dock_state)
                         .id(egui::Id::new("right_sidebar_dock"))
-                        .style(dock_style.clone())
+                        .style(dock_style_without_tab_scroll_bar.clone())
                         .draggable_tabs(false)
                         .show_add_buttons(true)
                         .show_close_buttons(true)
@@ -430,10 +462,19 @@ impl eframe::App for MikuApp {
                         .show_inside(ui, &mut tab_viewer);
                 });
 
-                if tab_viewer.add_requested {
+                let add_requested = tab_viewer.add_requested;
+                let agent_turn_requests = std::mem::take(&mut tab_viewer.agent_turn_requests);
+                drop(tab_viewer);
+
+                if add_requested {
                     self.right_dock_state
-                        .push_to_focused_leaf(AppTab::Inspector(self.next_inspector_id));
-                    self.next_inspector_id += 1;
+                        .push_to_focused_leaf(AppTab::Agent(self.next_agent_id));
+                    self.agent_panels
+                        .insert(self.next_agent_id, AgentPanel::default());
+                    self.next_agent_id += 1;
+                }
+                for request in agent_turn_requests {
+                    self.request_agent_turn(request);
                 }
             });
 
@@ -523,6 +564,8 @@ impl eframe::App for MikuApp {
                     &mut workspace.validating_webhook_configuration_resource_panel,
                 ),
                 custom_resources_panel: Some(&mut workspace.custom_resources_panel),
+                agent_panels: None,
+                agent_turn_requests: Vec::new(),
                 status_load_requests: Vec::new(),
                 resource_load_requests: Vec::new(),
                 resource_watch_requests: Vec::new(),
@@ -535,7 +578,7 @@ impl eframe::App for MikuApp {
             show_dock_region(ui, |ui| {
                 DockArea::new(&mut workspace.dock_state)
                     .id(egui::Id::new("center_workspace_dock"))
-                    .style(dock_style)
+                    .style(dock_style_without_tab_scroll_bar)
                     .draggable_tabs(true)
                     .show_close_buttons(true)
                     .show_leaf_close_all_buttons(false)
@@ -577,6 +620,7 @@ impl eframe::App for MikuApp {
         });
 
         self.show_new_cluster_dialog(ui.ctx());
+        self.show_settings_panel(ui.ctx());
     }
 }
 
@@ -662,6 +706,12 @@ impl MikuApp {
         }
     }
 
+    fn process_agent_events(&mut self) {
+        while let Ok(event) = self.agent_event_receiver.try_recv() {
+            self.apply_agent_event(event);
+        }
+    }
+
     fn apply_status_event(&mut self, event: ClusterStatusUiEvent) {
         match event {
             ClusterStatusUiEvent::Loaded { request, result } => {
@@ -711,6 +761,74 @@ impl MikuApp {
                     .await
                     .map_err(|error| error.to_string());
                 let _ = sender.send(ClusterStatusUiEvent::Loaded { request, result });
+            });
+        }
+    }
+
+    fn apply_agent_event(&mut self, event: AgentUiEvent) {
+        match event {
+            AgentUiEvent::TurnCompleted {
+                request_id,
+                panel_id,
+                result,
+            } => {
+                self.agent_panels
+                    .entry(panel_id)
+                    .or_default()
+                    .apply_result(request_id, result);
+            }
+        }
+    }
+
+    fn request_agent_turn(&mut self, request: AgentTurnUiRequest) {
+        let Some(services) = self.services.clone() else {
+            self.apply_agent_event(AgentUiEvent::TurnCompleted {
+                request_id: request.request_id,
+                panel_id: request.panel_id,
+                result: Err("agent services are not available".to_owned()),
+            });
+            return;
+        };
+        let sender = self.agent_event_sender.clone();
+        let request_id = request.request_id;
+        let panel_id = request.panel_id;
+        let api_request = request.request;
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(runtime) = self.runtime.as_ref() else {
+                self.apply_agent_event(AgentUiEvent::TurnCompleted {
+                    request_id,
+                    panel_id,
+                    result: Err("agent runtime is not available".to_owned()),
+                });
+                return;
+            };
+            runtime.spawn(async move {
+                let result = services
+                    .run_agent_turn(api_request)
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(AgentUiEvent::TurnCompleted {
+                    request_id,
+                    panel_id,
+                    result,
+                });
+            });
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            wasm_bindgen_futures::spawn_local(async move {
+                let result = services
+                    .run_agent_turn(api_request)
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(AgentUiEvent::TurnCompleted {
+                    request_id,
+                    panel_id,
+                    result,
+                });
             });
         }
     }

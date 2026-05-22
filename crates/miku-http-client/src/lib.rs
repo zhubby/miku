@@ -5,13 +5,13 @@ use futures::StreamExt;
 #[cfg(not(target_arch = "wasm32"))]
 use futures::channel::mpsc;
 use miku_api::{
-    ClusterConnectionInfo, ClusterInitializeRequest, ClusterInitializer, ClusterRegistry,
-    ClusterStatusReader, ClusterStatusReport, ClusterStatusRequest, ClusterSummary,
-    CreateClusterRequest, KubernetesResourceReader, KubernetesResourceWriter,
-    KubernetesWatchService, LocalPreferenceStore, LogLine, MikuServices, PodAttachRequest,
-    PodAttachService, PodAttachSession, PodEvictRequest, PodLogQuery, PodLogService,
-    ResourceApplyRequest, ResourceDeleteRequest, ResourceEvent, ResourceList, ResourceQuery,
-    ResourceSummary,
+    AgentService, AgentTurnRequest, AgentTurnResponse, ClusterConnectionInfo,
+    ClusterInitializeRequest, ClusterInitializer, ClusterRegistry, ClusterStatusReader,
+    ClusterStatusReport, ClusterStatusRequest, ClusterSummary, CreateClusterRequest,
+    KubernetesResourceReader, KubernetesResourceWriter, KubernetesWatchService,
+    LocalPreferenceStore, LogLine, MikuServices, PodAttachRequest, PodAttachService,
+    PodAttachSession, PodEvictRequest, PodLogQuery, PodLogService, ResourceApplyRequest,
+    ResourceDeleteRequest, ResourceEvent, ResourceList, ResourceQuery, ResourceSummary,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use miku_api::{PodAttachInput, PodAttachOutput};
@@ -165,6 +165,29 @@ impl ClusterStatusReader for HttpMikuClient {
         request: ClusterStatusRequest,
     ) -> miku_core::Result<ClusterStatusReport> {
         let endpoint = self.endpoint("/api/clusters/status");
+        self.client
+            .post(endpoint)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .json()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl AgentService for HttpMikuClient {
+    #[tracing::instrument(name = "http_client.run_agent_turn", skip(self, request), fields(session_id = %request.session_id))]
+    async fn run_agent_turn(
+        &self,
+        request: AgentTurnRequest,
+    ) -> miku_core::Result<AgentTurnResponse> {
+        let endpoint = self.endpoint("/api/agent/turn");
         self.client
             .post(endpoint)
             .json(&request)

@@ -235,6 +235,79 @@ pub struct LogLine {
     pub text: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum AgentRole {
+    User,
+    Assistant,
+    Tool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentMessage {
+    pub role: AgentRole,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentContext {
+    pub cluster_id: Option<ClusterId>,
+    pub cluster_name: Option<String>,
+    pub selected_resource: Option<String>,
+    pub namespace: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentTurnRequest {
+    pub session_id: String,
+    pub message: String,
+    pub context: AgentContext,
+    pub history: Vec<AgentMessage>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum AgentTurnStatus {
+    Completed,
+    Partial,
+    Blocked,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentToolCallSummary {
+    pub name: String,
+    pub arguments: serde_json::Value,
+    pub result: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum AgentEvent {
+    ToolStarted {
+        name: String,
+        arguments: serde_json::Value,
+    },
+    ToolFinished {
+        name: String,
+        result: String,
+    },
+    ToolFailed {
+        name: String,
+        error: String,
+    },
+    Completed {
+        status: AgentTurnStatus,
+        summary: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentTurnResponse {
+    pub session_id: String,
+    pub message: AgentMessage,
+    pub status: AgentTurnStatus,
+    pub tool_calls: Vec<AgentToolCallSummary>,
+    pub events: Vec<AgentEvent>,
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait ClusterRegistry: ServiceBounds {
@@ -365,6 +438,20 @@ pub trait LocalPreferenceStore: ServiceBounds {
     async fn set_preference(&self, key: &str, value: serde_json::Value) -> miku_core::Result<()>;
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait AgentService: ServiceBounds {
+    async fn run_agent_turn(
+        &self,
+        request: AgentTurnRequest,
+    ) -> miku_core::Result<AgentTurnResponse> {
+        let _ = request;
+        Err(miku_core::MikuError::UnsupportedRuntime(
+            "agent service is not implemented in this runtime".to_owned(),
+        ))
+    }
+}
+
 pub trait MikuServices:
     ClusterRegistry
     + ClusterInitializer
@@ -375,6 +462,7 @@ pub trait MikuServices:
     + PodLogService
     + PodAttachService
     + LocalPreferenceStore
+    + AgentService
     + ServiceBounds
 {
 }
@@ -612,8 +700,59 @@ mod tests {
             }
         }
 
+        #[async_trait::async_trait]
+        impl AgentService for Dummy {}
+
         impl MikuServices for Dummy {}
 
         accepts_services(&Dummy);
+    }
+
+    #[test]
+    fn agent_turn_contract_round_trips_as_json() {
+        let request = AgentTurnRequest {
+            session_id: "agent-1".to_owned(),
+            message: "Summarize this cluster".to_owned(),
+            context: AgentContext {
+                cluster_id: Some(ClusterId::new("local")),
+                cluster_name: Some("kind-miku".to_owned()),
+                selected_resource: Some("Pods".to_owned()),
+                namespace: Some("default".to_owned()),
+            },
+            history: vec![AgentMessage {
+                role: AgentRole::User,
+                content: "What is unhealthy?".to_owned(),
+            }],
+        };
+        let response = AgentTurnResponse {
+            session_id: request.session_id.clone(),
+            message: AgentMessage {
+                role: AgentRole::Assistant,
+                content: "No unhealthy pods found.".to_owned(),
+            },
+            status: AgentTurnStatus::Completed,
+            tool_calls: vec![AgentToolCallSummary {
+                name: "get_cluster_status".to_owned(),
+                arguments: serde_json::json!({"cluster_id": "local"}),
+                result: Some("ok".to_owned()),
+                error: None,
+            }],
+            events: vec![AgentEvent::Completed {
+                status: AgentTurnStatus::Completed,
+                summary: "Checked cluster status".to_owned(),
+            }],
+        };
+
+        let request_json = serde_json::to_string(&request).unwrap();
+        let response_json = serde_json::to_string(&response).unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<AgentTurnRequest>(&request_json).unwrap(),
+            request
+        );
+        assert_eq!(
+            serde_json::from_str::<AgentTurnResponse>(&response_json).unwrap(),
+            response
+        );
     }
 }

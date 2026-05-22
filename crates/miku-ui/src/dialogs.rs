@@ -4,6 +4,7 @@ use crate::app::MikuApp;
 
 const NEW_CLUSTER_DIALOG_WIDTH: f32 = 420.0;
 const CONFIG_TEXT_HEIGHT: f32 = 180.0;
+const SETTINGS_PANEL_WIDTH: f32 = 420.0;
 
 impl MikuApp {
     #[cfg(target_arch = "wasm32")]
@@ -73,6 +74,24 @@ impl MikuApp {
         if !open {
             self.new_cluster_form.cancel();
         }
+    }
+
+    pub(crate) fn show_settings_panel(&mut self, ctx: &egui::Context) {
+        if !self.settings_open {
+            return;
+        }
+
+        egui::Window::new("Settings")
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut self.settings_open)
+            .show(ctx, |ui| {
+                ui.set_min_width(SETTINGS_PANEL_WIDTH);
+                ui.heading("Settings");
+                ui.separator();
+                ui.label("Settings will be available here.");
+            });
     }
 
     #[cfg(not(target_arch = "wasm32"))]

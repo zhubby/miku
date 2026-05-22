@@ -8,6 +8,7 @@ use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
+mod agent;
 mod clusters;
 mod error;
 mod health;
@@ -32,6 +33,7 @@ pub fn router(services: SharedServices) -> Router {
             post(clusters::initialize_cluster),
         )
         .route("/api/clusters/status", post(clusters::get_cluster_status))
+        .route("/api/agent/turn", post(agent::run_agent_turn))
         .route("/api/resources/list", post(resources::list_resources))
         .route("/api/resources/watch", get(resources::watch_resources))
         .route("/api/resources/apply", post(resources::apply_resource))

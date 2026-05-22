@@ -3,8 +3,13 @@ use eframe::egui;
 use crate::app::MikuApp;
 
 impl MikuApp {
-    pub(crate) fn show_menu_bar(&self, ui: &mut egui::Ui) {
+    pub(crate) fn show_menu_bar(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("File", |ui| {
+            if ui.button("Settings").clicked() {
+                self.settings_open = true;
+                ui.close();
+            }
+
             if ui.button("Quit").clicked() {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }

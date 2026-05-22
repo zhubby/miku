@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use eframe::egui;
 use egui_dock::TabViewer;
 use miku_api::{
+    AgentContext, AgentEvent, AgentMessage, AgentRole, AgentTurnRequest, AgentTurnResponse,
     ClusterStatusReport, ClusterStatusSeverity, ClusterStatusWorkloadSummary, ClusterSummary,
 };
 
@@ -30,7 +31,7 @@ pub(crate) enum AppTab {
     Resources,
     Workspace(usize),
     Resource(ResourceNavItem),
-    Inspector(usize),
+    Agent(usize),
 }
 
 pub(crate) struct AppTabViewer<'a> {
@@ -90,6 +91,8 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) validating_webhook_configuration_resource_panel:
         Option<&'a mut ValidatingWebhookConfigurationResourcePanel>,
     pub(crate) custom_resources_panel: Option<&'a mut CustomResourcesPanel>,
+    pub(crate) agent_panels: Option<&'a mut HashMap<usize, AgentPanel>>,
+    pub(crate) agent_turn_requests: Vec<AgentTurnUiRequest>,
     pub(crate) status_load_requests: Vec<ClusterStatusLoadRequest>,
     pub(crate) resource_load_requests: Vec<ResourceLoadRequest>,
     pub(crate) resource_watch_requests: Vec<ResourceWatchRequest>,
@@ -99,10 +102,27 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) pod_attach_input_requests: Vec<PodAttachInputRequest>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct AgentTurnUiRequest {
+    pub(crate) request_id: u64,
+    pub(crate) panel_id: usize,
+    pub(crate) request: AgentTurnRequest,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ClusterStatusLoadRequest {
     pub(crate) request_id: u64,
     pub(crate) cluster_id: miku_core::ClusterId,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct AgentPanel {
+    input: String,
+    messages: Vec<AgentMessage>,
+    events: Vec<AgentEvent>,
+    in_flight: Option<u64>,
+    error: Option<String>,
+    next_request_id: u64,
 }
 
 #[derive(Debug, Default)]
@@ -138,8 +158,8 @@ impl TabViewer for AppTabViewer<'_> {
             AppTab::Workspace(1) => "Workspace",
             AppTab::Workspace(id) => return format!("Workspace {id}").into(),
             AppTab::Resource(resource) => return resource.name.into(),
-            AppTab::Inspector(1) => "Inspector",
-            AppTab::Inspector(id) => return format!("Inspector {id}").into(),
+            AppTab::Agent(1) => "Agent",
+            AppTab::Agent(id) => return format!("Agent {id}").into(),
         }
         .into()
     }
@@ -570,10 +590,23 @@ impl TabViewer for AppTabViewer<'_> {
                     });
                 }
             }
-            AppTab::Inspector(_) => {
-                ui.heading("Inspector");
-                ui.separator();
-                ui.label("Select a resource to inspect details.");
+            AppTab::Agent(id) => {
+                if let Some(agent_panels) = self.agent_panels.as_deref_mut() {
+                    let panel = agent_panels.entry(*id).or_default();
+                    if let Some(request) = panel.show(
+                        ui,
+                        *id,
+                        self.selected_cluster_id.as_ref(),
+                        self.state.selected_cluster_name(),
+                        self.active_resource,
+                    ) {
+                        self.agent_turn_requests.push(request);
+                    }
+                } else {
+                    ui.heading("Agent");
+                    ui.separator();
+                    ui.label("Agent panel is unavailable in this dock.");
+                }
             }
         }
     }
@@ -588,6 +621,143 @@ impl TabViewer for AppTabViewer<'_> {
 
     fn allowed_in_windows(&self, _tab: &mut Self::Tab) -> bool {
         self.allow_windows
+    }
+}
+
+impl AgentPanel {
+    pub(crate) fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        panel_id: usize,
+        selected_cluster_id: Option<&miku_core::ClusterId>,
+        selected_cluster_name: Option<&str>,
+        active_resource: Option<ResourceNavItem>,
+    ) -> Option<AgentTurnUiRequest> {
+        let mut request = None;
+
+        ui.heading("Agent");
+        ui.separator();
+        ui.label(format!(
+            "Cluster: {}",
+            selected_cluster_name.unwrap_or("No cluster selected")
+        ));
+        ui.label(format!(
+            "Resource: {}",
+            active_resource
+                .map(|resource| resource.name)
+                .unwrap_or("None")
+        ));
+        ui.separator();
+
+        egui::ScrollArea::vertical()
+            .id_salt(("agent_messages", panel_id))
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                if self.messages.is_empty() {
+                    ui.label("Ask Miku to inspect clusters, explain resources, or read pod logs.");
+                }
+                for message in &self.messages {
+                    ui.group(|ui| {
+                        ui.strong(role_label(&message.role));
+                        ui.label(&message.content);
+                    });
+                }
+                if !self.events.is_empty() {
+                    ui.collapsing("Tool activity", |ui| {
+                        for event in &self.events {
+                            ui.label(format_agent_event(event));
+                        }
+                    });
+                }
+                if let Some(error) = &self.error {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+                if self.in_flight.is_some() {
+                    ui.label("Thinking...");
+                }
+            });
+
+        ui.separator();
+        ui.add(
+            egui::TextEdit::multiline(&mut self.input)
+                .desired_rows(3)
+                .hint_text("Ask about the selected cluster..."),
+        );
+        let can_send = self.in_flight.is_none() && !self.input.trim().is_empty();
+        if ui
+            .add_enabled(can_send, egui::Button::new("Send"))
+            .clicked()
+        {
+            let message = self.input.trim().to_owned();
+            self.input.clear();
+            self.error = None;
+            self.events.clear();
+            let request_id = self.next_request_id;
+            self.next_request_id += 1;
+            self.in_flight = Some(request_id);
+            let selected_resource = active_resource.map(|resource| resource.name.to_owned());
+            let history = self.messages.clone();
+            self.messages.push(AgentMessage {
+                role: AgentRole::User,
+                content: message.clone(),
+            });
+            request = Some(AgentTurnUiRequest {
+                request_id,
+                panel_id,
+                request: AgentTurnRequest {
+                    session_id: format!("agent-{panel_id}"),
+                    message,
+                    context: AgentContext {
+                        cluster_id: selected_cluster_id.cloned(),
+                        cluster_name: selected_cluster_name.map(str::to_owned),
+                        selected_resource,
+                        namespace: None,
+                    },
+                    history,
+                },
+            });
+        }
+
+        request
+    }
+
+    pub(crate) fn apply_result(
+        &mut self,
+        request_id: u64,
+        result: Result<AgentTurnResponse, String>,
+    ) {
+        if self.in_flight != Some(request_id) {
+            return;
+        }
+        self.in_flight = None;
+
+        match result {
+            Ok(response) => {
+                self.events = response.events;
+                self.messages.push(response.message);
+                self.error = None;
+            }
+            Err(error) => {
+                self.error = Some(error);
+            }
+        }
+    }
+}
+
+fn role_label(role: &AgentRole) -> &'static str {
+    match role {
+        AgentRole::User => "You",
+        AgentRole::Assistant => "Miku",
+        AgentRole::Tool => "Tool",
+    }
+}
+
+fn format_agent_event(event: &AgentEvent) -> String {
+    match event {
+        AgentEvent::ToolStarted { name, .. } => format!("Started {name}"),
+        AgentEvent::ToolFinished { name, .. } => format!("Finished {name}"),
+        AgentEvent::ToolFailed { name, error } => format!("{name} failed: {error}"),
+        AgentEvent::Completed { status, summary } => format!("{status:?}: {summary}"),
     }
 }
 

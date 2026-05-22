@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/miku-agent",
     "crates/miku-api",
     "crates/miku-cli",
     "crates/miku-core",
@@ -34,6 +35,7 @@ futures = "0.3.31"
 js-sys = "0.3.85"
 k8s-openapi = { version = "0.27.0", features = ["latest"] }
 kube = { version = "3.1.0", features = ["client", "config", "runtime", "ws"] }
+miku-agent = { path = "crates/miku-agent" }
 miku-api = { path = "crates/miku-api" }
 miku-core = { path = "crates/miku-core" }
 miku-http-client = { path = "crates/miku-http-client" }
@@ -41,7 +43,7 @@ miku-kube = { path = "crates/miku-kube" }
 miku-server = { path = "crates/miku-server" }
 miku-store = { path = "crates/miku-store" }
 miku-ui = { path = "crates/miku-ui" }
-reqwest = { version = "0.12.24", default-features = false, features = ["json", "stream"] }
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "stream"] }
 mime_guess = "2.0.5"
 rust-embed = "8.11.0"
 sea-orm = { version = "1.1.20", default-features = false, features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros", "with-json"] }

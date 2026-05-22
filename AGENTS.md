@@ -125,7 +125,7 @@ For SQLite changes:
 
 - `miku-ui` is the shared egui shell for native and web runtimes. Keep native-only behavior behind non-wasm cfg gates.
 - Use existing libraries for the UI foundation: `eframe`, `egui_dock`, `egui-theme-switch`, and `egui-phosphor`.
-- Keep the docked layout predictable: left cluster navigation, central workspace, right inspector, bottom status bar.
+- Keep the docked layout predictable: left cluster navigation, central workspace, right agent, bottom status bar.
 - Use icon buttons with hover text for window/tool actions when an icon exists.
 - Do not block egui render/update callbacks on network, disk-heavy, Kubernetes, or server work. Use background tasks, request state, and polling/notifications for long work.
 - Keep text and controls sized to fit both desktop and web runtimes. Avoid hard-coded heights except for stable chrome such as the status bar.
