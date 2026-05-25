@@ -47,6 +47,44 @@ pub(crate) async fn ensure_cluster_schema(database: &DatabaseConnection) -> miku
     .await
 }
 
+pub(crate) async fn ensure_agent_schema(database: &DatabaseConnection) -> miku_core::Result<()> {
+    execute_sql(
+        database,
+        "create table if not exists agent_conversations (
+            id text primary key not null,
+            title text not null,
+            context text not null,
+            created_at integer not null,
+            updated_at integer not null,
+            last_message_at integer
+        )",
+    )
+    .await?;
+    execute_sql(
+        database,
+        "create table if not exists agent_messages (
+            id text primary key not null,
+            conversation_id text not null,
+            role text not null,
+            content text not null,
+            created_at integer not null
+        )",
+    )
+    .await?;
+    execute_sql(
+        database,
+        "create index if not exists idx_agent_conversations_last_message_at \
+         on agent_conversations(last_message_at)",
+    )
+    .await?;
+    execute_sql(
+        database,
+        "create index if not exists idx_agent_messages_conversation_created_at \
+         on agent_messages(conversation_id, created_at)",
+    )
+    .await
+}
+
 pub(crate) async fn table_columns(
     database: &DatabaseConnection,
     table: &str,

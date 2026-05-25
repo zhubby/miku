@@ -5,7 +5,7 @@ use sea_orm_migration::prelude::MigratorTrait;
 
 use crate::migrations::Migrator;
 use crate::paths::StorePaths;
-use crate::schema::ensure_cluster_schema;
+use crate::schema::{ensure_agent_schema, ensure_cluster_schema};
 use crate::util::{sqlite_url, to_storage_error};
 
 #[derive(Clone)]
@@ -29,6 +29,7 @@ impl SqliteStore {
             .await
             .map_err(to_storage_error)?;
         ensure_cluster_schema(&database).await?;
+        ensure_agent_schema(&database).await?;
         tracing::info!("sqlite store initialized");
 
         Ok(Self { paths, database })
