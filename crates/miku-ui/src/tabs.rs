@@ -27,6 +27,10 @@ use crate::resource_panel::{
 use crate::resources::{RESOURCE_CATEGORIES, ResourceNavItem};
 use crate::state::{AppState, ClusterConnectionState};
 
+const AGENT_COMPOSER_OUTER_HEIGHT: f32 = 112.0;
+const AGENT_MESSAGE_FRAME_VERTICAL_INSET: f32 = 16.0;
+const AGENT_SECTION_SPACING: f32 = 8.0;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum AppTab {
     Clusters,
@@ -665,9 +669,12 @@ impl AgentPanel {
         let mut request = None;
 
         show_agent_header(ui, panel_id, self);
-        ui.add_space(8.0);
+        ui.add_space(AGENT_SECTION_SPACING);
 
-        let message_height = (ui.available_height() - 112.0).max(120.0);
+        let reserved_height = AGENT_COMPOSER_OUTER_HEIGHT
+            + AGENT_MESSAGE_FRAME_VERTICAL_INSET
+            + AGENT_SECTION_SPACING;
+        let message_height = (ui.available_height() - reserved_height).max(120.0);
         show_agent_messages(ui, panel_id, message_height, self);
 
         let can_send = self.in_flight.is_none() && !self.input.trim().is_empty();
