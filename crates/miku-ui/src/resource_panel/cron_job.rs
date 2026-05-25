@@ -762,10 +762,10 @@ fn row_matches_search(row: &CronJobRow, search_text: &str) -> bool {
 
 fn cron_job_metadata() -> ResourceMetadata {
     ResourceMetadata {
-        id: "cron_job",
-        title: "CronJobs",
-        api_version: "batch/v1",
-        kind: "CronJob",
+        id: "cron_job".to_owned(),
+        title: "CronJobs".to_owned(),
+        api_version: "batch/v1".to_owned(),
+        kind: "CronJob".to_owned(),
         resource: ResourceRef::grouped("batch", "v1", "cronjobs"),
         namespaced: true,
     }

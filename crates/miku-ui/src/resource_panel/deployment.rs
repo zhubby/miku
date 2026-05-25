@@ -780,10 +780,10 @@ fn row_matches_search(row: &DeploymentRow, search_text: &str) -> bool {
 
 fn deployment_metadata() -> ResourceMetadata {
     ResourceMetadata {
-        id: "deployment",
-        title: "Deployments",
-        api_version: "apps/v1",
-        kind: "Deployment",
+        id: "deployment".to_owned(),
+        title: "Deployments".to_owned(),
+        api_version: "apps/v1".to_owned(),
+        kind: "Deployment".to_owned(),
         resource: ResourceRef::grouped("apps", "v1", "deployments"),
         namespaced: true,
     }

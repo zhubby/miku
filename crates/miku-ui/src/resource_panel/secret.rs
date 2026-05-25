@@ -747,10 +747,10 @@ fn row_matches_search(row: &SecretRow, search_text: &str) -> bool {
 
 fn secret_metadata() -> ResourceMetadata {
     ResourceMetadata {
-        id: "secret",
-        title: "Secrets",
-        api_version: "v1",
-        kind: "Secret",
+        id: "secret".to_owned(),
+        title: "Secrets".to_owned(),
+        api_version: "v1".to_owned(),
+        kind: "Secret".to_owned(),
         resource: miku_core::ResourceRef::core("v1", "secrets"),
         namespaced: true,
     }

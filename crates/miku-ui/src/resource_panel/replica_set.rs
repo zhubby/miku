@@ -782,10 +782,10 @@ fn row_matches_search(row: &ReplicaSetRow, search_text: &str) -> bool {
 
 fn replica_set_metadata() -> ResourceMetadata {
     ResourceMetadata {
-        id: "replica_set",
-        title: "ReplicaSets",
-        api_version: "apps/v1",
-        kind: "ReplicaSet",
+        id: "replica_set".to_owned(),
+        title: "ReplicaSets".to_owned(),
+        api_version: "apps/v1".to_owned(),
+        kind: "ReplicaSet".to_owned(),
         resource: ResourceRef::grouped("apps", "v1", "replicasets"),
         namespaced: true,
     }

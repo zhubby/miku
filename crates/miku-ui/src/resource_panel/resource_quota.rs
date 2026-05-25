@@ -733,10 +733,10 @@ fn namespace_value(namespace: &str) -> Option<String> {
 
 fn resource_quota_metadata() -> ResourceMetadata {
     ResourceMetadata {
-        id: "resource_quota",
-        title: "ResourceQuotas",
-        api_version: "v1",
-        kind: "ResourceQuota",
+        id: "resource_quota".to_owned(),
+        title: "ResourceQuotas".to_owned(),
+        api_version: "v1".to_owned(),
+        kind: "ResourceQuota".to_owned(),
         resource: ResourceRef::core("v1", "resourcequotas"),
         namespaced: true,
     }

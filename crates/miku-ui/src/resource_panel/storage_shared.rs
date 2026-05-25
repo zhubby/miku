@@ -607,10 +607,10 @@ impl StorageResourceKind {
 
     fn metadata(self) -> ResourceMetadata {
         ResourceMetadata {
-            id: self.id(),
-            title: self.title(),
-            api_version: self.api_version(),
-            kind: self.singular_kind(),
+            id: self.id().to_owned(),
+            title: self.title().to_owned(),
+            api_version: self.api_version().to_owned(),
+            kind: self.singular_kind().to_owned(),
             resource: self.resource_ref(),
             namespaced: self.is_namespaced(),
         }

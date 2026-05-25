@@ -753,10 +753,10 @@ fn row_matches_search(row: &ConfigMapRow, search_text: &str) -> bool {
 
 fn config_map_metadata() -> ResourceMetadata {
     ResourceMetadata {
-        id: "config_map",
-        title: "ConfigMaps",
-        api_version: "v1",
-        kind: "ConfigMap",
+        id: "config_map".to_owned(),
+        title: "ConfigMaps".to_owned(),
+        api_version: "v1".to_owned(),
+        kind: "ConfigMap".to_owned(),
         resource: miku_core::ResourceRef::core("v1", "configmaps"),
         namespaced: true,
     }

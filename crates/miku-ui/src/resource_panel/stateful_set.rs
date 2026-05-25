@@ -780,10 +780,10 @@ fn row_matches_search(row: &StatefulSetRow, search_text: &str) -> bool {
 
 fn stateful_set_metadata() -> ResourceMetadata {
     ResourceMetadata {
-        id: "stateful_set",
-        title: "StatefulSets",
-        api_version: "apps/v1",
-        kind: "StatefulSet",
+        id: "stateful_set".to_owned(),
+        title: "StatefulSets".to_owned(),
+        api_version: "apps/v1".to_owned(),
+        kind: "StatefulSet".to_owned(),
         resource: ResourceRef::grouped("apps", "v1", "statefulsets"),
         namespaced: true,
     }

@@ -674,10 +674,10 @@ fn row_matches_search(row: &NamespaceRow, search_text: &str) -> bool {
 
 fn namespace_metadata() -> ResourceMetadata {
     ResourceMetadata {
-        id: "namespace",
-        title: "Namespaces",
-        api_version: "v1",
-        kind: "Namespace",
+        id: "namespace".to_owned(),
+        title: "Namespaces".to_owned(),
+        api_version: "v1".to_owned(),
+        kind: "Namespace".to_owned(),
         resource: ResourceRef::core("v1", "namespaces").cluster_scoped(),
         namespaced: false,
     }

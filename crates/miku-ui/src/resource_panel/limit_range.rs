@@ -726,10 +726,10 @@ fn namespace_value(namespace: &str) -> Option<String> {
 
 fn limit_range_metadata() -> ResourceMetadata {
     ResourceMetadata {
-        id: "limit_range",
-        title: "LimitRanges",
-        api_version: "v1",
-        kind: "LimitRange",
+        id: "limit_range".to_owned(),
+        title: "LimitRanges".to_owned(),
+        api_version: "v1".to_owned(),
+        kind: "LimitRange".to_owned(),
         resource: ResourceRef::core("v1", "limitranges"),
         namespaced: true,
     }

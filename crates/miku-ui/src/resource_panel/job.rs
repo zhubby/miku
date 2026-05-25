@@ -755,10 +755,10 @@ fn row_matches_search(row: &JobRow, search_text: &str) -> bool {
 
 fn job_metadata() -> ResourceMetadata {
     ResourceMetadata {
-        id: "job",
-        title: "Jobs",
-        api_version: "batch/v1",
-        kind: "Job",
+        id: "job".to_owned(),
+        title: "Jobs".to_owned(),
+        api_version: "batch/v1".to_owned(),
+        kind: "Job".to_owned(),
         resource: ResourceRef::grouped("batch", "v1", "jobs"),
         namespaced: true,
     }

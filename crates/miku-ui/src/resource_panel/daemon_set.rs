@@ -780,10 +780,10 @@ fn row_matches_search(row: &DaemonSetRow, search_text: &str) -> bool {
 
 fn daemon_set_metadata() -> ResourceMetadata {
     ResourceMetadata {
-        id: "daemon_set",
-        title: "DaemonSets",
-        api_version: "apps/v1",
-        kind: "DaemonSet",
+        id: "daemon_set".to_owned(),
+        title: "DaemonSets".to_owned(),
+        api_version: "apps/v1".to_owned(),
+        kind: "DaemonSet".to_owned(),
         resource: ResourceRef::grouped("apps", "v1", "daemonsets"),
         namespaced: true,
     }
