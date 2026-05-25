@@ -219,4 +219,75 @@ impl AgentService for DummyServices {
     }
 }
 
+#[async_trait::async_trait]
+impl AgentConversationStore for DummyServices {
+    async fn list_agent_conversations(&self) -> miku_core::Result<Vec<AgentConversationSummary>> {
+        Ok(vec![AgentConversationSummary {
+            id: "conversation-1".to_owned(),
+            title: "Inspect pods".to_owned(),
+            context: AgentContext {
+                cluster_id: Some(ClusterId::new("local")),
+                cluster_name: Some("local".to_owned()),
+                selected_resource: None,
+                namespace: None,
+            },
+            created_at: 10,
+            updated_at: 12,
+            last_message_at: Some(12),
+        }])
+    }
+
+    async fn get_agent_conversation(
+        &self,
+        id: &str,
+    ) -> miku_core::Result<Option<AgentConversation>> {
+        if id != "conversation-1" {
+            return Ok(None);
+        }
+        Ok(Some(AgentConversation {
+            summary: self.list_agent_conversations().await?.remove(0),
+            messages: vec![AgentPersistedMessage {
+                id: "message-1".to_owned(),
+                conversation_id: id.to_owned(),
+                role: AgentRole::User,
+                content: "hello".to_owned(),
+                created_at: 11,
+            }],
+        }))
+    }
+
+    async fn create_agent_conversation(
+        &self,
+        request: CreateAgentConversationRequest,
+    ) -> miku_core::Result<AgentConversationSummary> {
+        Ok(AgentConversationSummary {
+            id: "conversation-created".to_owned(),
+            title: request
+                .title
+                .unwrap_or_else(|| "New conversation".to_owned()),
+            context: request.context,
+            created_at: 20,
+            updated_at: 20,
+            last_message_at: None,
+        })
+    }
+
+    async fn append_agent_message(
+        &self,
+        request: AppendAgentMessageRequest,
+    ) -> miku_core::Result<AgentPersistedMessage> {
+        Ok(AgentPersistedMessage {
+            id: "message-created".to_owned(),
+            conversation_id: request.conversation_id,
+            role: request.role,
+            content: request.content,
+            created_at: 21,
+        })
+    }
+
+    async fn delete_agent_conversation(&self, _id: &str) -> miku_core::Result<()> {
+        Ok(())
+    }
+}
+
 impl MikuServices for DummyServices {}

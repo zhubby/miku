@@ -10,8 +10,10 @@ pub use resources::{api_resource, resource_query_path};
 
 use async_trait::async_trait;
 use miku_api::{
-    AgentService, AgentTurnRequest, AgentTurnResponse, ClusterConfigStore, ClusterRegistry,
-    LlmProviderSettings, LlmSettingsStore, LocalPreferenceStore, MikuServices,
+    AgentConversation, AgentConversationStore, AgentConversationSummary, AgentPersistedMessage,
+    AgentService, AgentTurnRequest, AgentTurnResponse, AppendAgentMessageRequest,
+    ClusterConfigStore, ClusterRegistry, CreateAgentConversationRequest, LlmProviderSettings,
+    LlmSettingsStore, LocalPreferenceStore, MikuServices,
 };
 use std::sync::Arc;
 
@@ -67,9 +69,45 @@ where
     }
 }
 
+#[async_trait]
+impl<S> AgentConversationStore for KubeServices<S>
+where
+    S: AgentConversationStore + Clone + Send + Sync,
+{
+    async fn list_agent_conversations(&self) -> miku_core::Result<Vec<AgentConversationSummary>> {
+        self.store.list_agent_conversations().await
+    }
+
+    async fn get_agent_conversation(
+        &self,
+        id: &str,
+    ) -> miku_core::Result<Option<AgentConversation>> {
+        self.store.get_agent_conversation(id).await
+    }
+
+    async fn create_agent_conversation(
+        &self,
+        request: CreateAgentConversationRequest,
+    ) -> miku_core::Result<AgentConversationSummary> {
+        self.store.create_agent_conversation(request).await
+    }
+
+    async fn append_agent_message(
+        &self,
+        request: AppendAgentMessageRequest,
+    ) -> miku_core::Result<AgentPersistedMessage> {
+        self.store.append_agent_message(request).await
+    }
+
+    async fn delete_agent_conversation(&self, id: &str) -> miku_core::Result<()> {
+        self.store.delete_agent_conversation(id).await
+    }
+}
+
 impl<S> MikuServices for KubeServices<S> where
     S: ClusterConfigStore
         + ClusterRegistry
+        + AgentConversationStore
         + LocalPreferenceStore
         + LlmSettingsStore
         + Clone

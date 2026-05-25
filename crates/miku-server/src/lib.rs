@@ -35,6 +35,18 @@ pub fn router(services: SharedServices) -> Router {
         )
         .route("/api/clusters/status", post(clusters::get_cluster_status))
         .route("/api/agent/turn", post(agent::run_agent_turn))
+        .route(
+            "/api/agent/conversations",
+            get(agent::list_agent_conversations).post(agent::create_agent_conversation),
+        )
+        .route(
+            "/api/agent/conversations/{id}",
+            get(agent::get_agent_conversation).delete(agent::delete_agent_conversation),
+        )
+        .route(
+            "/api/agent/conversations/{id}/messages",
+            post(agent::append_agent_message),
+        )
         .route("/api/resources/list", post(resources::list_resources))
         .route("/api/resources/watch", get(resources::watch_resources))
         .route("/api/resources/apply", post(resources::apply_resource))

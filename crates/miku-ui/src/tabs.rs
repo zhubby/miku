@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use eframe::egui;
 use egui_dock::TabViewer;
 use miku_api::{
-    AgentContext, AgentEvent, AgentMessage, AgentRole, AgentTurnRequest, AgentTurnResponse,
-    ClusterStatusReport, ClusterStatusSeverity, ClusterStatusWorkloadSummary, ClusterSummary,
+    AgentContext, AgentConversationSummary, AgentEvent, AgentMessage, AgentRole, AgentTurnRequest,
+    AgentTurnResponse, ClusterStatusReport, ClusterStatusSeverity, ClusterStatusWorkloadSummary,
+    ClusterSummary,
 };
 
 use crate::resource_panel::{
@@ -93,6 +94,7 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) custom_resources_panel: Option<&'a mut CustomResourcesPanel>,
     pub(crate) agent_panels: Option<&'a mut HashMap<usize, AgentPanel>>,
     pub(crate) agent_turn_requests: Vec<AgentTurnUiRequest>,
+    pub(crate) agent_conversation_requests: Vec<AgentConversationUiRequest>,
     pub(crate) status_load_requests: Vec<ClusterStatusLoadRequest>,
     pub(crate) resource_load_requests: Vec<ResourceLoadRequest>,
     pub(crate) resource_watch_requests: Vec<ResourceWatchRequest>,
@@ -106,7 +108,24 @@ pub(crate) struct AppTabViewer<'a> {
 pub(crate) struct AgentTurnUiRequest {
     pub(crate) request_id: u64,
     pub(crate) panel_id: usize,
+    pub(crate) conversation_id: Option<String>,
+    pub(crate) title: String,
     pub(crate) request: AgentTurnRequest,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum AgentConversationUiRequest {
+    Load {
+        panel_id: usize,
+        conversation_id: String,
+    },
+    New {
+        panel_id: usize,
+    },
+    Delete {
+        panel_id: usize,
+        conversation_id: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -118,11 +137,17 @@ pub(crate) struct ClusterStatusLoadRequest {
 #[derive(Debug, Default)]
 pub(crate) struct AgentPanel {
     input: String,
+    conversation_id: Option<String>,
+    conversations: Vec<AgentConversationSummary>,
     messages: Vec<AgentMessage>,
     events: Vec<AgentEvent>,
     in_flight: Option<u64>,
+    loading: bool,
     error: Option<String>,
     next_request_id: u64,
+    load_conversation_requested: Option<String>,
+    delete_conversation_requested: Option<String>,
+    new_conversation_requested: bool,
 }
 
 #[derive(Debug, Default)]
@@ -602,6 +627,8 @@ impl TabViewer for AppTabViewer<'_> {
                     ) {
                         self.agent_turn_requests.push(request);
                     }
+                    self.agent_conversation_requests
+                        .extend(panel.take_conversation_requests(*id));
                 } else {
                     ui.heading("Agent");
                     ui.separator();
@@ -635,7 +662,7 @@ impl AgentPanel {
     ) -> Option<AgentTurnUiRequest> {
         let mut request = None;
 
-        show_agent_header(ui, self);
+        show_agent_header(ui, panel_id, self);
         ui.add_space(6.0);
         show_agent_context(ui, selected_cluster_name, active_resource);
         ui.add_space(8.0);
@@ -661,8 +688,13 @@ impl AgentPanel {
             request = Some(AgentTurnUiRequest {
                 request_id,
                 panel_id,
+                conversation_id: self.conversation_id.clone(),
+                title: conversation_title(&message),
                 request: AgentTurnRequest {
-                    session_id: format!("agent-{panel_id}"),
+                    session_id: self
+                        .conversation_id
+                        .clone()
+                        .unwrap_or_else(|| format!("agent-{panel_id}")),
                     message,
                     context: AgentContext {
                         cluster_id: selected_cluster_id.cloned(),
@@ -681,7 +713,7 @@ impl AgentPanel {
     pub(crate) fn apply_result(
         &mut self,
         request_id: u64,
-        result: Result<AgentTurnResponse, String>,
+        result: Result<AgentTurnUiResponse, String>,
     ) {
         if self.in_flight != Some(request_id) {
             return;
@@ -690,8 +722,9 @@ impl AgentPanel {
 
         match result {
             Ok(response) => {
-                self.events = response.events;
-                self.messages.push(response.message);
+                self.conversation_id = Some(response.conversation_id);
+                self.events = response.response.events;
+                self.messages.push(response.response.message);
                 self.error = None;
             }
             Err(error) => {
@@ -699,10 +732,93 @@ impl AgentPanel {
             }
         }
     }
+
+    pub(crate) fn apply_conversations(
+        &mut self,
+        conversations: Vec<AgentConversationSummary>,
+        result: Result<Option<AgentConversationUiData>, String>,
+    ) {
+        self.loading = false;
+        self.conversations = conversations;
+        match result {
+            Ok(Some(conversation)) => {
+                self.conversation_id = Some(conversation.summary.id);
+                self.messages = conversation.messages;
+                self.events.clear();
+                self.error = None;
+            }
+            Ok(None) => {
+                self.conversation_id = None;
+                self.messages.clear();
+                self.events.clear();
+                self.error = None;
+            }
+            Err(error) => {
+                self.error = Some(error);
+            }
+        }
+    }
+
+    pub(crate) fn set_loading(&mut self) {
+        self.loading = true;
+    }
+
+    pub(crate) fn set_error(&mut self, error: String) {
+        self.loading = false;
+        self.error = Some(error);
+    }
+
+    pub(crate) fn start_new_conversation(&mut self) {
+        self.conversation_id = None;
+        self.messages.clear();
+        self.events.clear();
+        self.error = None;
+        self.input.clear();
+        self.loading = false;
+    }
+
+    fn take_conversation_requests(&mut self, panel_id: usize) -> Vec<AgentConversationUiRequest> {
+        let mut requests = Vec::new();
+        if self.new_conversation_requested {
+            self.new_conversation_requested = false;
+            requests.push(AgentConversationUiRequest::New { panel_id });
+        }
+        if let Some(conversation_id) = self.load_conversation_requested.take() {
+            requests.push(AgentConversationUiRequest::Load {
+                panel_id,
+                conversation_id,
+            });
+        }
+        if let Some(conversation_id) = self.delete_conversation_requested.take() {
+            requests.push(AgentConversationUiRequest::Delete {
+                panel_id,
+                conversation_id,
+            });
+        }
+        requests
+    }
 }
 
-fn show_agent_header(ui: &mut egui::Ui, panel: &AgentPanel) {
-    let (status_icon, status_text, status_color) = if panel.in_flight.is_some() {
+#[derive(Clone, Debug)]
+pub(crate) struct AgentTurnUiResponse {
+    pub(crate) conversation_id: String,
+    pub(crate) response: AgentTurnResponse,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AgentConversationUiData {
+    pub(crate) summary: AgentConversationSummary,
+    pub(crate) messages: Vec<AgentMessage>,
+}
+
+fn show_agent_header(ui: &mut egui::Ui, panel_id: usize, panel: &mut AgentPanel) {
+    let (status_icon, status_text, status_color) = if panel.loading {
+        (
+            egui_phosphor::regular::CIRCLE_NOTCH,
+            "Loading",
+            ui.visuals().hyperlink_color,
+        )
+    } else if panel.in_flight.is_some() {
         (
             egui_phosphor::regular::CIRCLE_NOTCH,
             "Thinking",
@@ -736,7 +852,7 @@ fn show_agent_header(ui: &mut egui::Ui, panel: &AgentPanel) {
                 ui.vertical(|ui| {
                     ui.label(egui::RichText::new("Miku Agent").strong());
                     ui.label(
-                        egui::RichText::new("Kubernetes assistant")
+                        egui::RichText::new(current_conversation_title(panel))
                             .small()
                             .color(ui.visuals().weak_text_color()),
                     );
@@ -744,9 +860,61 @@ fn show_agent_header(ui: &mut egui::Ui, panel: &AgentPanel) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(egui::RichText::new(status_text).small().color(status_color));
                     ui.label(egui::RichText::new(status_icon).color(status_color));
+                    show_agent_conversation_menu(ui, panel_id, panel);
                 });
             });
         });
+}
+
+fn show_agent_conversation_menu(ui: &mut egui::Ui, panel_id: usize, panel: &mut AgentPanel) {
+    ui.menu_button(egui_phosphor::regular::CHATS, |ui| {
+        if ui
+            .button(format!("{} New chat", egui_phosphor::regular::PLUS))
+            .clicked()
+        {
+            panel.new_conversation_requested = true;
+            ui.close();
+        }
+        if let Some(conversation_id) = panel.conversation_id.clone()
+            && ui
+                .button(format!("{} Delete current", egui_phosphor::regular::TRASH))
+                .clicked()
+        {
+            panel.delete_conversation_requested = Some(conversation_id);
+            ui.close();
+        }
+        if !panel.conversations.is_empty() {
+            ui.separator();
+        }
+        for conversation in &panel.conversations {
+            let selected = panel.conversation_id.as_deref() == Some(conversation.id.as_str());
+            let label = if selected {
+                format!("{} {}", egui_phosphor::regular::CHECK, conversation.title)
+            } else {
+                conversation.title.clone()
+            };
+            if ui.selectable_label(selected, label).clicked() {
+                panel.load_conversation_requested = Some(conversation.id.clone());
+                ui.close();
+            }
+        }
+    })
+    .response
+    .on_hover_text(format!("Agent conversations {panel_id}"));
+}
+
+fn current_conversation_title(panel: &AgentPanel) -> &str {
+    panel
+        .conversation_id
+        .as_ref()
+        .and_then(|id| {
+            panel
+                .conversations
+                .iter()
+                .find(|conversation| conversation.id == *id)
+        })
+        .map(|conversation| conversation.title.as_str())
+        .unwrap_or("Kubernetes assistant")
 }
 
 fn show_agent_context(
@@ -814,7 +982,11 @@ fn show_agent_messages(
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
                     if panel.messages.is_empty() {
-                        show_agent_empty_state(ui);
+                        if panel.loading {
+                            show_agent_loading_state(ui);
+                        } else {
+                            show_agent_empty_state(ui);
+                        }
                     }
 
                     for message in &panel.messages {
@@ -837,6 +1009,18 @@ fn show_agent_messages(
                 });
         });
     ui.add_space(8.0);
+}
+
+fn show_agent_loading_state(ui: &mut egui::Ui) {
+    ui.add_space(24.0);
+    ui.vertical_centered(|ui| {
+        ui.add(egui::Spinner::new().size(18.0));
+        ui.label(
+            egui::RichText::new("Loading conversation")
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+    });
 }
 
 fn show_agent_empty_state(ui: &mut egui::Ui) {
@@ -869,13 +1053,15 @@ fn show_user_message(ui: &mut egui::Ui, message: &AgentMessage) {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
         message_bubble(
             ui,
-            "You",
-            egui_phosphor::regular::USER,
             &message.content,
-            width,
-            ui.visuals().selection.bg_fill,
-            ui.visuals().selection.stroke,
-            ui.visuals().selection.stroke.color,
+            MessageBubbleStyle {
+                label: "You",
+                icon: egui_phosphor::regular::USER,
+                max_width: width,
+                fill: ui.visuals().selection.bg_fill,
+                stroke: ui.visuals().selection.stroke,
+                accent: ui.visuals().selection.stroke.color,
+            },
         );
     });
 }
@@ -883,49 +1069,58 @@ fn show_user_message(ui: &mut egui::Ui, message: &AgentMessage) {
 fn show_assistant_message(ui: &mut egui::Ui, message: &AgentMessage) {
     message_bubble(
         ui,
-        "Miku",
-        egui_phosphor::regular::SPARKLE,
         &message.content,
-        agent_bubble_width(ui),
-        ui.visuals().extreme_bg_color,
-        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
-        ui.visuals().hyperlink_color,
+        MessageBubbleStyle {
+            label: "Miku",
+            icon: egui_phosphor::regular::SPARKLE,
+            max_width: agent_bubble_width(ui),
+            fill: ui.visuals().extreme_bg_color,
+            stroke: egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            accent: ui.visuals().hyperlink_color,
+        },
     );
 }
 
 fn show_tool_message(ui: &mut egui::Ui, message: &AgentMessage) {
     message_bubble(
         ui,
-        "Tool",
-        egui_phosphor::regular::WRENCH,
         &message.content,
-        agent_bubble_width(ui),
-        ui.visuals().widgets.inactive.bg_fill,
-        ui.visuals().widgets.inactive.bg_stroke,
-        ui.visuals().weak_text_color(),
+        MessageBubbleStyle {
+            label: "Tool",
+            icon: egui_phosphor::regular::WRENCH,
+            max_width: agent_bubble_width(ui),
+            fill: ui.visuals().widgets.inactive.bg_fill,
+            stroke: ui.visuals().widgets.inactive.bg_stroke,
+            accent: ui.visuals().weak_text_color(),
+        },
     );
 }
 
-fn message_bubble(
-    ui: &mut egui::Ui,
-    label: &str,
-    icon: &str,
-    content: &str,
+struct MessageBubbleStyle<'a> {
+    label: &'a str,
+    icon: &'a str,
     max_width: f32,
     fill: egui::Color32,
     stroke: egui::Stroke,
     accent: egui::Color32,
-) {
+}
+
+fn message_bubble(ui: &mut egui::Ui, content: &str, style: MessageBubbleStyle) {
     egui::Frame::new()
-        .fill(fill)
-        .stroke(stroke)
+        .fill(style.fill)
+        .stroke(style.stroke)
         .corner_radius(egui::CornerRadius::same(6))
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
-            ui.set_max_width(max_width);
+            ui.set_max_width(style.max_width);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(icon).small().color(accent));
-                ui.label(egui::RichText::new(label).small().strong().color(accent));
+                ui.label(egui::RichText::new(style.icon).small().color(style.accent));
+                ui.label(
+                    egui::RichText::new(style.label)
+                        .small()
+                        .strong()
+                        .color(style.accent),
+                );
             });
             ui.add(
                 egui::Label::new(egui::RichText::new(content).color(ui.visuals().text_color()))
@@ -1027,6 +1222,14 @@ fn show_agent_composer(ui: &mut egui::Ui, input: &mut String, can_send: bool) ->
             });
         });
     send_clicked
+}
+
+fn conversation_title(message: &str) -> String {
+    let mut title = message.chars().take(48).collect::<String>();
+    if title.trim().is_empty() {
+        title = "New conversation".to_owned();
+    }
+    title
 }
 
 fn agent_event_icon(event: &AgentEvent) -> &'static str {

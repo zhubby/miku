@@ -332,6 +332,44 @@ pub struct AgentTurnResponse {
     pub events: Vec<AgentEvent>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentConversationSummary {
+    pub id: String,
+    pub title: String,
+    pub context: AgentContext,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub last_message_at: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentConversation {
+    pub summary: AgentConversationSummary,
+    pub messages: Vec<AgentPersistedMessage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentPersistedMessage {
+    pub id: String,
+    pub conversation_id: String,
+    pub role: AgentRole,
+    pub content: String,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CreateAgentConversationRequest {
+    pub title: Option<String>,
+    pub context: AgentContext,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AppendAgentMessageRequest {
+    pub conversation_id: String,
+    pub role: AgentRole,
+    pub content: String,
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait ClusterRegistry: ServiceBounds {
@@ -484,6 +522,53 @@ pub trait AgentService: ServiceBounds {
     }
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait AgentConversationStore: ServiceBounds {
+    async fn list_agent_conversations(&self) -> miku_core::Result<Vec<AgentConversationSummary>> {
+        Err(miku_core::MikuError::UnsupportedRuntime(
+            "agent conversation store is not implemented in this runtime".to_owned(),
+        ))
+    }
+
+    async fn get_agent_conversation(
+        &self,
+        id: &str,
+    ) -> miku_core::Result<Option<AgentConversation>> {
+        let _ = id;
+        Err(miku_core::MikuError::UnsupportedRuntime(
+            "agent conversation store is not implemented in this runtime".to_owned(),
+        ))
+    }
+
+    async fn create_agent_conversation(
+        &self,
+        request: CreateAgentConversationRequest,
+    ) -> miku_core::Result<AgentConversationSummary> {
+        let _ = request;
+        Err(miku_core::MikuError::UnsupportedRuntime(
+            "agent conversation store is not implemented in this runtime".to_owned(),
+        ))
+    }
+
+    async fn append_agent_message(
+        &self,
+        request: AppendAgentMessageRequest,
+    ) -> miku_core::Result<AgentPersistedMessage> {
+        let _ = request;
+        Err(miku_core::MikuError::UnsupportedRuntime(
+            "agent conversation store is not implemented in this runtime".to_owned(),
+        ))
+    }
+
+    async fn delete_agent_conversation(&self, id: &str) -> miku_core::Result<()> {
+        let _ = id;
+        Err(miku_core::MikuError::UnsupportedRuntime(
+            "agent conversation store is not implemented in this runtime".to_owned(),
+        ))
+    }
+}
+
 pub trait MikuServices:
     ClusterRegistry
     + ClusterInitializer
@@ -496,6 +581,7 @@ pub trait MikuServices:
     + LocalPreferenceStore
     + LlmSettingsStore
     + AgentService
+    + AgentConversationStore
     + ServiceBounds
 {
 }
@@ -750,6 +836,9 @@ mod tests {
         #[async_trait::async_trait]
         impl AgentService for Dummy {}
 
+        #[async_trait::async_trait]
+        impl AgentConversationStore for Dummy {}
+
         impl MikuServices for Dummy {}
 
         accepts_services(&Dummy);
@@ -800,6 +889,71 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<AgentTurnResponse>(&response_json).unwrap(),
             response
+        );
+    }
+
+    #[test]
+    fn agent_conversation_contract_round_trips_as_json() {
+        let context = AgentContext {
+            cluster_id: Some(ClusterId::new("local")),
+            cluster_name: Some("kind-miku".to_owned()),
+            selected_resource: Some("Pods".to_owned()),
+            namespace: Some("default".to_owned()),
+        };
+        let summary = AgentConversationSummary {
+            id: "conversation-1".to_owned(),
+            title: "Inspect pods".to_owned(),
+            context: context.clone(),
+            created_at: 10,
+            updated_at: 12,
+            last_message_at: Some(12),
+        };
+        let message = AgentPersistedMessage {
+            id: "message-1".to_owned(),
+            conversation_id: summary.id.clone(),
+            role: AgentRole::User,
+            content: "What is unhealthy?".to_owned(),
+            created_at: 11,
+        };
+        let conversation = AgentConversation {
+            summary: summary.clone(),
+            messages: vec![message.clone()],
+        };
+        let create_request = CreateAgentConversationRequest {
+            title: Some(summary.title.clone()),
+            context,
+        };
+        let append_request = AppendAgentMessageRequest {
+            conversation_id: summary.id.clone(),
+            role: AgentRole::Assistant,
+            content: "No unhealthy pods found.".to_owned(),
+        };
+
+        let summary_json = serde_json::to_string(&summary).unwrap();
+        let conversation_json = serde_json::to_string(&conversation).unwrap();
+        let message_json = serde_json::to_string(&message).unwrap();
+        let create_json = serde_json::to_string(&create_request).unwrap();
+        let append_json = serde_json::to_string(&append_request).unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<AgentConversationSummary>(&summary_json).unwrap(),
+            summary
+        );
+        assert_eq!(
+            serde_json::from_str::<AgentConversation>(&conversation_json).unwrap(),
+            conversation
+        );
+        assert_eq!(
+            serde_json::from_str::<AgentPersistedMessage>(&message_json).unwrap(),
+            message
+        );
+        assert_eq!(
+            serde_json::from_str::<CreateAgentConversationRequest>(&create_json).unwrap(),
+            create_request
+        );
+        assert_eq!(
+            serde_json::from_str::<AppendAgentMessageRequest>(&append_json).unwrap(),
+            append_request
         );
     }
 }

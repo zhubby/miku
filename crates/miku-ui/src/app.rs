@@ -31,8 +31,8 @@ use crate::resources::ResourceNavItem;
 use crate::settings::SettingsPanel;
 use crate::state::{AppState, ClusterConnectionState, RuntimeMode};
 use crate::tabs::{
-    AgentPanel, AgentTurnUiRequest, AppTab, AppTabViewer, ClusterStatusLoadRequest,
-    ClusterStatusPanel,
+    AgentConversationUiData, AgentConversationUiRequest, AgentPanel, AgentTurnUiRequest,
+    AgentTurnUiResponse, AppTab, AppTabViewer, ClusterStatusLoadRequest, ClusterStatusPanel,
 };
 
 const MAX_RESOURCE_EVENTS_PER_PASS: usize = 8;
@@ -176,10 +176,19 @@ pub(crate) enum ClusterStatusUiEvent {
 
 #[derive(Clone, Debug)]
 pub(crate) enum AgentUiEvent {
+    ConversationsLoaded {
+        panel_id: usize,
+        conversations: Vec<miku_api::AgentConversationSummary>,
+        result: Result<Option<AgentConversationUiData>, String>,
+    },
+    ConversationDeleted {
+        panel_id: usize,
+        result: Result<(), String>,
+    },
     TurnCompleted {
         request_id: u64,
         panel_id: usize,
-        result: Result<miku_api::AgentTurnResponse, String>,
+        result: Result<AgentTurnUiResponse, String>,
     },
 }
 
@@ -245,6 +254,7 @@ impl MikuApp {
         app.services = Some(services);
         app.runtime = Some(runtime);
         app.request_cluster_refresh();
+        app.request_initial_agent_conversation_load(1);
         app
     }
 
@@ -256,6 +266,7 @@ impl MikuApp {
         let mut app = Self::new(RuntimeMode::Web);
         app.services = Some(services);
         app.request_cluster_refresh();
+        app.request_initial_agent_conversation_load(1);
         app
     }
 
@@ -364,6 +375,7 @@ impl eframe::App for MikuApp {
                     custom_resources_panel: None,
                     agent_panels: None,
                     agent_turn_requests: Vec::new(),
+                    agent_conversation_requests: Vec::new(),
                     status_load_requests: Vec::new(),
                     resource_load_requests: Vec::new(),
                     resource_watch_requests: Vec::new(),
@@ -460,6 +472,7 @@ impl eframe::App for MikuApp {
                     custom_resources_panel: None,
                     agent_panels: Some(&mut self.agent_panels),
                     agent_turn_requests: Vec::new(),
+                    agent_conversation_requests: Vec::new(),
                     status_load_requests: Vec::new(),
                     resource_load_requests: Vec::new(),
                     resource_watch_requests: Vec::new(),
@@ -483,6 +496,8 @@ impl eframe::App for MikuApp {
 
                 let add_requested = tab_viewer.add_requested;
                 let agent_turn_requests = std::mem::take(&mut tab_viewer.agent_turn_requests);
+                let agent_conversation_requests =
+                    std::mem::take(&mut tab_viewer.agent_conversation_requests);
                 drop(tab_viewer);
 
                 if add_requested {
@@ -490,7 +505,11 @@ impl eframe::App for MikuApp {
                         .push_to_focused_leaf(AppTab::Agent(self.next_agent_id));
                     self.agent_panels
                         .insert(self.next_agent_id, AgentPanel::default());
+                    self.request_initial_agent_conversation_load(self.next_agent_id);
                     self.next_agent_id += 1;
+                }
+                for request in agent_conversation_requests {
+                    self.request_agent_conversation_action(request);
                 }
                 for request in agent_turn_requests {
                     self.request_agent_turn(request);
@@ -585,6 +604,7 @@ impl eframe::App for MikuApp {
                 custom_resources_panel: Some(&mut workspace.custom_resources_panel),
                 agent_panels: None,
                 agent_turn_requests: Vec::new(),
+                agent_conversation_requests: Vec::new(),
                 status_load_requests: Vec::new(),
                 resource_load_requests: Vec::new(),
                 resource_watch_requests: Vec::new(),
@@ -792,6 +812,30 @@ impl MikuApp {
 
     fn apply_agent_event(&mut self, event: AgentUiEvent) {
         match event {
+            AgentUiEvent::ConversationsLoaded {
+                panel_id,
+                conversations,
+                result,
+            } => {
+                self.agent_panels
+                    .entry(panel_id)
+                    .or_default()
+                    .apply_conversations(conversations, result);
+            }
+            AgentUiEvent::ConversationDeleted { panel_id, result } => {
+                if let Err(error) = result {
+                    self.agent_panels
+                        .entry(panel_id)
+                        .or_default()
+                        .set_error(error);
+                    return;
+                }
+                self.agent_panels
+                    .entry(panel_id)
+                    .or_default()
+                    .start_new_conversation();
+                self.request_initial_agent_conversation_load(panel_id);
+            }
             AgentUiEvent::TurnCompleted {
                 request_id,
                 panel_id,
@@ -802,6 +846,147 @@ impl MikuApp {
                     .or_default()
                     .apply_result(request_id, result);
             }
+        }
+    }
+
+    fn request_agent_conversation_action(&mut self, request: AgentConversationUiRequest) {
+        match request {
+            AgentConversationUiRequest::Load {
+                panel_id,
+                conversation_id,
+            } => self.request_agent_conversation_load(panel_id, conversation_id),
+            AgentConversationUiRequest::New { panel_id } => {
+                self.agent_panels
+                    .entry(panel_id)
+                    .or_default()
+                    .start_new_conversation();
+            }
+            AgentConversationUiRequest::Delete {
+                panel_id,
+                conversation_id,
+            } => self.request_agent_conversation_delete(panel_id, conversation_id),
+        }
+    }
+
+    fn request_agent_conversation_load(&mut self, panel_id: usize, conversation_id: String) {
+        let Some(services) = self.services.clone() else {
+            return;
+        };
+        if let Some(panel) = self.agent_panels.get_mut(&panel_id) {
+            panel.set_loading();
+        }
+        let sender = self.agent_event_sender.clone();
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(runtime) = self.runtime.as_ref() else {
+                self.apply_agent_event(AgentUiEvent::ConversationsLoaded {
+                    panel_id,
+                    conversations: Vec::new(),
+                    result: Err("agent runtime is not available".to_owned()),
+                });
+                return;
+            };
+            runtime.spawn(async move {
+                let (conversations, result) =
+                    load_agent_conversation(services, conversation_id).await;
+                let _ = sender.send(AgentUiEvent::ConversationsLoaded {
+                    panel_id,
+                    conversations,
+                    result,
+                });
+            });
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            wasm_bindgen_futures::spawn_local(async move {
+                let (conversations, result) =
+                    load_agent_conversation(services, conversation_id).await;
+                let _ = sender.send(AgentUiEvent::ConversationsLoaded {
+                    panel_id,
+                    conversations,
+                    result,
+                });
+            });
+        }
+    }
+
+    fn request_agent_conversation_delete(&mut self, panel_id: usize, conversation_id: String) {
+        let Some(services) = self.services.clone() else {
+            return;
+        };
+        let sender = self.agent_event_sender.clone();
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(runtime) = self.runtime.as_ref() else {
+                self.apply_agent_event(AgentUiEvent::ConversationDeleted {
+                    panel_id,
+                    result: Err("agent runtime is not available".to_owned()),
+                });
+                return;
+            };
+            runtime.spawn(async move {
+                let result = services
+                    .delete_agent_conversation(&conversation_id)
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(AgentUiEvent::ConversationDeleted { panel_id, result });
+            });
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            wasm_bindgen_futures::spawn_local(async move {
+                let result = services
+                    .delete_agent_conversation(&conversation_id)
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(AgentUiEvent::ConversationDeleted { panel_id, result });
+            });
+        }
+    }
+
+    fn request_initial_agent_conversation_load(&mut self, panel_id: usize) {
+        let Some(services) = self.services.clone() else {
+            return;
+        };
+        if let Some(panel) = self.agent_panels.get_mut(&panel_id) {
+            panel.set_loading();
+        }
+        let sender = self.agent_event_sender.clone();
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(runtime) = self.runtime.as_ref() else {
+                self.apply_agent_event(AgentUiEvent::ConversationsLoaded {
+                    panel_id,
+                    conversations: Vec::new(),
+                    result: Err("agent runtime is not available".to_owned()),
+                });
+                return;
+            };
+            runtime.spawn(async move {
+                let (conversations, result) = load_initial_agent_conversation(services).await;
+                let _ = sender.send(AgentUiEvent::ConversationsLoaded {
+                    panel_id,
+                    conversations,
+                    result,
+                });
+            });
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            wasm_bindgen_futures::spawn_local(async move {
+                let (conversations, result) = load_initial_agent_conversation(services).await;
+                let _ = sender.send(AgentUiEvent::ConversationsLoaded {
+                    panel_id,
+                    conversations,
+                    result,
+                });
+            });
         }
     }
 
@@ -817,7 +1002,6 @@ impl MikuApp {
         let sender = self.agent_event_sender.clone();
         let request_id = request.request_id;
         let panel_id = request.panel_id;
-        let api_request = request.request;
 
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -830,8 +1014,7 @@ impl MikuApp {
                 return;
             };
             runtime.spawn(async move {
-                let result = services
-                    .run_agent_turn(api_request)
+                let result = run_persisted_agent_turn(services, request)
                     .await
                     .map_err(|error| error.to_string());
                 let _ = sender.send(AgentUiEvent::TurnCompleted {
@@ -845,8 +1028,7 @@ impl MikuApp {
         #[cfg(target_arch = "wasm32")]
         {
             wasm_bindgen_futures::spawn_local(async move {
-                let result = services
-                    .run_agent_turn(api_request)
+                let result = run_persisted_agent_turn(services, request)
                     .await
                     .map_err(|error| error.to_string());
                 let _ = sender.send(AgentUiEvent::TurnCompleted {
@@ -1602,6 +1784,118 @@ impl MikuApp {
         };
         let _ = sender.unbounded_send(request.input);
     }
+}
+
+async fn load_initial_agent_conversation(
+    services: Arc<dyn MikuServices>,
+) -> (
+    Vec<miku_api::AgentConversationSummary>,
+    Result<Option<AgentConversationUiData>, String>,
+) {
+    let conversations = match services.list_agent_conversations().await {
+        Ok(conversations) => conversations,
+        Err(error) => return (Vec::new(), Err(error.to_string())),
+    };
+    let Some(first) = conversations.first() else {
+        return (conversations, Ok(None));
+    };
+    let result = services
+        .get_agent_conversation(&first.id)
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|conversation| {
+            conversation
+                .map(|conversation| AgentConversationUiData {
+                    summary: conversation.summary,
+                    messages: conversation
+                        .messages
+                        .into_iter()
+                        .map(|message| miku_api::AgentMessage {
+                            role: message.role,
+                            content: message.content,
+                        })
+                        .collect(),
+                })
+                .ok_or_else(|| format!("agent conversation '{}' was not found", first.id))
+        })
+        .map(Some);
+    (conversations, result)
+}
+
+async fn load_agent_conversation(
+    services: Arc<dyn MikuServices>,
+    conversation_id: String,
+) -> (
+    Vec<miku_api::AgentConversationSummary>,
+    Result<Option<AgentConversationUiData>, String>,
+) {
+    let conversations = match services.list_agent_conversations().await {
+        Ok(conversations) => conversations,
+        Err(error) => return (Vec::new(), Err(error.to_string())),
+    };
+    let result = services
+        .get_agent_conversation(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|conversation| {
+            conversation
+                .map(|conversation| AgentConversationUiData {
+                    summary: conversation.summary,
+                    messages: conversation
+                        .messages
+                        .into_iter()
+                        .map(|message| miku_api::AgentMessage {
+                            role: message.role,
+                            content: message.content,
+                        })
+                        .collect(),
+                })
+                .ok_or_else(|| format!("agent conversation '{conversation_id}' was not found"))
+        })
+        .map(Some);
+    (conversations, result)
+}
+
+async fn run_persisted_agent_turn(
+    services: Arc<dyn MikuServices>,
+    mut request: AgentTurnUiRequest,
+) -> miku_core::Result<AgentTurnUiResponse> {
+    let conversation_id = match request.conversation_id {
+        Some(id) => id,
+        None => {
+            let conversation = services
+                .create_agent_conversation(miku_api::CreateAgentConversationRequest {
+                    title: Some(request.title),
+                    context: request.request.context.clone(),
+                })
+                .await?;
+            conversation.id
+        }
+    };
+
+    services
+        .append_agent_message(miku_api::AppendAgentMessageRequest {
+            conversation_id: conversation_id.clone(),
+            role: miku_api::AgentRole::User,
+            content: request.request.message.clone(),
+        })
+        .await?;
+
+    request.request.session_id = conversation_id.clone();
+    let response = services.run_agent_turn(request.request).await?;
+
+    services
+        .append_agent_message(miku_api::AppendAgentMessageRequest {
+            conversation_id: conversation_id.clone(),
+            role: response.message.role.clone(),
+            content: response.message.content.clone(),
+        })
+        .await?;
+
+    Ok(AgentTurnUiResponse {
+        conversation_id,
+        response,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

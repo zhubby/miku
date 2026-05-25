@@ -111,10 +111,126 @@ impl MigrationTrait for CreateInitialTables {
                     .if_not_exists()
                     .to_owned(),
             )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
+                    .table(AgentConversations::Table)
+                    .if_not_exists()
+                    .col(
+                        MigrationColumnDef::new(AgentConversations::Id)
+                            .string()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(
+                        MigrationColumnDef::new(AgentConversations::Title)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        MigrationColumnDef::new(AgentConversations::Context)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        MigrationColumnDef::new(AgentConversations::CreatedAt)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(
+                        MigrationColumnDef::new(AgentConversations::UpdatedAt)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(MigrationColumnDef::new(AgentConversations::LastMessageAt).big_integer())
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
+                    .table(AgentMessages::Table)
+                    .if_not_exists()
+                    .col(
+                        MigrationColumnDef::new(AgentMessages::Id)
+                            .string()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(
+                        MigrationColumnDef::new(AgentMessages::ConversationId)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        MigrationColumnDef::new(AgentMessages::Role)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        MigrationColumnDef::new(AgentMessages::Content)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        MigrationColumnDef::new(AgentMessages::CreatedAt)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_agent_conversations_last_message_at")
+                    .table(AgentConversations::Table)
+                    .col(AgentConversations::LastMessageAt)
+                    .if_not_exists()
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_agent_messages_conversation_created_at")
+                    .table(AgentMessages::Table)
+                    .col(AgentMessages::ConversationId)
+                    .col(AgentMessages::CreatedAt)
+                    .if_not_exists()
+                    .to_owned(),
+            )
             .await
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_index(
+                Index::drop()
+                    .name("idx_agent_messages_conversation_created_at")
+                    .table(AgentMessages::Table)
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .drop_index(
+                Index::drop()
+                    .name("idx_agent_conversations_last_message_at")
+                    .table(AgentConversations::Table)
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .drop_table(Table::drop().table(AgentMessages::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(AgentConversations::Table).to_owned())
+            .await?;
         manager
             .drop_index(
                 Index::drop()
@@ -152,4 +268,25 @@ enum Clusters {
     LastUsedAt,
     CreatedAt,
     UpdatedAt,
+}
+
+#[derive(DeriveIden)]
+enum AgentConversations {
+    Table,
+    Id,
+    Title,
+    Context,
+    CreatedAt,
+    UpdatedAt,
+    LastMessageAt,
+}
+
+#[derive(DeriveIden)]
+enum AgentMessages {
+    Table,
+    Id,
+    ConversationId,
+    Role,
+    Content,
+    CreatedAt,
 }

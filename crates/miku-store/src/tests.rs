@@ -1,7 +1,8 @@
 use std::fs;
 
 use miku_api::{
-    ClusterConfigStore, ClusterRegistry, CreateClusterRequest, LlmProviderSettings,
+    AgentContext, AgentConversationStore, AgentRole, AppendAgentMessageRequest, ClusterConfigStore,
+    ClusterRegistry, CreateAgentConversationRequest, CreateClusterRequest, LlmProviderSettings,
     LlmSettingsStore, LocalPreferenceStore,
 };
 use sea_orm::{ColumnTrait, ConnectionTrait, Database, EntityTrait, QueryFilter, Set, Statement};
@@ -109,12 +110,143 @@ async fn migrator_creates_preferences_and_clusters_tables() {
         .database()
         .query_all(Statement::from_string(
             sea_orm::DatabaseBackend::Sqlite,
-            "select name from sqlite_master where type = 'table' and name in ('preferences', 'clusters')",
+            "select name from sqlite_master where type = 'table' and name in ('preferences', 'clusters', 'agent_conversations', 'agent_messages')",
         ))
         .await
         .unwrap();
 
-    assert_eq!(tables.len(), 2);
+    assert_eq!(tables.len(), 4);
+}
+
+#[tokio::test]
+async fn agent_conversations_round_trip_with_messages() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = SqliteStore::initialize(StorePaths::from_root(temp.path().join(".miku")))
+        .await
+        .unwrap();
+    let context = AgentContext {
+        cluster_id: Some(miku_core::ClusterId::new("local")),
+        cluster_name: Some("kind-miku".to_owned()),
+        selected_resource: Some("Pods".to_owned()),
+        namespace: Some("default".to_owned()),
+    };
+
+    let conversation = store
+        .create_agent_conversation(CreateAgentConversationRequest {
+            title: Some("Inspect pods".to_owned()),
+            context: context.clone(),
+        })
+        .await
+        .unwrap();
+    let user_message = store
+        .append_agent_message(AppendAgentMessageRequest {
+            conversation_id: conversation.id.clone(),
+            role: AgentRole::User,
+            content: "hello".to_owned(),
+        })
+        .await
+        .unwrap();
+    let assistant_message = store
+        .append_agent_message(AppendAgentMessageRequest {
+            conversation_id: conversation.id.clone(),
+            role: AgentRole::Assistant,
+            content: "ready".to_owned(),
+        })
+        .await
+        .unwrap();
+
+    let loaded = store
+        .get_agent_conversation(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(loaded.summary.title, "Inspect pods");
+    assert_eq!(loaded.summary.context, context);
+    assert_eq!(loaded.messages, vec![user_message, assistant_message]);
+}
+
+#[tokio::test]
+async fn agent_conversation_list_orders_recent_activity_first() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = SqliteStore::initialize(StorePaths::from_root(temp.path().join(".miku")))
+        .await
+        .unwrap();
+    let context = AgentContext {
+        cluster_id: None,
+        cluster_name: None,
+        selected_resource: None,
+        namespace: None,
+    };
+    let first = store
+        .create_agent_conversation(CreateAgentConversationRequest {
+            title: Some("First".to_owned()),
+            context: context.clone(),
+        })
+        .await
+        .unwrap();
+    let second = store
+        .create_agent_conversation(CreateAgentConversationRequest {
+            title: Some("Second".to_owned()),
+            context,
+        })
+        .await
+        .unwrap();
+
+    store
+        .append_agent_message(AppendAgentMessageRequest {
+            conversation_id: first.id.clone(),
+            role: AgentRole::User,
+            content: "newer".to_owned(),
+        })
+        .await
+        .unwrap();
+
+    let conversations = store.list_agent_conversations().await.unwrap();
+
+    assert_eq!(conversations[0].id, first.id);
+    assert_eq!(conversations[1].id, second.id);
+}
+
+#[tokio::test]
+async fn delete_agent_conversation_removes_messages() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = SqliteStore::initialize(StorePaths::from_root(temp.path().join(".miku")))
+        .await
+        .unwrap();
+    let conversation = store
+        .create_agent_conversation(CreateAgentConversationRequest {
+            title: None,
+            context: AgentContext {
+                cluster_id: None,
+                cluster_name: None,
+                selected_resource: None,
+                namespace: None,
+            },
+        })
+        .await
+        .unwrap();
+    store
+        .append_agent_message(AppendAgentMessageRequest {
+            conversation_id: conversation.id.clone(),
+            role: AgentRole::User,
+            content: "hello".to_owned(),
+        })
+        .await
+        .unwrap();
+
+    store
+        .delete_agent_conversation(&conversation.id)
+        .await
+        .unwrap();
+
+    assert!(
+        store
+            .get_agent_conversation(&conversation.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]

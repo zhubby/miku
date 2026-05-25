@@ -5,14 +5,15 @@ use futures::StreamExt;
 #[cfg(not(target_arch = "wasm32"))]
 use futures::channel::mpsc;
 use miku_api::{
-    AgentService, AgentTurnRequest, AgentTurnResponse, ClusterConnectionInfo,
-    ClusterInitializeRequest, ClusterInitializer, ClusterRegistry, ClusterStatusReader,
-    ClusterStatusReport, ClusterStatusRequest, ClusterSummary, CreateClusterRequest,
-    KubernetesResourceReader, KubernetesResourceWriter, KubernetesWatchService,
-    LlmProviderSettings, LlmSettingsStore, LocalPreferenceStore, LogLine, MikuServices,
-    PodAttachRequest, PodAttachService, PodAttachSession, PodEvictRequest, PodLogQuery,
-    PodLogService, ResourceApplyRequest, ResourceDeleteRequest, ResourceEvent, ResourceList,
-    ResourceQuery, ResourceSummary,
+    AgentConversation, AgentConversationStore, AgentConversationSummary, AgentPersistedMessage,
+    AgentService, AgentTurnRequest, AgentTurnResponse, AppendAgentMessageRequest,
+    ClusterConnectionInfo, ClusterInitializeRequest, ClusterInitializer, ClusterRegistry,
+    ClusterStatusReader, ClusterStatusReport, ClusterStatusRequest, ClusterSummary,
+    CreateAgentConversationRequest, CreateClusterRequest, KubernetesResourceReader,
+    KubernetesResourceWriter, KubernetesWatchService, LlmProviderSettings, LlmSettingsStore,
+    LocalPreferenceStore, LogLine, MikuServices, PodAttachRequest, PodAttachService,
+    PodAttachSession, PodEvictRequest, PodLogQuery, PodLogService, ResourceApplyRequest,
+    ResourceDeleteRequest, ResourceEvent, ResourceList, ResourceQuery, ResourceSummary,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use miku_api::{PodAttachInput, PodAttachOutput};
@@ -200,6 +201,103 @@ impl AgentService for HttpMikuClient {
             .json()
             .await
             .map_err(|error| miku_core::MikuError::Transport(error.to_string()))
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl AgentConversationStore for HttpMikuClient {
+    #[tracing::instrument(name = "http_client.list_agent_conversations", skip(self))]
+    async fn list_agent_conversations(&self) -> miku_core::Result<Vec<AgentConversationSummary>> {
+        let endpoint = self.endpoint("/api/agent/conversations");
+        self.client
+            .get(endpoint)
+            .send()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .json()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))
+    }
+
+    #[tracing::instrument(name = "http_client.get_agent_conversation", skip(self), fields(conversation_id = %id))]
+    async fn get_agent_conversation(
+        &self,
+        id: &str,
+    ) -> miku_core::Result<Option<AgentConversation>> {
+        let endpoint = self.endpoint(&format!("/api/agent/conversations/{id}"));
+        let response = self
+            .client
+            .get(endpoint)
+            .send()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        response
+            .error_for_status()
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .json()
+            .await
+            .map(Some)
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))
+    }
+
+    #[tracing::instrument(name = "http_client.create_agent_conversation", skip(self, request))]
+    async fn create_agent_conversation(
+        &self,
+        request: CreateAgentConversationRequest,
+    ) -> miku_core::Result<AgentConversationSummary> {
+        let endpoint = self.endpoint("/api/agent/conversations");
+        self.client
+            .post(endpoint)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .json()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))
+    }
+
+    #[tracing::instrument(name = "http_client.append_agent_message", skip(self, request), fields(conversation_id = %request.conversation_id))]
+    async fn append_agent_message(
+        &self,
+        request: AppendAgentMessageRequest,
+    ) -> miku_core::Result<AgentPersistedMessage> {
+        let endpoint = self.endpoint(&format!(
+            "/api/agent/conversations/{}/messages",
+            request.conversation_id
+        ));
+        self.client
+            .post(endpoint)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .json()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))
+    }
+
+    #[tracing::instrument(name = "http_client.delete_agent_conversation", skip(self), fields(conversation_id = %id))]
+    async fn delete_agent_conversation(&self, id: &str) -> miku_core::Result<()> {
+        let endpoint = self.endpoint(&format!("/api/agent/conversations/{id}"));
+        self.client
+            .delete(endpoint)
+            .send()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?;
+        Ok(())
     }
 }
 

@@ -1,3 +1,6 @@
+mod agent_conversation_store;
+mod agent_conversations;
+mod agent_messages;
 mod cluster_registry;
 pub mod clusters;
 mod migrations;
