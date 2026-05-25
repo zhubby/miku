@@ -12,6 +12,7 @@ mod agent;
 mod clusters;
 mod error;
 mod health;
+mod nodes;
 mod pods;
 mod resources;
 mod settings;
@@ -51,6 +52,8 @@ pub fn router(services: SharedServices) -> Router {
         .route("/api/resources/watch", get(resources::watch_resources))
         .route("/api/resources/apply", post(resources::apply_resource))
         .route("/api/resources/delete", post(resources::delete_resource))
+        .route("/api/nodes/cordon", post(nodes::cordon_node))
+        .route("/api/nodes/drain", post(nodes::drain_node))
         .route(
             "/api/settings/llm",
             get(settings::get_llm_settings).put(settings::set_llm_settings),

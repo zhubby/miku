@@ -206,6 +206,18 @@ pub struct PodEvictRequest {
     pub pod: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NodeCordonRequest {
+    pub cluster_id: ClusterId,
+    pub node: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NodeDrainRequest {
+    pub cluster_id: ClusterId,
+    pub node: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ResourceEvent {
     Snapshot(ResourceList),
@@ -445,6 +457,20 @@ pub trait KubernetesResourceWriter: ServiceBounds {
         Err(miku_core::MikuError::UnsupportedRuntime(format!(
             "pod eviction is not implemented for {}",
             request.pod
+        )))
+    }
+
+    async fn cordon_node(&self, request: NodeCordonRequest) -> miku_core::Result<()> {
+        Err(miku_core::MikuError::UnsupportedRuntime(format!(
+            "node cordon is not implemented for {}",
+            request.node
+        )))
+    }
+
+    async fn drain_node(&self, request: NodeDrainRequest) -> miku_core::Result<()> {
+        Err(miku_core::MikuError::UnsupportedRuntime(format!(
+            "node drain is not implemented for {}",
+            request.node
         )))
     }
 }

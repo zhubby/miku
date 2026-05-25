@@ -2012,6 +2012,16 @@ async fn run_resource_action(
         return Ok(ResourceActionOutcome::Evicted);
     }
 
+    if let Some(cordon_request) = request.cordon_node_request() {
+        services.cordon_node(cordon_request).await?;
+        return Ok(ResourceActionOutcome::Evicted);
+    }
+
+    if let Some(drain_request) = request.drain_node_request() {
+        services.drain_node(drain_request).await?;
+        return Ok(ResourceActionOutcome::Evicted);
+    }
+
     Err(miku_core::MikuError::UnsupportedRuntime(
         "unknown resource action".to_owned(),
     ))

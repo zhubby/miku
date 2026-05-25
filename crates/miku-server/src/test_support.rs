@@ -126,6 +126,14 @@ impl KubernetesResourceWriter for DummyServices {
     async fn evict_pod(&self, _request: PodEvictRequest) -> miku_core::Result<()> {
         Ok(())
     }
+
+    async fn cordon_node(&self, _request: NodeCordonRequest) -> miku_core::Result<()> {
+        Ok(())
+    }
+
+    async fn drain_node(&self, _request: NodeDrainRequest) -> miku_core::Result<()> {
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]

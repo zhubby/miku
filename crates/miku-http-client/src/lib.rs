@@ -11,9 +11,10 @@ use miku_api::{
     ClusterStatusReader, ClusterStatusReport, ClusterStatusRequest, ClusterSummary,
     CreateAgentConversationRequest, CreateClusterRequest, KubernetesResourceReader,
     KubernetesResourceWriter, KubernetesWatchService, LlmProviderSettings, LlmSettingsStore,
-    LocalPreferenceStore, LogLine, MikuServices, PodAttachRequest, PodAttachService,
-    PodAttachSession, PodEvictRequest, PodLogQuery, PodLogService, ResourceApplyRequest,
-    ResourceDeleteRequest, ResourceEvent, ResourceList, ResourceQuery, ResourceSummary,
+    LocalPreferenceStore, LogLine, MikuServices, NodeCordonRequest, NodeDrainRequest,
+    PodAttachRequest, PodAttachService, PodAttachSession, PodEvictRequest, PodLogQuery,
+    PodLogService, ResourceApplyRequest, ResourceDeleteRequest, ResourceEvent, ResourceList,
+    ResourceQuery, ResourceSummary,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use miku_api::{PodAttachInput, PodAttachOutput};
@@ -361,6 +362,36 @@ impl KubernetesResourceWriter for HttpMikuClient {
     #[tracing::instrument(name = "http_client.evict_pod", skip(self, request), fields(namespace = %request.namespace, pod = %request.pod))]
     async fn evict_pod(&self, request: PodEvictRequest) -> miku_core::Result<()> {
         let endpoint = self.endpoint("/api/pods/evict");
+        self.client
+            .post(endpoint)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?;
+
+        Ok(())
+    }
+
+    #[tracing::instrument(name = "http_client.cordon_node", skip(self, request), fields(node = %request.node))]
+    async fn cordon_node(&self, request: NodeCordonRequest) -> miku_core::Result<()> {
+        let endpoint = self.endpoint("/api/nodes/cordon");
+        self.client
+            .post(endpoint)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?;
+
+        Ok(())
+    }
+
+    #[tracing::instrument(name = "http_client.drain_node", skip(self, request), fields(node = %request.node))]
+    async fn drain_node(&self, request: NodeDrainRequest) -> miku_core::Result<()> {
+        let endpoint = self.endpoint("/api/nodes/drain");
         self.client
             .post(endpoint)
             .json(&request)

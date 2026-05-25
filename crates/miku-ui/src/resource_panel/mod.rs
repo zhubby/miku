@@ -1,7 +1,7 @@
 use miku_api::{
-    LogLine, PodAttachInput, PodAttachOutput, PodAttachRequest as ApiPodAttachRequest,
-    PodEvictRequest, PodLogQuery, ResourceApplyRequest, ResourceDeleteRequest, ResourceEvent,
-    ResourceList, ResourceSummary,
+    LogLine, NodeCordonRequest, NodeDrainRequest, PodAttachInput, PodAttachOutput,
+    PodAttachRequest as ApiPodAttachRequest, PodEvictRequest, PodLogQuery, ResourceApplyRequest,
+    ResourceDeleteRequest, ResourceEvent, ResourceList, ResourceSummary,
 };
 use miku_core::{ClusterId, ResourceRef};
 
@@ -131,6 +131,12 @@ pub(crate) enum ResourceActionKind {
     },
     EvictPod {
         namespace: String,
+        name: String,
+    },
+    CordonNode {
+        name: String,
+    },
+    DrainNode {
         name: String,
     },
 }
@@ -350,7 +356,9 @@ impl ResourceActionRequest {
             }),
             ResourceActionKind::DeleteResource { .. }
             | ResourceActionKind::BatchDeleteResources { .. }
-            | ResourceActionKind::EvictPod { .. } => None,
+            | ResourceActionKind::EvictPod { .. }
+            | ResourceActionKind::CordonNode { .. }
+            | ResourceActionKind::DrainNode { .. } => None,
         }
     }
 
@@ -358,7 +366,9 @@ impl ResourceActionRequest {
         match &self.kind {
             ResourceActionKind::ApplyResource { .. }
             | ResourceActionKind::BatchDeleteResources { .. }
-            | ResourceActionKind::EvictPod { .. } => None,
+            | ResourceActionKind::EvictPod { .. }
+            | ResourceActionKind::CordonNode { .. }
+            | ResourceActionKind::DrainNode { .. } => None,
             ResourceActionKind::DeleteResource {
                 resource,
                 namespace,
@@ -399,7 +409,37 @@ impl ResourceActionRequest {
             }),
             ResourceActionKind::ApplyResource { .. }
             | ResourceActionKind::DeleteResource { .. }
-            | ResourceActionKind::BatchDeleteResources { .. } => None,
+            | ResourceActionKind::BatchDeleteResources { .. }
+            | ResourceActionKind::CordonNode { .. }
+            | ResourceActionKind::DrainNode { .. } => None,
+        }
+    }
+
+    pub(crate) fn cordon_node_request(&self) -> Option<NodeCordonRequest> {
+        match &self.kind {
+            ResourceActionKind::CordonNode { name } => Some(NodeCordonRequest {
+                cluster_id: self.cluster_id.clone(),
+                node: name.clone(),
+            }),
+            ResourceActionKind::ApplyResource { .. }
+            | ResourceActionKind::DeleteResource { .. }
+            | ResourceActionKind::BatchDeleteResources { .. }
+            | ResourceActionKind::EvictPod { .. }
+            | ResourceActionKind::DrainNode { .. } => None,
+        }
+    }
+
+    pub(crate) fn drain_node_request(&self) -> Option<NodeDrainRequest> {
+        match &self.kind {
+            ResourceActionKind::DrainNode { name } => Some(NodeDrainRequest {
+                cluster_id: self.cluster_id.clone(),
+                node: name.clone(),
+            }),
+            ResourceActionKind::ApplyResource { .. }
+            | ResourceActionKind::DeleteResource { .. }
+            | ResourceActionKind::BatchDeleteResources { .. }
+            | ResourceActionKind::EvictPod { .. }
+            | ResourceActionKind::CordonNode { .. } => None,
         }
     }
 }
@@ -1512,5 +1552,37 @@ mod tests {
         assert_eq!(deletes[0].name, "api");
         assert_eq!(deletes[1].namespace.as_deref(), Some("kube-system"));
         assert_eq!(deletes[1].name, "dns");
+    }
+
+    #[test]
+    fn node_cordon_action_builds_node_cordon_request() {
+        let request = ResourceActionRequest {
+            request_id: 10,
+            cluster_id: ClusterId::new("local"),
+            kind: ResourceActionKind::CordonNode {
+                name: "worker-1".to_owned(),
+            },
+        };
+
+        let cordon = request.cordon_node_request().unwrap();
+
+        assert_eq!(cordon.cluster_id, ClusterId::new("local"));
+        assert_eq!(cordon.node, "worker-1");
+    }
+
+    #[test]
+    fn node_drain_action_builds_node_drain_request() {
+        let request = ResourceActionRequest {
+            request_id: 11,
+            cluster_id: ClusterId::new("local"),
+            kind: ResourceActionKind::DrainNode {
+                name: "worker-2".to_owned(),
+            },
+        };
+
+        let drain = request.drain_node_request().unwrap();
+
+        assert_eq!(drain.cluster_id, ClusterId::new("local"));
+        assert_eq!(drain.node, "worker-2");
     }
 }

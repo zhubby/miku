@@ -7,7 +7,8 @@ use miku_core::ClusterId;
 use super::ResourceLoadRequest;
 use super::components::{ResourceMapEntry, ResourceMapView, ResourceYamlViewDialog};
 use super::{
-    LoadStatus, ResourceLoadKind, ResourcePanelRequests, ResourceUiEvent, ResourceWatchRequest,
+    LoadStatus, ResourceActionKind, ResourceActionOutcome, ResourceActionRequest, ResourceLoadKind,
+    ResourcePanelRequests, ResourceUiEvent, ResourceWatchRequest,
 };
 use crate::time::human_age_from_rfc3339;
 
@@ -19,9 +20,14 @@ pub(crate) struct NodeResourcePanel {
     next_request_id: u64,
     row_request_id: Option<u64>,
     row_watch_request_id: Option<u64>,
+    action_request_id: Option<u64>,
+    action_error: Option<String>,
     last_cluster_id: Option<ClusterId>,
     describe_dialog: Option<NodeDescribeDialog>,
     view_dialog: Option<NodeViewDialog>,
+    delete_dialog: Option<NodeActionDialog>,
+    drain_dialog: Option<NodeActionDialog>,
+    cordon_dialog: Option<NodeActionDialog>,
 }
 
 impl NodeResourcePanel {
@@ -50,6 +56,9 @@ impl NodeResourcePanel {
         self.show_body(ui);
         self.show_describe_dialog(ui.ctx());
         self.show_view_dialog(ui.ctx());
+        self.show_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
+        self.show_drain_dialog(ui.ctx(), cluster_id, &mut requests.actions);
+        self.show_cordon_dialog(ui.ctx(), cluster_id, &mut requests.actions);
 
         requests
     }
@@ -158,8 +167,30 @@ impl NodeResourcePanel {
                 | ResourceLoadKind::CustomResourceDefinitions
                 | ResourceLoadKind::CustomResources { .. } => {}
             },
-            ResourceUiEvent::ResourceActionCompleted { .. }
-            | ResourceUiEvent::PodLogsLoaded { .. }
+            ResourceUiEvent::ResourceActionCompleted { request, result } => {
+                if self.action_request_id != Some(request.request_id) {
+                    return;
+                }
+                self.action_request_id = None;
+                match result {
+                    Ok(ResourceActionOutcome::Deleted) => {
+                        if let ResourceActionKind::DeleteResource { name, .. } = request.kind {
+                            self.rows.retain(|row| row.name != name);
+                        }
+                        self.delete_dialog = None;
+                        self.action_error = None;
+                    }
+                    Ok(ResourceActionOutcome::Evicted) => {
+                        self.drain_dialog = None;
+                        self.cordon_dialog = None;
+                        self.action_error = None;
+                    }
+                    Ok(ResourceActionOutcome::Applied(_))
+                    | Ok(ResourceActionOutcome::BatchDeleted(_)) => {}
+                    Err(error) => self.action_error = Some(error),
+                }
+            }
+            ResourceUiEvent::PodLogsLoaded { .. }
             | ResourceUiEvent::PodAttachConnected { .. }
             | ResourceUiEvent::PodAttachOutput { .. } => {}
         }
@@ -176,8 +207,13 @@ impl NodeResourcePanel {
         self.rows.clear();
         self.row_request_id = None;
         self.row_watch_request_id = None;
+        self.action_request_id = None;
+        self.action_error = None;
         self.describe_dialog = None;
         self.view_dialog = None;
+        self.delete_dialog = None;
+        self.drain_dialog = None;
+        self.cordon_dialog = None;
     }
 
     fn show_toolbar(
@@ -209,7 +245,15 @@ impl NodeResourcePanel {
             if matches!(self.row_status, LoadStatus::Loading) {
                 ui.label("Loading...");
             }
+
+            if self.action_request_id.is_some() {
+                ui.label("Applying action...");
+            }
         });
+
+        if let Some(error) = self.action_error.as_deref() {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
     }
 
     fn show_body(&mut self, ui: &mut egui::Ui) {
@@ -263,7 +307,161 @@ impl NodeResourcePanel {
                 };
                 self.view_dialog = Some(NodeViewDialog { key, name, yaml });
             }
+            Some(NodeTableAction::Delete { key }) => {
+                let Some(name) = self.row_by_key(&key).map(|row| row.name.clone()) else {
+                    return;
+                };
+                self.delete_dialog = Some(NodeActionDialog { key, name });
+                self.action_error = None;
+            }
+            Some(NodeTableAction::Drain { key }) => {
+                let Some(name) = self.row_by_key(&key).map(|row| row.name.clone()) else {
+                    return;
+                };
+                self.drain_dialog = Some(NodeActionDialog { key, name });
+                self.action_error = None;
+            }
+            Some(NodeTableAction::Cordon { key }) => {
+                let Some(name) = self.row_by_key(&key).map(|row| row.name.clone()) else {
+                    return;
+                };
+                self.cordon_dialog = Some(NodeActionDialog { key, name });
+                self.action_error = None;
+            }
             None => {}
+        }
+    }
+
+    fn show_delete_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.delete_dialog.clone() else {
+            return;
+        };
+
+        let response = show_node_action_dialog(
+            ctx,
+            NodeActionDialogInput {
+                id: egui::Id::new(("node-delete-dialog", &dialog.key)),
+                title: format!("Delete {}", dialog.name),
+                message: format!("Delete Node {}?", dialog.name),
+                detail: "The Kubernetes API will remove the node object.",
+                action_label: "Delete",
+                action_icon: egui_phosphor::regular::TRASH,
+                action_color: ctx.global_style().visuals.error_fg_color,
+                action_enabled: self.action_request_id.is_none(),
+                error: self.action_error.as_deref(),
+            },
+        );
+
+        match response {
+            NodeActionDialogResponse::Cancel => {
+                self.delete_dialog = None;
+                self.action_error = None;
+            }
+            NodeActionDialogResponse::Confirm => {
+                let request = ResourceActionRequest {
+                    request_id: self.allocate_request_id(),
+                    cluster_id: cluster_id.clone(),
+                    kind: ResourceActionKind::DeleteResource {
+                        resource: miku_core::ResourceRef::core("v1", "nodes").cluster_scoped(),
+                        namespace: None,
+                        name: dialog.name,
+                    },
+                };
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+            NodeActionDialogResponse::None => {}
+        }
+    }
+
+    fn show_drain_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.drain_dialog.clone() else {
+            return;
+        };
+
+        let response = show_node_action_dialog(
+            ctx,
+            NodeActionDialogInput {
+                id: egui::Id::new(("node-drain-dialog", &dialog.key)),
+                title: format!("Drain {}", dialog.name),
+                message: format!("Drain Node {}?", dialog.name),
+                detail: "The node will be cordoned and eligible non-daemon pods will be evicted.",
+                action_label: "Drain",
+                action_icon: egui_phosphor::regular::WARNING,
+                action_color: drain_color(),
+                action_enabled: self.action_request_id.is_none(),
+                error: self.action_error.as_deref(),
+            },
+        );
+
+        match response {
+            NodeActionDialogResponse::Cancel => {
+                self.drain_dialog = None;
+                self.action_error = None;
+            }
+            NodeActionDialogResponse::Confirm => {
+                let request = ResourceActionRequest {
+                    request_id: self.allocate_request_id(),
+                    cluster_id: cluster_id.clone(),
+                    kind: ResourceActionKind::DrainNode { name: dialog.name },
+                };
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+            NodeActionDialogResponse::None => {}
+        }
+    }
+
+    fn show_cordon_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.cordon_dialog.clone() else {
+            return;
+        };
+
+        let response = show_node_action_dialog(
+            ctx,
+            NodeActionDialogInput {
+                id: egui::Id::new(("node-cordon-dialog", &dialog.key)),
+                title: format!("Cordon {}", dialog.name),
+                message: format!("Cordon Node {}?", dialog.name),
+                detail: "The node will be marked unschedulable.",
+                action_label: "Cordon",
+                action_icon: egui_phosphor::regular::PROHIBIT,
+                action_color: ctx.global_style().visuals.text_color(),
+                action_enabled: self.action_request_id.is_none(),
+                error: self.action_error.as_deref(),
+            },
+        );
+
+        match response {
+            NodeActionDialogResponse::Cancel => {
+                self.cordon_dialog = None;
+                self.action_error = None;
+            }
+            NodeActionDialogResponse::Confirm => {
+                let request = ResourceActionRequest {
+                    request_id: self.allocate_request_id(),
+                    cluster_id: cluster_id.clone(),
+                    kind: ResourceActionKind::CordonNode { name: dialog.name },
+                };
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+            NodeActionDialogResponse::None => {}
         }
     }
 
@@ -468,6 +666,38 @@ fn show_node_table(
                                 });
                                 ui.close();
                             }
+                            ui.separator();
+                            if ui
+                                .button(format!("{} Cordon", egui_phosphor::regular::PROHIBIT))
+                                .clicked()
+                            {
+                                action = Some(NodeTableAction::Cordon {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
+                            let drain_text = egui::RichText::new(format!(
+                                "{} Drain",
+                                egui_phosphor::regular::WARNING
+                            ))
+                            .color(drain_color());
+                            if ui.add(egui::Button::new(drain_text)).clicked() {
+                                action = Some(NodeTableAction::Drain {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
+                            let delete_text = egui::RichText::new(format!(
+                                "{} Delete",
+                                egui_phosphor::regular::TRASH
+                            ))
+                            .color(ui.visuals().error_fg_color);
+                            if ui.add(egui::Button::new(delete_text)).clicked() {
+                                action = Some(NodeTableAction::Delete {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
                         });
                     });
                 });
@@ -510,6 +740,10 @@ fn ready_color(ui: &egui::Ui, ready: &str) -> egui::Color32 {
         "NotReady" | "Unknown" => ui.visuals().error_fg_color,
         _ => ui.visuals().text_color(),
     }
+}
+
+fn drain_color() -> egui::Color32 {
+    egui::Color32::from_rgb(208, 135, 32)
 }
 
 #[cfg(test)]
@@ -590,6 +824,9 @@ impl NodeRow {
 enum NodeTableAction {
     Describe { key: String },
     View { key: String },
+    Delete { key: String },
+    Drain { key: String },
+    Cordon { key: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -604,6 +841,77 @@ struct NodeViewDialog {
     key: String,
     name: String,
     yaml: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct NodeActionDialog {
+    key: String,
+    name: String,
+}
+
+struct NodeActionDialogInput<'a> {
+    id: egui::Id,
+    title: String,
+    message: String,
+    detail: &'a str,
+    action_label: &'a str,
+    action_icon: &'a str,
+    action_color: egui::Color32,
+    action_enabled: bool,
+    error: Option<&'a str>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NodeActionDialogResponse {
+    None,
+    Cancel,
+    Confirm,
+}
+
+fn show_node_action_dialog(
+    ctx: &egui::Context,
+    input: NodeActionDialogInput<'_>,
+) -> NodeActionDialogResponse {
+    let mut cancel_clicked = false;
+    let mut confirm_clicked = false;
+
+    egui::Window::new(input.title)
+        .id(input.id)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            if let Some(error) = input.error {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+                ui.separator();
+            }
+
+            ui.label(input.message);
+            ui.label(input.detail);
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    cancel_clicked = true;
+                }
+                let action_text =
+                    egui::RichText::new(format!("{} {}", input.action_icon, input.action_label))
+                        .color(input.action_color);
+                if ui
+                    .add_enabled(input.action_enabled, egui::Button::new(action_text))
+                    .clicked()
+                {
+                    confirm_clicked = true;
+                }
+            });
+        });
+
+    if cancel_clicked {
+        NodeActionDialogResponse::Cancel
+    } else if confirm_clicked {
+        NodeActionDialogResponse::Confirm
+    } else {
+        NodeActionDialogResponse::None
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

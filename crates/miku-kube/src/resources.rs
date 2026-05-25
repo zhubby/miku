@@ -1,13 +1,13 @@
 use async_trait::async_trait;
 use futures::StreamExt;
-use kube::api::{ApiResource, DeleteParams, EvictParams, Patch, PatchParams};
+use kube::api::{ApiResource, DeleteParams, EvictParams, ListParams, Patch, PatchParams};
 use kube::core::{DynamicObject, GroupVersionKind};
 use kube::{Api, ResourceExt};
 use miku_api::{
     ClusterConfigStore, ClusterRegistry, KubernetesResourceReader, KubernetesResourceWriter,
-    KubernetesWatchService, LocalPreferenceStore, PodEvictRequest, ResourceApplyRequest,
-    ResourceDeleteRequest, ResourceDetail, ResourceEvent, ResourceList, ResourceQuery,
-    ResourceSummary,
+    KubernetesWatchService, LocalPreferenceStore, NodeCordonRequest, NodeDrainRequest,
+    PodEvictRequest, ResourceApplyRequest, ResourceDeleteRequest, ResourceDetail, ResourceEvent,
+    ResourceList, ResourceQuery, ResourceSummary,
 };
 use miku_core::{ResourceRef, ResourceScope};
 
@@ -176,6 +176,81 @@ where
 
         Ok(())
     }
+
+    #[tracing::instrument(name = "kube.cordon_node", skip(self, request), fields(node = %request.node))]
+    async fn cordon_node(&self, request: NodeCordonRequest) -> miku_core::Result<()> {
+        let client = self.client_for_cluster(&request.cluster_id).await?;
+        cordon_node(client, &request.node).await
+    }
+
+    #[tracing::instrument(name = "kube.drain_node", skip(self, request), fields(node = %request.node))]
+    async fn drain_node(&self, request: NodeDrainRequest) -> miku_core::Result<()> {
+        let client = self.client_for_cluster(&request.cluster_id).await?;
+        cordon_node(client.clone(), &request.node).await?;
+
+        let pods: Api<k8s_openapi::api::core::v1::Pod> = Api::all(client.clone());
+        let list_params = ListParams::default().fields(&format!("spec.nodeName={}", request.node));
+        let pod_list = pods
+            .list(&list_params)
+            .await
+            .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?;
+
+        for pod in pod_list.items.into_iter().filter(should_drain_pod) {
+            let namespace = pod.namespace().ok_or_else(|| {
+                miku_core::MikuError::Kubernetes(format!("pod {} has no namespace", pod.name_any()))
+            })?;
+            let name = pod.name_any();
+            let pods: Api<k8s_openapi::api::core::v1::Pod> =
+                Api::namespaced(client.clone(), &namespace);
+            pods.evict(&name, &EvictParams::default())
+                .await
+                .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?;
+        }
+
+        Ok(())
+    }
+}
+
+async fn cordon_node(client: kube::Client, node: &str) -> miku_core::Result<()> {
+    let nodes: Api<k8s_openapi::api::core::v1::Node> = Api::all(client);
+    let patch = serde_json::json!({
+        "spec": {
+            "unschedulable": true,
+        },
+    });
+    nodes
+        .patch(node, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+        .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?;
+
+    Ok(())
+}
+
+fn should_drain_pod(pod: &k8s_openapi::api::core::v1::Pod) -> bool {
+    if pod
+        .metadata
+        .annotations
+        .as_ref()
+        .is_some_and(|annotations| annotations.contains_key("kubernetes.io/config.mirror"))
+    {
+        return false;
+    }
+
+    if pod
+        .metadata
+        .owner_references
+        .as_ref()
+        .is_some_and(|owners| owners.iter().any(|owner| owner.kind == "DaemonSet"))
+    {
+        return false;
+    }
+
+    !matches!(
+        pod.status
+            .as_ref()
+            .and_then(|status| status.phase.as_deref()),
+        Some("Succeeded" | "Failed")
+    )
 }
 
 #[async_trait]
@@ -533,6 +608,42 @@ mod tests {
 
         assert_eq!(api_resource.kind, "CustomResourceDefinition");
         assert_eq!(api_resource.plural, "customresourcedefinitions");
+    }
+
+    #[test]
+    fn drain_skips_daemonset_mirror_and_completed_pods() {
+        let mut daemonset_pod = k8s_openapi::api::core::v1::Pod::default();
+        daemonset_pod.metadata.owner_references = Some(vec![
+            k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference {
+                api_version: "apps/v1".to_owned(),
+                kind: "DaemonSet".to_owned(),
+                name: "node-agent".to_owned(),
+                uid: "uid".to_owned(),
+                ..Default::default()
+            },
+        ]);
+
+        let mut mirror_pod = k8s_openapi::api::core::v1::Pod::default();
+        mirror_pod
+            .metadata
+            .annotations
+            .get_or_insert_with(Default::default)
+            .insert("kubernetes.io/config.mirror".to_owned(), "hash".to_owned());
+
+        let completed_pod = k8s_openapi::api::core::v1::Pod {
+            status: Some(k8s_openapi::api::core::v1::PodStatus {
+                phase: Some("Succeeded".to_owned()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let regular_pod = k8s_openapi::api::core::v1::Pod::default();
+
+        assert!(!should_drain_pod(&daemonset_pod));
+        assert!(!should_drain_pod(&mirror_pod));
+        assert!(!should_drain_pod(&completed_pod));
+        assert!(should_drain_pod(&regular_pod));
     }
 
     #[test]

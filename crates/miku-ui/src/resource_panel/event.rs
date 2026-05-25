@@ -1,14 +1,14 @@
 use eframe::egui::{self, TextWrapMode};
 use egui_extras::{Column, TableBuilder};
 use miku_api::ResourceSummary;
-use miku_core::ClusterId;
+use miku_core::{ClusterId, ResourceRef};
 
 #[cfg(test)]
 use super::ResourceLoadRequest;
 use super::components::{ResourceMapEntry, ResourceMapView, ResourceYamlViewDialog};
 use super::{
-    LoadStatus, ResourceLoadKind, ResourcePanelRequests, ResourceUiEvent, ResourceWatchRequest,
-    namespaces_from_list,
+    LoadStatus, ResourceActionKind, ResourceActionOutcome, ResourceActionRequest, ResourceLoadKind,
+    ResourcePanelRequests, ResourceUiEvent, ResourceWatchRequest, namespaces_from_list,
 };
 use crate::time::human_age_from_rfc3339;
 
@@ -28,6 +28,9 @@ pub(crate) struct EventResourcePanel {
     last_cluster_id: Option<ClusterId>,
     describe_dialog: Option<EventDescribeDialog>,
     view_dialog: Option<EventViewDialog>,
+    delete_dialog: Option<EventDeleteDialog>,
+    action_request_id: Option<u64>,
+    action_error: Option<String>,
 }
 
 impl EventResourcePanel {
@@ -61,6 +64,7 @@ impl EventResourcePanel {
         self.show_body(ui);
         self.show_describe_dialog(ui.ctx());
         self.show_view_dialog(ui.ctx());
+        self.show_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
 
         requests
     }
@@ -192,8 +196,32 @@ impl EventResourcePanel {
                 | ResourceLoadKind::CustomResourceDefinitions
                 | ResourceLoadKind::CustomResources { .. } => {}
             },
-            ResourceUiEvent::ResourceActionCompleted { .. }
-            | ResourceUiEvent::PodLogsLoaded { .. }
+            ResourceUiEvent::ResourceActionCompleted { request, result } => {
+                if self.action_request_id != Some(request.request_id) {
+                    return;
+                }
+                self.action_request_id = None;
+                match result {
+                    Ok(ResourceActionOutcome::Deleted) => {
+                        if let ResourceActionKind::DeleteResource {
+                            namespace, name, ..
+                        } = request.kind
+                        {
+                            self.rows.retain(|row| {
+                                row.name != name
+                                    || row.namespace != namespace.as_deref().unwrap_or("")
+                            });
+                        }
+                        self.delete_dialog = None;
+                        self.action_error = None;
+                    }
+                    Ok(ResourceActionOutcome::Applied(_))
+                    | Ok(ResourceActionOutcome::BatchDeleted(_))
+                    | Ok(ResourceActionOutcome::Evicted) => {}
+                    Err(error) => self.action_error = Some(error),
+                }
+            }
+            ResourceUiEvent::PodLogsLoaded { .. }
             | ResourceUiEvent::PodAttachConnected { .. }
             | ResourceUiEvent::PodAttachOutput { .. } => {}
         }
@@ -217,6 +245,9 @@ impl EventResourcePanel {
         self.row_watch_request_id = None;
         self.describe_dialog = None;
         self.view_dialog = None;
+        self.delete_dialog = None;
+        self.action_request_id = None;
+        self.action_error = None;
     }
 
     fn show_toolbar(
@@ -279,6 +310,10 @@ impl EventResourcePanel {
                 ui.label("Loading...");
             }
 
+            if self.action_request_id.is_some() {
+                ui.label("Applying action...");
+            }
+
             if matches!(self.namespace_status, LoadStatus::Error(_)) {
                 ui.colored_label(ui.visuals().error_fg_color, "Namespaces unavailable");
             }
@@ -293,6 +328,10 @@ impl EventResourcePanel {
                 ui.ctx().request_repaint();
             }
         });
+
+        if let Some(error) = self.action_error.as_deref() {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
     }
 
     fn show_body(&mut self, ui: &mut egui::Ui) {
@@ -346,7 +385,90 @@ impl EventResourcePanel {
                 };
                 self.view_dialog = Some(EventViewDialog { key, name, yaml });
             }
+            Some(EventTableAction::Delete { key }) => {
+                let Some((name, namespace)) = self
+                    .row_by_key(&key)
+                    .map(|row| (row.name.clone(), row.namespace.clone()))
+                else {
+                    return;
+                };
+                if namespace == "N/A" {
+                    self.action_error = Some(format!("namespace is unavailable for event {name}"));
+                    return;
+                }
+                self.delete_dialog = Some(EventDeleteDialog {
+                    key,
+                    name,
+                    namespace,
+                });
+                self.action_error = None;
+            }
             None => {}
+        }
+    }
+
+    fn show_delete_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.delete_dialog.clone() else {
+            return;
+        };
+
+        let mut cancel_clicked = false;
+        let mut delete_clicked = false;
+        egui::Window::new(format!("Delete {}", dialog.name))
+            .id(egui::Id::new(("event-delete-dialog", &dialog.key)))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                if let Some(error) = self.action_error.as_deref() {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                    ui.separator();
+                }
+                ui.label(format!("Delete Event {}?", dialog.name));
+                ui.label(format!("Namespace: {}", dialog.namespace));
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        cancel_clicked = true;
+                    }
+                    let delete_text =
+                        egui::RichText::new(format!("{} Delete", egui_phosphor::regular::TRASH))
+                            .color(ui.visuals().error_fg_color);
+                    if ui
+                        .add_enabled(
+                            self.action_request_id.is_none(),
+                            egui::Button::new(delete_text),
+                        )
+                        .clicked()
+                    {
+                        delete_clicked = true;
+                    }
+                });
+            });
+
+        if cancel_clicked {
+            self.delete_dialog = None;
+            self.action_error = None;
+            return;
+        }
+
+        if delete_clicked {
+            let request = ResourceActionRequest {
+                request_id: self.allocate_request_id(),
+                cluster_id: cluster_id.clone(),
+                kind: ResourceActionKind::DeleteResource {
+                    resource: ResourceRef::core("v1", "events"),
+                    namespace: Some(dialog.namespace),
+                    name: dialog.name,
+                },
+            };
+            self.action_request_id = Some(request.request_id);
+            requests.push(request);
         }
     }
 
@@ -560,6 +682,18 @@ fn show_event_table(
                                 });
                                 ui.close();
                             }
+                            ui.separator();
+                            let delete_text = egui::RichText::new(format!(
+                                "{} Delete",
+                                egui_phosphor::regular::TRASH
+                            ))
+                            .color(ui.visuals().error_fg_color);
+                            if ui.button(delete_text).clicked() {
+                                action = Some(EventTableAction::Delete {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
                         });
                     });
                 });
@@ -688,6 +822,7 @@ impl EventRow {
 enum EventTableAction {
     Describe { key: String },
     View { key: String },
+    Delete { key: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -702,6 +837,13 @@ struct EventViewDialog {
     key: String,
     name: String,
     yaml: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct EventDeleteDialog {
+    key: String,
+    name: String,
+    namespace: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1204,6 +1346,80 @@ mod tests {
 
         assert_eq!(panel.namespaces, vec!["production".to_owned()]);
         assert_eq!(panel.namespace_status, LoadStatus::Loaded);
+    }
+
+    #[test]
+    fn row_delete_action_opens_event_delete_dialog() {
+        let mut panel = EventResourcePanel {
+            rows: vec![EventRow::from_summary(&event_summary(
+                "api.17",
+                "default",
+                "Warning",
+                "BackOff",
+                "2026-05-18T10:04:00Z",
+            ))],
+            ..EventResourcePanel::default()
+        };
+
+        panel.apply_table_action(Some(EventTableAction::Delete {
+            key: "default/api.17".to_owned(),
+        }));
+
+        assert_eq!(
+            panel.delete_dialog,
+            Some(EventDeleteDialog {
+                key: "default/api.17".to_owned(),
+                name: "api.17".to_owned(),
+                namespace: "default".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn delete_completed_event_removes_matching_row() {
+        let mut panel = EventResourcePanel {
+            rows: vec![
+                EventRow::from_summary(&event_summary(
+                    "api.17",
+                    "default",
+                    "Warning",
+                    "BackOff",
+                    "2026-05-18T10:04:00Z",
+                )),
+                EventRow::from_summary(&event_summary(
+                    "worker.11",
+                    "production",
+                    "Normal",
+                    "Pulled",
+                    "2026-05-18T10:05:00Z",
+                )),
+            ],
+            action_request_id: Some(7),
+            delete_dialog: Some(EventDeleteDialog {
+                key: "default/api.17".to_owned(),
+                name: "api.17".to_owned(),
+                namespace: "default".to_owned(),
+            }),
+            ..EventResourcePanel::default()
+        };
+
+        panel.apply_event(ResourceUiEvent::ResourceActionCompleted {
+            request: ResourceActionRequest {
+                request_id: 7,
+                cluster_id: ClusterId::new("local"),
+                kind: ResourceActionKind::DeleteResource {
+                    resource: ResourceRef::core("v1", "events"),
+                    namespace: Some("default".to_owned()),
+                    name: "api.17".to_owned(),
+                },
+            },
+            result: Ok(ResourceActionOutcome::Deleted),
+        });
+
+        assert_eq!(panel.rows.len(), 1);
+        assert_eq!(panel.rows[0].name, "worker.11");
+        assert_eq!(panel.delete_dialog, None);
+        assert_eq!(panel.action_error, None);
     }
 
     fn event_summary(

@@ -329,6 +329,18 @@ impl NamespaceResourcePanel {
                 };
                 self.view_dialog = Some(NamespaceViewDialog { key, name, yaml });
             }
+            Some(NamespaceTableAction::Delete { key }) => {
+                let Some(target) = self.row_by_key(&key).map(NamespaceRow::target) else {
+                    return;
+                };
+                self.batch_delete_dialog = Some(GenericBatchDeleteDialog {
+                    targets: vec![super::ResourceDeleteTarget {
+                        namespace: target.namespace,
+                        name: target.name,
+                    }],
+                });
+                self.action_error = None;
+            }
             None => {}
         }
     }
@@ -632,6 +644,18 @@ fn show_namespace_table(
                                 });
                                 ui.close();
                             }
+                            ui.separator();
+                            let delete_text = egui::RichText::new(format!(
+                                "{} Delete",
+                                egui_phosphor::regular::TRASH
+                            ))
+                            .color(ui.visuals().error_fg_color);
+                            if ui.button(delete_text).clicked() {
+                                action = Some(NamespaceTableAction::Delete {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
                         });
                     });
                 });
@@ -736,6 +760,7 @@ impl NamespaceRow {
 enum NamespaceTableAction {
     Describe { key: String },
     View { key: String },
+    Delete { key: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1212,6 +1237,27 @@ mod tests {
 
         assert_eq!(panel.rows.len(), 1);
         assert_eq!(panel.rows[0].name, "production");
+    }
+
+    #[test]
+    fn row_delete_action_opens_single_namespace_delete_dialog() {
+        let mut panel = NamespaceResourcePanel {
+            rows: vec![NamespaceRow::from_summary(&namespace_summary())],
+            ..NamespaceResourcePanel::default()
+        };
+
+        panel.apply_table_action(Some(NamespaceTableAction::Delete {
+            key: "production".to_owned(),
+        }));
+
+        let dialog = panel.batch_delete_dialog.unwrap();
+        assert_eq!(
+            dialog.targets,
+            vec![super::super::ResourceDeleteTarget {
+                namespace: None,
+                name: "production".to_owned(),
+            }]
+        );
     }
 
     fn namespace_summary() -> ResourceSummary {

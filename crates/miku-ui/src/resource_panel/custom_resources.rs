@@ -411,14 +411,15 @@ impl CustomResourcesPanel {
             }
         }
 
-        if create_clicked && let Some(dialog) = self.expand_dialog.as_mut() {
-            if let Some(metadata) = dialog.resource_metadata() {
-                dialog.create_dialog = Some(GenericCreateDialog {
-                    yaml: default_resource_yaml(metadata, None),
-                    parse_error: None,
-                });
-                dialog.action_error = None;
-            }
+        if create_clicked
+            && let Some(dialog) = self.expand_dialog.as_mut()
+            && let Some(metadata) = dialog.resource_metadata()
+        {
+            dialog.create_dialog = Some(GenericCreateDialog {
+                yaml: default_resource_yaml(metadata, None),
+                parse_error: None,
+            });
+            dialog.action_error = None;
         }
 
         if batch_delete_clicked && let Some(dialog) = self.expand_dialog.as_mut() {
