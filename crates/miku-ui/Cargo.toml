@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 eframe = { workspace = true }
 egui-file-dialog = { workspace = true }
+egui-notify = { workspace = true }
 egui-phosphor = { workspace = true }
 egui-theme-switch = { workspace = true }
 egui_commonmark = { workspace = true }

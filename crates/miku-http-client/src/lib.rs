@@ -14,7 +14,7 @@ use miku_api::{
     LocalPreferenceStore, LogLine, MikuServices, NodeCordonRequest, NodeDrainRequest,
     PodAttachRequest, PodAttachService, PodAttachSession, PodEvictRequest, PodLogQuery,
     PodLogService, ResourceApplyRequest, ResourceDeleteRequest, ResourceEvent, ResourceList,
-    ResourceQuery, ResourceSummary,
+    ResourcePatchRequest, ResourceQuery, ResourceSummary,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use miku_api::{PodAttachInput, PodAttachOutput};
@@ -357,6 +357,25 @@ impl KubernetesResourceWriter for HttpMikuClient {
             .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?;
 
         Ok(())
+    }
+
+    #[tracing::instrument(name = "http_client.patch_resource", skip(self, request), fields(resource = %request.resource.plural, name = %request.name))]
+    async fn patch_resource(
+        &self,
+        request: ResourcePatchRequest,
+    ) -> miku_core::Result<ResourceSummary> {
+        let endpoint = self.endpoint("/api/resources/patch");
+        self.client
+            .post(endpoint)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?
+            .json()
+            .await
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()))
     }
 
     #[tracing::instrument(name = "http_client.evict_pod", skip(self, request), fields(namespace = %request.namespace, pod = %request.pod))]
@@ -823,6 +842,16 @@ mod tests {
         assert_eq!(
             client.endpoint("/api/resources/delete").as_str(),
             "http://127.0.0.1:5174/api/resources/delete"
+        );
+    }
+
+    #[test]
+    fn patch_resource_uses_resource_patch_endpoint() {
+        let client = HttpMikuClient::new("http://127.0.0.1:5174").unwrap();
+
+        assert_eq!(
+            client.endpoint("/api/resources/patch").as_str(),
+            "http://127.0.0.1:5174/api/resources/patch"
         );
     }
 

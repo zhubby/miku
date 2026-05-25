@@ -4,8 +4,8 @@ use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::{Stream, StreamExt};
 use miku_api::{
-    ResourceApplyRequest, ResourceDeleteRequest, ResourceEvent, ResourceList, ResourceQuery,
-    ResourceSummary,
+    ResourceApplyRequest, ResourceDeleteRequest, ResourceEvent, ResourceList, ResourcePatchRequest,
+    ResourceQuery, ResourceSummary,
 };
 use serde::Deserialize;
 
@@ -86,6 +86,14 @@ pub(crate) async fn apply_resource(
     Ok(Json(services.apply_resource(request).await?))
 }
 
+#[tracing::instrument(name = "http.patch_resource", skip(services, request), fields(resource = %request.resource.plural, name = %request.name))]
+pub(crate) async fn patch_resource(
+    State(services): State<SharedServices>,
+    Json(request): Json<ResourcePatchRequest>,
+) -> ServerResult<Json<ResourceSummary>> {
+    Ok(Json(services.patch_resource(request).await?))
+}
+
 #[tracing::instrument(name = "http.delete_resource", skip(services, request), fields(resource = %request.resource.plural, name = %request.name))]
 pub(crate) async fn delete_resource(
     State(services): State<SharedServices>,
@@ -99,7 +107,9 @@ pub(crate) async fn delete_resource(
 mod tests {
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, StatusCode};
-    use miku_api::{ResourceApplyRequest, ResourceDeleteRequest, ResourceQuery};
+    use miku_api::{
+        ResourceApplyRequest, ResourceDeleteRequest, ResourcePatchRequest, ResourceQuery,
+    };
     use miku_core::ClusterId;
     use tower::ServiceExt;
 
@@ -186,6 +196,38 @@ mod tests {
         let payload = serde_json::from_slice::<serde_json::Value>(&body).unwrap();
         assert_eq!(payload["name"], "api");
         assert_eq!(payload["namespace"], "default");
+    }
+
+    #[tokio::test]
+    async fn resource_patch_route_serializes_trait_result() {
+        let response = router(std::sync::Arc::new(DummyServices))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/resources/patch")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&ResourcePatchRequest {
+                            cluster_id: ClusterId::new("local"),
+                            resource: miku_core::ResourceRef::grouped("apps", "v1", "deployments"),
+                            namespace: Some("default".to_owned()),
+                            name: "api".to_owned(),
+                            patch: serde_json::json!({"spec": {"replicas": 2}}),
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload = serde_json::from_slice::<serde_json::Value>(&body).unwrap();
+        assert_eq!(payload["name"], "api");
+        assert_eq!(payload["namespace"], "default");
+        assert_eq!(payload["raw"]["spec"]["replicas"], 2);
     }
 
     #[tokio::test]

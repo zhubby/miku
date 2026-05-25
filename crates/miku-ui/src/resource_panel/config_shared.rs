@@ -174,6 +174,7 @@ impl ConfigResourcePanel {
                         self.batch_delete_dialog = None;
                         self.action_error = None;
                     }
+                    Ok(ResourceActionOutcome::Patched(_)) => {}
                     Ok(ResourceActionOutcome::Evicted) => {}
                     Err(error) => self.action_error = Some(error),
                 }

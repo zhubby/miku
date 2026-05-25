@@ -30,6 +30,11 @@ pub(in crate::resource_panel) struct GenericBatchDeleteDialog {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub(in crate::resource_panel) struct GenericDeleteDialog {
+    pub(in crate::resource_panel) target: ResourceDeleteTarget,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub(in crate::resource_panel) struct ResourceRowTarget {
     pub(in crate::resource_panel) key: String,
     pub(in crate::resource_panel) namespace: Option<String>,
@@ -208,6 +213,57 @@ pub(in crate::resource_panel) enum ResourceDeleteDialogResponse {
     Delete,
 }
 
+pub(in crate::resource_panel) struct ResourceDeleteDialogInput<'a> {
+    pub(in crate::resource_panel) metadata: ResourceMetadata,
+    pub(in crate::resource_panel) target: &'a ResourceDeleteTarget,
+    pub(in crate::resource_panel) action_error: Option<&'a str>,
+    pub(in crate::resource_panel) action_in_flight: bool,
+}
+
+pub(in crate::resource_panel) fn show_resource_delete_dialog(
+    ctx: &egui::Context,
+    input: ResourceDeleteDialogInput<'_>,
+) -> ResourceDeleteDialogResponse {
+    let mut cancel_clicked = false;
+    let mut delete_clicked = false;
+    egui::Window::new(format!("Delete {}", input.metadata.kind))
+        .id(egui::Id::new((&input.metadata.id, "delete-dialog")))
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            if let Some(error) = input.action_error {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+                ui.separator();
+            }
+            let target_label = resource_target_label(input.target);
+            ui.label(format!("Delete {} {target_label}?", input.metadata.kind));
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    cancel_clicked = true;
+                }
+                let delete_text =
+                    egui::RichText::new(format!("{} Delete", egui_phosphor::regular::TRASH))
+                        .color(ui.visuals().error_fg_color);
+                if ui
+                    .add_enabled(!input.action_in_flight, egui::Button::new(delete_text))
+                    .clicked()
+                {
+                    delete_clicked = true;
+                }
+            });
+        });
+
+    if cancel_clicked {
+        ResourceDeleteDialogResponse::Cancel
+    } else if delete_clicked {
+        ResourceDeleteDialogResponse::Delete
+    } else {
+        ResourceDeleteDialogResponse::None
+    }
+}
+
 pub(in crate::resource_panel) fn show_resource_batch_delete_dialog(
     ctx: &egui::Context,
     input: ResourceBatchDeleteDialogInput<'_>,
@@ -236,11 +292,7 @@ pub(in crate::resource_panel) fn show_resource_batch_delete_dialog(
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     for target in input.targets {
-                        if let Some(namespace) = target.namespace.as_deref() {
-                            ui.label(format!("{namespace}/{}", target.name));
-                        } else {
-                            ui.label(&target.name);
-                        }
+                        ui.label(resource_target_label(target));
                     }
                 });
             ui.separator();
@@ -269,6 +321,23 @@ pub(in crate::resource_panel) fn show_resource_batch_delete_dialog(
     }
 }
 
+pub(in crate::resource_panel) fn delete_resource_request(
+    request_id: u64,
+    cluster_id: miku_core::ClusterId,
+    metadata: ResourceMetadata,
+    target: ResourceDeleteTarget,
+) -> ResourceActionRequest {
+    ResourceActionRequest {
+        request_id,
+        cluster_id,
+        kind: ResourceActionKind::DeleteResource {
+            resource: metadata.resource,
+            namespace: target.namespace,
+            name: target.name,
+        },
+    }
+}
+
 pub(in crate::resource_panel) fn apply_resource_request(
     request_id: u64,
     cluster_id: miku_core::ClusterId,
@@ -287,6 +356,25 @@ pub(in crate::resource_panel) fn apply_resource_request(
     }
 }
 
+pub(in crate::resource_panel) fn patch_resource_request(
+    request_id: u64,
+    cluster_id: miku_core::ClusterId,
+    metadata: ResourceMetadata,
+    target: ResourceDeleteTarget,
+    patch: serde_json::Value,
+) -> ResourceActionRequest {
+    ResourceActionRequest {
+        request_id,
+        cluster_id,
+        kind: ResourceActionKind::PatchResource {
+            resource: metadata.resource,
+            namespace: target.namespace,
+            name: target.name,
+            patch,
+        },
+    }
+}
+
 pub(in crate::resource_panel) fn batch_delete_resource_request(
     request_id: u64,
     cluster_id: miku_core::ClusterId,
@@ -300,6 +388,14 @@ pub(in crate::resource_panel) fn batch_delete_resource_request(
             resource: metadata.resource,
             targets,
         },
+    }
+}
+
+fn resource_target_label(target: &ResourceDeleteTarget) -> String {
+    if let Some(namespace) = target.namespace.as_deref() {
+        format!("{namespace}/{}", target.name)
+    } else {
+        target.name.clone()
     }
 }
 

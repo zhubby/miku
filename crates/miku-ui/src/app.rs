@@ -1,8 +1,10 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, mpsc as resource_mpsc};
+use std::time::Duration;
 
 use eframe::egui;
 use egui_dock::{DockArea, DockState, NodePath, Style, SurfaceIndex, TabPath};
+use egui_notify::{Anchor, Toasts};
 use futures::StreamExt;
 use miku_api::{ClusterSummary, MikuServices, PodAttachInput};
 
@@ -37,6 +39,7 @@ use crate::tabs::{
 const MAX_RESOURCE_EVENTS_PER_PASS: usize = 8;
 const MAX_RESOURCE_CHANNEL_DRAIN_PER_PASS: usize = 256;
 const MAX_PENDING_WATCH_EVENTS_PER_PASS: usize = 8;
+const RESOURCE_ACTION_TOAST_DURATION: Duration = Duration::from_secs(5);
 
 pub struct MikuApp {
     pub(crate) state: AppState,
@@ -70,6 +73,7 @@ pub struct MikuApp {
     pub(crate) settings_panel: SettingsPanel,
     pub(crate) settings_event_sender: resource_mpsc::Sender<SettingsUiEvent>,
     pub(crate) settings_event_receiver: resource_mpsc::Receiver<SettingsUiEvent>,
+    pub(crate) toasts: Toasts,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) file_dialog: egui_file_dialog::FileDialog,
 }
@@ -204,6 +208,58 @@ impl Default for ClusterWorkspace {
     }
 }
 
+impl ClusterWorkspace {
+    fn apply_resource_action_event(&mut self, event: ResourceUiEvent) {
+        self.cluster_role_binding_resource_panel
+            .apply_event(event.clone());
+        self.cluster_role_resource_panel.apply_event(event.clone());
+        self.config_map_resource_panel.apply_event(event.clone());
+        self.daemon_set_resource_panel.apply_event(event.clone());
+        self.deployment_resource_panel.apply_event(event.clone());
+        self.endpoint_slice_resource_panel
+            .apply_event(event.clone());
+        self.endpoints_resource_panel.apply_event(event.clone());
+        self.event_resource_panel.apply_event(event.clone());
+        self.horizontal_pod_autoscaler_resource_panel
+            .apply_event(event.clone());
+        self.ingress_class_resource_panel.apply_event(event.clone());
+        self.ingress_resource_panel.apply_event(event.clone());
+        self.cron_job_resource_panel.apply_event(event.clone());
+        self.job_resource_panel.apply_event(event.clone());
+        self.lease_resource_panel.apply_event(event.clone());
+        self.limit_range_resource_panel.apply_event(event.clone());
+        self.mutating_webhook_configuration_resource_panel
+            .apply_event(event.clone());
+        self.namespace_resource_panel.apply_event(event.clone());
+        self.network_policy_resource_panel
+            .apply_event(event.clone());
+        self.persistent_volume_claim_resource_panel
+            .apply_event(event.clone());
+        self.persistent_volume_resource_panel
+            .apply_event(event.clone());
+        self.pod_disruption_budget_resource_panel
+            .apply_event(event.clone());
+        self.pod_resource_panel.apply_event(event.clone());
+        self.priority_class_resource_panel
+            .apply_event(event.clone());
+        self.replica_set_resource_panel.apply_event(event.clone());
+        self.resource_quota_resource_panel
+            .apply_event(event.clone());
+        self.role_binding_resource_panel.apply_event(event.clone());
+        self.role_resource_panel.apply_event(event.clone());
+        self.runtime_class_resource_panel.apply_event(event.clone());
+        self.secret_resource_panel.apply_event(event.clone());
+        self.service_account_resource_panel
+            .apply_event(event.clone());
+        self.service_resource_panel.apply_event(event.clone());
+        self.storage_class_resource_panel.apply_event(event.clone());
+        self.stateful_set_resource_panel.apply_event(event.clone());
+        self.validating_webhook_configuration_resource_panel
+            .apply_event(event.clone());
+        self.custom_resources_panel.apply_event(event);
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum ClusterStatusUiEvent {
     Loaded {
@@ -282,6 +338,7 @@ impl MikuApp {
             settings_panel: SettingsPanel::default(),
             settings_event_sender,
             settings_event_receiver,
+            toasts: Toasts::new().with_anchor(Anchor::BottomRight),
             #[cfg(not(target_arch = "wasm32"))]
             file_dialog: egui_file_dialog::FileDialog::new(),
         }
@@ -684,7 +741,7 @@ impl eframe::App for MikuApp {
                 self.request_resource_watch(request, ui.ctx().clone());
             }
             for request in resource_action_requests {
-                self.request_resource_action(request);
+                self.request_resource_action(request, ui.ctx().clone());
             }
             for request in pod_log_requests {
                 self.request_pod_logs(request);
@@ -699,6 +756,7 @@ impl eframe::App for MikuApp {
 
         self.show_new_cluster_dialog(ui.ctx());
         self.show_settings_panel(ui.ctx());
+        self.toasts.show(ui.ctx());
     }
 }
 
@@ -1180,6 +1238,10 @@ impl MikuApp {
     }
 
     fn apply_resource_event(&mut self, event: ResourceUiEvent) {
+        if let ResourceUiEvent::ResourceActionCompleted { request, result } = &event {
+            self.notify_resource_action_completed(request, result);
+        }
+
         match &event {
             ResourceUiEvent::PodAttachConnected {
                 request,
@@ -1561,8 +1623,10 @@ impl MikuApp {
                     workspace.pod_resource_panel.apply_event(event);
                 }
             },
-            ResourceUiEvent::ResourceActionCompleted { .. }
-            | ResourceUiEvent::PodLogsLoaded { .. }
+            ResourceUiEvent::ResourceActionCompleted { .. } => {
+                workspace.apply_resource_action_event(event);
+            }
+            ResourceUiEvent::PodLogsLoaded { .. }
             | ResourceUiEvent::PodAttachConnected { .. }
             | ResourceUiEvent::PodAttachOutput { .. } => {
                 workspace.pod_resource_panel.apply_event(event);
@@ -1687,7 +1751,9 @@ impl MikuApp {
         }
     }
 
-    fn request_resource_action(&mut self, request: ResourceActionRequest) {
+    fn request_resource_action(&mut self, request: ResourceActionRequest, repaint: egui::Context) {
+        self.notify_resource_action_submitted(&request);
+
         let Some(services) = self.services.clone() else {
             self.apply_resource_event(ResourceUiEvent::ResourceActionCompleted {
                 request,
@@ -1711,6 +1777,7 @@ impl MikuApp {
                     .await
                     .map_err(|error| error.to_string());
                 let _ = sender.send(ResourceUiEvent::ResourceActionCompleted { request, result });
+                repaint.request_repaint();
             });
         }
 
@@ -1721,7 +1788,44 @@ impl MikuApp {
                     .await
                     .map_err(|error| error.to_string());
                 let _ = sender.send(ResourceUiEvent::ResourceActionCompleted { request, result });
+                repaint.request_repaint();
             });
+        }
+    }
+
+    fn notify_resource_action_submitted(&mut self, request: &ResourceActionRequest) {
+        self.toasts
+            .info(format!(
+                "{} submitted",
+                resource_action_present_participle(&request.kind)
+            ))
+            .duration(RESOURCE_ACTION_TOAST_DURATION);
+    }
+
+    fn notify_resource_action_completed(
+        &mut self,
+        request: &ResourceActionRequest,
+        result: &Result<ResourceActionOutcome, String>,
+    ) {
+        match result {
+            Ok(_) => {
+                self.toasts
+                    .success(format!(
+                        "{} accepted",
+                        resource_action_present_participle(&request.kind)
+                    ))
+                    .duration(RESOURCE_ACTION_TOAST_DURATION);
+            }
+            Err(error) => {
+                self.toasts
+                    .error(format!(
+                        "{} failed: {}",
+                        resource_action_present_participle(&request.kind),
+                        error
+                    ))
+                    .duration(RESOURCE_ACTION_TOAST_DURATION)
+                    .closable(true);
+            }
         }
     }
 
@@ -2035,6 +2139,101 @@ fn status_bar_cluster_version(version: &str) -> &str {
     }
 }
 
+fn resource_action_present_participle(kind: &ResourceActionKind) -> String {
+    match kind {
+        ResourceActionKind::ApplyResource {
+            resource,
+            namespace,
+            name,
+            ..
+        } => format!(
+            "Applying {} {}",
+            resource_action_resource_label(resource),
+            resource_action_target(namespace.as_deref(), name)
+        ),
+        ResourceActionKind::PatchResource {
+            resource,
+            namespace,
+            name,
+            ..
+        } => format!(
+            "Patching {} {}",
+            resource_action_resource_label(resource),
+            resource_action_target(namespace.as_deref(), name)
+        ),
+        ResourceActionKind::DeleteResource {
+            resource,
+            namespace,
+            name,
+        } => format!(
+            "Deleting {} {}",
+            resource_action_resource_label(resource),
+            resource_action_target(namespace.as_deref(), name)
+        ),
+        ResourceActionKind::BatchDeleteResources { resource, targets } => format!(
+            "Deleting {} {}",
+            targets.len(),
+            resource_action_resource_label(resource)
+        ),
+        ResourceActionKind::EvictPod { namespace, name } => {
+            format!(
+                "Evicting Pod {}",
+                resource_action_target(Some(namespace), name)
+            )
+        }
+        ResourceActionKind::CordonNode { name } => format!("Cordoning Node {name}"),
+        ResourceActionKind::DrainNode { name } => format!("Draining Node {name}"),
+    }
+}
+
+fn resource_action_resource_label(resource: &miku_core::ResourceRef) -> String {
+    let plural = resource.plural.as_str();
+    match plural {
+        "configmaps" => "ConfigMap".to_owned(),
+        "cronjobs" => "CronJob".to_owned(),
+        "daemonsets" => "DaemonSet".to_owned(),
+        "deployments" => "Deployment".to_owned(),
+        "endpoints" => "Endpoints".to_owned(),
+        "endpointslices" => "EndpointSlice".to_owned(),
+        "events" => "Event".to_owned(),
+        "horizontalpodautoscalers" => "HorizontalPodAutoscaler".to_owned(),
+        "ingressclasses" => "IngressClass".to_owned(),
+        "ingresses" => "Ingress".to_owned(),
+        "jobs" => "Job".to_owned(),
+        "leases" => "Lease".to_owned(),
+        "limitranges" => "LimitRange".to_owned(),
+        "mutatingwebhookconfigurations" => "MutatingWebhookConfiguration".to_owned(),
+        "namespaces" => "Namespace".to_owned(),
+        "networkpolicies" => "NetworkPolicy".to_owned(),
+        "persistentvolumeclaims" => "PersistentVolumeClaim".to_owned(),
+        "persistentvolumes" => "PersistentVolume".to_owned(),
+        "poddisruptionbudgets" => "PodDisruptionBudget".to_owned(),
+        "pods" => "Pod".to_owned(),
+        "priorityclasses" => "PriorityClass".to_owned(),
+        "replicasets" => "ReplicaSet".to_owned(),
+        "resourcequotas" => "ResourceQuota".to_owned(),
+        "rolebindings" => "RoleBinding".to_owned(),
+        "roles" => "Role".to_owned(),
+        "runtimeclasses" => "RuntimeClass".to_owned(),
+        "secrets" => "Secret".to_owned(),
+        "serviceaccounts" => "ServiceAccount".to_owned(),
+        "services" => "Service".to_owned(),
+        "statefulsets" => "StatefulSet".to_owned(),
+        "storageclasses" => "StorageClass".to_owned(),
+        "validatingwebhookconfigurations" => "ValidatingWebhookConfiguration".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+fn resource_action_target(namespace: Option<&str>, name: &str) -> String {
+    namespace
+        .filter(|namespace| !namespace.is_empty())
+        .map_or_else(
+            || name.to_owned(),
+            |namespace| format!("{namespace}/{name}"),
+        )
+}
+
 async fn run_resource_action(
     services: &dyn miku_api::MikuServices,
     request: &ResourceActionRequest,
@@ -2044,6 +2243,13 @@ async fn run_resource_action(
             .apply_resource(apply_request)
             .await
             .map(ResourceActionOutcome::Applied);
+    }
+
+    if let Some(patch_request) = request.patch_request() {
+        return services
+            .patch_resource(patch_request)
+            .await
+            .map(ResourceActionOutcome::Patched);
     }
 
     if let Some(delete_request) = request.delete_request() {
@@ -2172,6 +2378,101 @@ mod tests {
             Some(ResourceUiEvent::PodLogsLoaded { .. })
         ));
         assert!(!pending.has_pending());
+    }
+
+    #[test]
+    fn resource_action_completion_reaches_non_pod_panel() {
+        let mut app = MikuApp::new(RuntimeMode::Native);
+        let cluster_id = miku_core::ClusterId::new("local");
+        let workspace = app.ensure_workspace(cluster_id.clone());
+        workspace
+            .event_resource_panel
+            .test_set_delete_in_flight(7, "default", "api.17");
+
+        app.apply_resource_event(ResourceUiEvent::ResourceActionCompleted {
+            request: ResourceActionRequest {
+                request_id: 7,
+                cluster_id,
+                kind: ResourceActionKind::DeleteResource {
+                    resource: miku_core::ResourceRef::core("v1", "events"),
+                    namespace: Some("default".to_owned()),
+                    name: "api.17".to_owned(),
+                },
+            },
+            result: Ok(ResourceActionOutcome::Deleted),
+        });
+
+        let workspace = app.workspaces.values().next().unwrap();
+        assert!(!workspace.event_resource_panel.test_delete_dialog_open());
+        assert_eq!(workspace.event_resource_panel.test_action_error(), None);
+    }
+
+    #[test]
+    fn resource_action_present_participle_describes_supported_actions() {
+        let deployment = miku_core::ResourceRef::grouped("apps", "v1", "deployments");
+        let service = miku_core::ResourceRef::core("v1", "services");
+
+        assert_eq!(
+            resource_action_present_participle(&ResourceActionKind::ApplyResource {
+                resource: deployment.clone(),
+                namespace: Some("app".to_owned()),
+                name: "api".to_owned(),
+                manifest: serde_json::json!({}),
+            }),
+            "Applying Deployment app/api"
+        );
+        assert_eq!(
+            resource_action_present_participle(&ResourceActionKind::DeleteResource {
+                resource: miku_core::ResourceRef::core("v1", "events"),
+                namespace: Some("default".to_owned()),
+                name: "pod.17".to_owned(),
+            }),
+            "Deleting Event default/pod.17"
+        );
+        assert_eq!(
+            resource_action_present_participle(&ResourceActionKind::PatchResource {
+                resource: deployment,
+                namespace: Some("app".to_owned()),
+                name: "api".to_owned(),
+                patch: serde_json::json!({"spec": {"replicas": 4}}),
+            }),
+            "Patching Deployment app/api"
+        );
+        assert_eq!(
+            resource_action_present_participle(&ResourceActionKind::BatchDeleteResources {
+                resource: service,
+                targets: vec![
+                    crate::resource_panel::ResourceDeleteTarget {
+                        namespace: Some("default".to_owned()),
+                        name: "api".to_owned(),
+                    },
+                    crate::resource_panel::ResourceDeleteTarget {
+                        namespace: Some("kube-system".to_owned()),
+                        name: "dns".to_owned(),
+                    },
+                ],
+            }),
+            "Deleting 2 Service"
+        );
+        assert_eq!(
+            resource_action_present_participle(&ResourceActionKind::EvictPod {
+                namespace: "default".to_owned(),
+                name: "api-123".to_owned(),
+            }),
+            "Evicting Pod default/api-123"
+        );
+        assert_eq!(
+            resource_action_present_participle(&ResourceActionKind::CordonNode {
+                name: "worker-1".to_owned(),
+            }),
+            "Cordoning Node worker-1"
+        );
+        assert_eq!(
+            resource_action_present_participle(&ResourceActionKind::DrainNode {
+                name: "worker-2".to_owned(),
+            }),
+            "Draining Node worker-2"
+        );
     }
 
     #[test]

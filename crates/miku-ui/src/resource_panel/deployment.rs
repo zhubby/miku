@@ -8,19 +8,20 @@ use miku_core::{ClusterId, ResourceRef};
 #[cfg(test)]
 use super::ResourceLoadRequest;
 use super::components::{
-    GenericBatchDeleteDialog, GenericCreateDialog, ResourceBatchDeleteDialogInput,
-    ResourceCreateDialogInput, ResourceCreateDialogResponse, ResourceDeleteDialogResponse,
-    ResourceMapEntry, ResourceMapView, ResourceMetadata, ResourceRowTarget, ResourceToolbar,
-    ResourceYamlViewDialog, SELECT_COLUMN_WIDTH, apply_resource_request,
-    batch_delete_resource_request, default_resource_yaml, selected_delete_targets,
-    show_resource_batch_delete_dialog, show_resource_create_dialog, show_row_selection_checkbox,
-    visible_keys,
+    GenericBatchDeleteDialog, GenericCreateDialog, GenericDeleteDialog,
+    ResourceBatchDeleteDialogInput, ResourceCreateDialogInput, ResourceCreateDialogResponse,
+    ResourceDeleteDialogInput, ResourceDeleteDialogResponse, ResourceMapEntry, ResourceMapView,
+    ResourceMetadata, ResourceRowTarget, ResourceToolbar, ResourceYamlViewDialog,
+    SELECT_COLUMN_WIDTH, apply_resource_request, batch_delete_resource_request,
+    default_resource_yaml, delete_resource_request, patch_resource_request,
+    selected_delete_targets, show_resource_batch_delete_dialog, show_resource_create_dialog,
+    show_resource_delete_dialog, show_row_selection_checkbox, visible_keys,
 };
 use super::{
     LoadStatus, ResourceActionKind, ResourceActionOutcome, ResourceLoadKind, ResourcePanelRequests,
     ResourceUiEvent, ResourceWatchRequest, namespaces_from_list,
 };
-use crate::time::human_age_from_rfc3339;
+use crate::time::{human_age_from_rfc3339, utc_now_rfc3339_seconds};
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DeploymentResourcePanel {
@@ -41,6 +42,8 @@ pub(crate) struct DeploymentResourcePanel {
     view_dialog: Option<DeploymentViewDialog>,
     create_dialog: Option<GenericCreateDialog>,
     batch_delete_dialog: Option<GenericBatchDeleteDialog>,
+    delete_dialog: Option<GenericDeleteDialog>,
+    scale_dialog: Option<DeploymentScaleDialog>,
     action_request_id: Option<u64>,
     action_error: Option<String>,
 }
@@ -73,11 +76,13 @@ impl DeploymentResourcePanel {
 
         self.show_toolbar(ui, cluster_id, &mut requests);
         ui.separator();
-        self.show_body(ui);
+        self.show_body(ui, cluster_id, &mut requests.actions);
         self.show_describe_dialog(ui.ctx());
         self.show_view_dialog(ui.ctx());
         self.show_create_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_batch_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
+        self.show_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
+        self.show_scale_dialog(ui.ctx(), cluster_id, &mut requests.actions);
 
         requests
     }
@@ -219,6 +224,10 @@ impl DeploymentResourcePanel {
                         self.create_dialog = None;
                         self.action_error = None;
                     }
+                    Ok(ResourceActionOutcome::Patched(_)) => {
+                        self.scale_dialog = None;
+                        self.action_error = None;
+                    }
                     Ok(ResourceActionOutcome::Deleted) => {
                         if let ResourceActionKind::DeleteResource {
                             resource,
@@ -231,6 +240,7 @@ impl DeploymentResourcePanel {
                             self.rows.retain(|row| row.key != key);
                             self.selected_rows.remove(&key);
                         }
+                        self.delete_dialog = None;
                         self.action_error = None;
                     }
                     Ok(ResourceActionOutcome::BatchDeleted(targets)) => {
@@ -276,6 +286,8 @@ impl DeploymentResourcePanel {
         self.view_dialog = None;
         self.create_dialog = None;
         self.batch_delete_dialog = None;
+        self.delete_dialog = None;
+        self.scale_dialog = None;
         self.action_request_id = None;
         self.action_error = None;
     }
@@ -337,7 +349,12 @@ impl DeploymentResourcePanel {
         }
     }
 
-    fn show_body(&mut self, ui: &mut egui::Ui) {
+    fn show_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<super::ResourceActionRequest>,
+    ) {
         match &self.row_status {
             LoadStatus::Idle | LoadStatus::Loading if self.rows.is_empty() => {
                 ui.centered_and_justified(|ui| {
@@ -360,12 +377,17 @@ impl DeploymentResourcePanel {
 
                 let action =
                     show_deployment_table(ui, &self.rows, row_indices, &mut self.selected_rows);
-                self.apply_table_action(action);
+                self.apply_table_action(action, cluster_id, requests);
             }
         }
     }
 
-    fn apply_table_action(&mut self, action: Option<DeploymentTableAction>) {
+    fn apply_table_action(
+        &mut self,
+        action: Option<DeploymentTableAction>,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<super::ResourceActionRequest>,
+    ) {
         match action {
             Some(DeploymentTableAction::Describe { key }) => {
                 let Some((name, describe)) = self
@@ -388,6 +410,44 @@ impl DeploymentResourcePanel {
                     return;
                 };
                 self.view_dialog = Some(DeploymentViewDialog { key, name, yaml });
+            }
+            Some(DeploymentTableAction::Delete { key }) => {
+                let Some(row) = self.row_by_key(&key) else {
+                    return;
+                };
+                self.delete_dialog = Some(GenericDeleteDialog {
+                    target: row.delete_target(),
+                });
+                self.action_error = None;
+            }
+            Some(DeploymentTableAction::Scale { key }) => {
+                let Some(row) = self.row_by_key(&key) else {
+                    return;
+                };
+                self.scale_dialog = Some(DeploymentScaleDialog {
+                    key,
+                    name: row.name.clone(),
+                    target: row.delete_target(),
+                    replicas: desired_replicas(&row.raw)
+                        .unwrap_or(0)
+                        .min(MAX_WORKLOAD_REPLICAS),
+                });
+                self.action_error = None;
+            }
+            Some(DeploymentTableAction::Restart { key }) => {
+                let Some(target) = self.row_by_key(&key).map(DeploymentRow::delete_target) else {
+                    return;
+                };
+                let request = patch_resource_request(
+                    self.allocate_request_id(),
+                    cluster_id.clone(),
+                    deployment_metadata(),
+                    target,
+                    restart_patch(),
+                );
+                self.action_request_id = Some(request.request_id);
+                self.action_error = None;
+                requests.push(request);
             }
             None => {}
         }
@@ -517,6 +577,109 @@ impl DeploymentResourcePanel {
                 self.action_request_id = Some(request.request_id);
                 requests.push(request);
             }
+        }
+    }
+
+    fn show_delete_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<super::ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.delete_dialog.clone() else {
+            return;
+        };
+        match show_resource_delete_dialog(
+            ctx,
+            ResourceDeleteDialogInput {
+                metadata: deployment_metadata(),
+                target: &dialog.target,
+                action_error: self.action_error.as_deref(),
+                action_in_flight: self.action_request_id.is_some(),
+            },
+        ) {
+            ResourceDeleteDialogResponse::None => {}
+            ResourceDeleteDialogResponse::Cancel => {
+                self.delete_dialog = None;
+                self.action_error = None;
+            }
+            ResourceDeleteDialogResponse::Delete => {
+                let request = delete_resource_request(
+                    self.allocate_request_id(),
+                    cluster_id.clone(),
+                    deployment_metadata(),
+                    dialog.target,
+                );
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+        }
+    }
+
+    fn show_scale_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<super::ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.scale_dialog.as_mut() else {
+            return;
+        };
+
+        let mut cancel_clicked = false;
+        let mut save_clicked = false;
+        egui::Window::new(format!("Scale {}", dialog.name))
+            .id(egui::Id::new(("deployment-scale-dialog", &dialog.key)))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                if let Some(error) = self.action_error.as_deref() {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                    ui.separator();
+                }
+                ui.add(
+                    egui::Slider::new(&mut dialog.replicas, 0..=MAX_WORKLOAD_REPLICAS)
+                        .text("Replicas"),
+                );
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        cancel_clicked = true;
+                    }
+                    if ui
+                        .add_enabled(
+                            self.action_request_id.is_none(),
+                            egui::Button::new(format!(
+                                "{} Save",
+                                egui_phosphor::regular::FLOPPY_DISK
+                            )),
+                        )
+                        .clicked()
+                    {
+                        save_clicked = true;
+                    }
+                });
+            });
+
+        if cancel_clicked {
+            self.scale_dialog = None;
+            self.action_error = None;
+            return;
+        }
+        if save_clicked {
+            let Some(dialog) = self.scale_dialog.clone() else {
+                return;
+            };
+            let request = patch_resource_request(
+                self.allocate_request_id(),
+                cluster_id.clone(),
+                deployment_metadata(),
+                dialog.target,
+                scale_patch(dialog.replicas),
+            );
+            self.action_request_id = Some(request.request_id);
+            requests.push(request);
         }
     }
 
@@ -725,6 +888,38 @@ fn show_deployment_table(
                                 });
                                 ui.close();
                             }
+                            if ui
+                                .button(format!("{} Scale", egui_phosphor::regular::ARROWS_OUT))
+                                .clicked()
+                            {
+                                action = Some(DeploymentTableAction::Scale {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
+                            if ui
+                                .button(format!(
+                                    "{} Restart",
+                                    egui_phosphor::regular::ARROWS_CLOCKWISE
+                                ))
+                                .clicked()
+                            {
+                                action = Some(DeploymentTableAction::Restart {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
+                            let delete_text = egui::RichText::new(format!(
+                                "{} Delete",
+                                egui_phosphor::regular::TRASH
+                            ))
+                            .color(ui.visuals().error_fg_color);
+                            if ui.button(delete_text).clicked() {
+                                action = Some(DeploymentTableAction::Delete {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
                         });
                     });
                 });
@@ -757,6 +952,8 @@ const DEPLOYMENT_DESCRIBE_SECTION_WIDTH: f32 = 1128.0;
 const DEPLOYMENT_DESCRIBE_FIELD_LABEL_WIDTH: f32 = 140.0;
 const DEPLOYMENT_DESCRIBE_FIELD_VALUE_WIDTH: f32 = 370.0;
 const DEPLOYMENT_DESCRIBE_LINE_WIDTH: f32 = 1080.0;
+const MAX_WORKLOAD_REPLICAS: u32 = 100;
+const RESTARTED_AT_ANNOTATION: &str = "kubectl.kubernetes.io/restartedAt";
 
 #[cfg(test)]
 fn filter_deployment_rows<'a>(
@@ -862,12 +1059,22 @@ impl DeploymentRow {
             name: self.name.clone(),
         }
     }
+
+    fn delete_target(&self) -> super::ResourceDeleteTarget {
+        super::ResourceDeleteTarget {
+            namespace: namespace_value(&self.namespace),
+            name: self.name.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum DeploymentTableAction {
     Describe { key: String },
     View { key: String },
+    Delete { key: String },
+    Scale { key: String },
+    Restart { key: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -882,6 +1089,14 @@ struct DeploymentViewDialog {
     key: String,
     name: String,
     yaml: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct DeploymentScaleDialog {
+    key: String,
+    name: String,
+    target: super::ResourceDeleteTarget,
+    replicas: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1186,6 +1401,46 @@ fn replica_ratio(current: u64, desired: Option<u64>) -> String {
         Some(desired) => format!("{current}/{desired}"),
         None => format!("{current}/N/A"),
     }
+}
+
+fn desired_replicas(raw: &serde_json::Value) -> Option<u32> {
+    value_u64(raw, &["spec", "replicas"]).and_then(|value| u32::try_from(value).ok())
+}
+
+fn scale_patch(replicas: u32) -> serde_json::Value {
+    serde_json::json!({
+        "spec": {
+            "replicas": replicas,
+        },
+    })
+}
+
+fn restart_patch() -> serde_json::Value {
+    restart_patch_with_timestamp(&restart_timestamp())
+}
+
+fn restart_patch_with_timestamp(timestamp: &str) -> serde_json::Value {
+    serde_json::json!({
+        "spec": {
+            "template": {
+                "metadata": {
+                    "annotations": {
+                        RESTARTED_AT_ANNOTATION: timestamp,
+                    },
+                },
+            },
+        },
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn restart_timestamp() -> String {
+    utc_now_rfc3339_seconds()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn restart_timestamp() -> String {
+    utc_now_rfc3339_seconds()
 }
 
 fn selector_label(raw: &serde_json::Value) -> String {
@@ -1493,6 +1748,30 @@ mod tests {
 
         assert_eq!(panel.namespaces, vec!["production".to_owned()]);
         assert_eq!(panel.namespace_status, LoadStatus::Loaded);
+    }
+
+    #[test]
+    fn scale_patch_sets_spec_replicas() {
+        assert_eq!(scale_patch(7), serde_json::json!({"spec": {"replicas": 7}}));
+    }
+
+    #[test]
+    fn restart_patch_sets_restarted_at_annotation() {
+        let patch = restart_patch_with_timestamp("12345");
+
+        assert_eq!(
+            patch["spec"]["template"]["metadata"]["annotations"][RESTARTED_AT_ANNOTATION],
+            "12345"
+        );
+    }
+
+    #[test]
+    fn deployment_delete_target_uses_namespace_and_name() {
+        let row = DeploymentRow::from_summary(&deployment_summary());
+        let target = row.delete_target();
+
+        assert_eq!(target.namespace.as_deref(), Some("default"));
+        assert_eq!(target.name, "api");
     }
 
     fn deployment_summary() -> ResourceSummary {

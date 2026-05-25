@@ -712,6 +712,7 @@ impl CustomResourcesPanel {
                     self.batch_delete_dialog = None;
                     self.action_error = None;
                 }
+                Ok(ResourceActionOutcome::Patched(_)) => {}
                 Ok(ResourceActionOutcome::Evicted) => {}
                 Err(error) => self.action_error = Some(error),
             }
@@ -752,6 +753,7 @@ impl CustomResourcesPanel {
                 dialog.batch_delete_dialog = None;
                 dialog.action_error = None;
             }
+            Ok(ResourceActionOutcome::Patched(_)) => {}
             Ok(ResourceActionOutcome::Evicted) => {}
             Err(error) => dialog.action_error = Some(error),
         }

@@ -51,6 +51,7 @@ pub fn router(services: SharedServices) -> Router {
         .route("/api/resources/list", post(resources::list_resources))
         .route("/api/resources/watch", get(resources::watch_resources))
         .route("/api/resources/apply", post(resources::apply_resource))
+        .route("/api/resources/patch", post(resources::patch_resource))
         .route("/api/resources/delete", post(resources::delete_resource))
         .route("/api/nodes/cordon", post(nodes::cordon_node))
         .route("/api/nodes/drain", post(nodes::drain_node))

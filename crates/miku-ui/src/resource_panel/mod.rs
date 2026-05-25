@@ -1,7 +1,7 @@
 use miku_api::{
     LogLine, NodeCordonRequest, NodeDrainRequest, PodAttachInput, PodAttachOutput,
     PodAttachRequest as ApiPodAttachRequest, PodEvictRequest, PodLogQuery, ResourceApplyRequest,
-    ResourceDeleteRequest, ResourceEvent, ResourceList, ResourceSummary,
+    ResourceDeleteRequest, ResourceEvent, ResourceList, ResourcePatchRequest, ResourceSummary,
 };
 use miku_core::{ClusterId, ResourceRef};
 
@@ -118,6 +118,12 @@ pub(crate) enum ResourceActionKind {
         namespace: Option<String>,
         name: String,
         manifest: serde_json::Value,
+    },
+    PatchResource {
+        resource: ResourceRef,
+        namespace: Option<String>,
+        name: String,
+        patch: serde_json::Value,
     },
     DeleteResource {
         resource: ResourceRef,
@@ -353,6 +359,30 @@ impl ResourceActionRequest {
                 manifest: manifest.clone(),
             }),
             ResourceActionKind::DeleteResource { .. }
+            | ResourceActionKind::PatchResource { .. }
+            | ResourceActionKind::BatchDeleteResources { .. }
+            | ResourceActionKind::EvictPod { .. }
+            | ResourceActionKind::CordonNode { .. }
+            | ResourceActionKind::DrainNode { .. } => None,
+        }
+    }
+
+    pub(crate) fn patch_request(&self) -> Option<ResourcePatchRequest> {
+        match &self.kind {
+            ResourceActionKind::PatchResource {
+                resource,
+                namespace,
+                name,
+                patch,
+            } => Some(ResourcePatchRequest {
+                cluster_id: self.cluster_id.clone(),
+                resource: resource.clone(),
+                namespace: namespace.clone(),
+                name: name.clone(),
+                patch: patch.clone(),
+            }),
+            ResourceActionKind::ApplyResource { .. }
+            | ResourceActionKind::DeleteResource { .. }
             | ResourceActionKind::BatchDeleteResources { .. }
             | ResourceActionKind::EvictPod { .. }
             | ResourceActionKind::CordonNode { .. }
@@ -363,6 +393,7 @@ impl ResourceActionRequest {
     pub(crate) fn delete_request(&self) -> Option<ResourceDeleteRequest> {
         match &self.kind {
             ResourceActionKind::ApplyResource { .. }
+            | ResourceActionKind::PatchResource { .. }
             | ResourceActionKind::BatchDeleteResources { .. }
             | ResourceActionKind::EvictPod { .. }
             | ResourceActionKind::CordonNode { .. }
@@ -406,6 +437,7 @@ impl ResourceActionRequest {
                 pod: name.clone(),
             }),
             ResourceActionKind::ApplyResource { .. }
+            | ResourceActionKind::PatchResource { .. }
             | ResourceActionKind::DeleteResource { .. }
             | ResourceActionKind::BatchDeleteResources { .. }
             | ResourceActionKind::CordonNode { .. }
@@ -420,6 +452,7 @@ impl ResourceActionRequest {
                 node: name.clone(),
             }),
             ResourceActionKind::ApplyResource { .. }
+            | ResourceActionKind::PatchResource { .. }
             | ResourceActionKind::DeleteResource { .. }
             | ResourceActionKind::BatchDeleteResources { .. }
             | ResourceActionKind::EvictPod { .. }
@@ -434,6 +467,7 @@ impl ResourceActionRequest {
                 node: name.clone(),
             }),
             ResourceActionKind::ApplyResource { .. }
+            | ResourceActionKind::PatchResource { .. }
             | ResourceActionKind::DeleteResource { .. }
             | ResourceActionKind::BatchDeleteResources { .. }
             | ResourceActionKind::EvictPod { .. }
@@ -487,6 +521,7 @@ impl ResourceUiEvent {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ResourceActionOutcome {
     Applied(ResourceSummary),
+    Patched(ResourceSummary),
     Deleted,
     BatchDeleted(Vec<ResourceDeleteTarget>),
     Evicted,
@@ -1520,6 +1555,31 @@ mod tests {
         );
         assert_eq!(delete.namespace, None);
         assert_eq!(delete.name, "pv-fast");
+    }
+
+    #[test]
+    fn generic_patch_action_builds_resource_patch_request() {
+        let request = ResourceActionRequest {
+            request_id: 12,
+            cluster_id: ClusterId::new("local"),
+            kind: ResourceActionKind::PatchResource {
+                resource: ResourceRef::grouped("apps", "v1", "deployments"),
+                namespace: Some("default".to_owned()),
+                name: "api".to_owned(),
+                patch: serde_json::json!({"spec": {"replicas": 4}}),
+            },
+        };
+
+        let patch = request.patch_request().unwrap();
+
+        assert_eq!(patch.cluster_id, ClusterId::new("local"));
+        assert_eq!(
+            patch.resource,
+            ResourceRef::grouped("apps", "v1", "deployments")
+        );
+        assert_eq!(patch.namespace.as_deref(), Some("default"));
+        assert_eq!(patch.name, "api");
+        assert_eq!(patch.patch["spec"]["replicas"], 4);
     }
 
     #[test]

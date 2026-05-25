@@ -123,6 +123,19 @@ impl KubernetesResourceWriter for DummyServices {
         Ok(())
     }
 
+    async fn patch_resource(
+        &self,
+        request: ResourcePatchRequest,
+    ) -> miku_core::Result<ResourceSummary> {
+        Ok(ResourceSummary {
+            name: request.name,
+            namespace: request.namespace,
+            kind: "Pod".to_owned(),
+            status: Some("Running".to_owned()),
+            raw: request.patch,
+        })
+    }
+
     async fn evict_pod(&self, _request: PodEvictRequest) -> miku_core::Result<()> {
         Ok(())
     }

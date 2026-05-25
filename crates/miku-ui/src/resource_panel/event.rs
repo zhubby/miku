@@ -34,6 +34,31 @@ pub(crate) struct EventResourcePanel {
 }
 
 impl EventResourcePanel {
+    #[cfg(test)]
+    pub(crate) fn test_set_delete_in_flight(
+        &mut self,
+        request_id: u64,
+        namespace: &str,
+        name: &str,
+    ) {
+        self.action_request_id = Some(request_id);
+        self.delete_dialog = Some(EventDeleteDialog {
+            key: event_key(namespace, name),
+            name: name.to_owned(),
+            namespace: namespace.to_owned(),
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_delete_dialog_open(&self) -> bool {
+        self.delete_dialog.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_action_error(&self) -> Option<&str> {
+        self.action_error.as_deref()
+    }
+
     pub(crate) fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -217,6 +242,7 @@ impl EventResourcePanel {
                     }
                     Ok(ResourceActionOutcome::Applied(_))
                     | Ok(ResourceActionOutcome::BatchDeleted(_))
+                    | Ok(ResourceActionOutcome::Patched(_))
                     | Ok(ResourceActionOutcome::Evicted) => {}
                     Err(error) => self.action_error = Some(error),
                 }
@@ -468,6 +494,8 @@ impl EventResourcePanel {
                 },
             };
             self.action_request_id = Some(request.request_id);
+            self.delete_dialog = None;
+            self.action_error = None;
             requests.push(request);
         }
     }
@@ -1420,6 +1448,70 @@ mod tests {
         assert_eq!(panel.rows[0].name, "worker.11");
         assert_eq!(panel.delete_dialog, None);
         assert_eq!(panel.action_error, None);
+    }
+
+    #[test]
+    fn delete_failed_event_keeps_dialog_and_records_error() {
+        let mut panel = EventResourcePanel {
+            rows: vec![EventRow::from_summary(&event_summary(
+                "api.17",
+                "default",
+                "Warning",
+                "BackOff",
+                "2026-05-18T10:04:00Z",
+            ))],
+            action_request_id: Some(7),
+            delete_dialog: Some(EventDeleteDialog {
+                key: "default/api.17".to_owned(),
+                name: "api.17".to_owned(),
+                namespace: "default".to_owned(),
+            }),
+            ..EventResourcePanel::default()
+        };
+
+        panel.apply_event(ResourceUiEvent::ResourceActionCompleted {
+            request: ResourceActionRequest {
+                request_id: 7,
+                cluster_id: ClusterId::new("local"),
+                kind: ResourceActionKind::DeleteResource {
+                    resource: ResourceRef::core("v1", "events"),
+                    namespace: Some("default".to_owned()),
+                    name: "api.17".to_owned(),
+                },
+            },
+            result: Err("forbidden".to_owned()),
+        });
+
+        assert_eq!(panel.rows.len(), 1);
+        assert!(panel.delete_dialog.is_some());
+        assert_eq!(panel.action_request_id, None);
+        assert_eq!(panel.action_error.as_deref(), Some("forbidden"));
+    }
+
+    #[test]
+    fn delete_submitted_event_can_report_error_after_dialog_closes() {
+        let mut panel = EventResourcePanel {
+            action_request_id: Some(7),
+            delete_dialog: None,
+            ..EventResourcePanel::default()
+        };
+
+        panel.apply_event(ResourceUiEvent::ResourceActionCompleted {
+            request: ResourceActionRequest {
+                request_id: 7,
+                cluster_id: ClusterId::new("local"),
+                kind: ResourceActionKind::DeleteResource {
+                    resource: ResourceRef::core("v1", "events"),
+                    namespace: Some("default".to_owned()),
+                    name: "api.17".to_owned(),
+                },
+            },
+            result: Err("forbidden".to_owned()),
+        });
+
+        assert_eq!(panel.delete_dialog, None);
+        assert_eq!(panel.action_request_id, None);
+        assert_eq!(panel.action_error.as_deref(), Some("forbidden"));
     }
 
     fn event_summary(

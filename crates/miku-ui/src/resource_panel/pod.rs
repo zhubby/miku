@@ -205,6 +205,7 @@ impl PodResourcePanel {
                         self.evict_dialog = None;
                         self.action_error = None;
                     }
+                    Ok(ResourceActionOutcome::Patched(_)) => {}
                     Err(error) => self.action_error = Some(error),
                 }
             }

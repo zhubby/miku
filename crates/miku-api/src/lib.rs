@@ -191,6 +191,15 @@ pub struct ResourceApplyRequest {
     pub manifest: serde_json::Value,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ResourcePatchRequest {
+    pub cluster_id: ClusterId,
+    pub resource: ResourceRef,
+    pub namespace: Option<String>,
+    pub name: String,
+    pub patch: serde_json::Value,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ResourceDeleteRequest {
     pub cluster_id: ClusterId,
@@ -444,6 +453,16 @@ pub trait KubernetesResourceWriter: ServiceBounds {
         Err(miku_core::MikuError::UnsupportedRuntime(
             "resource apply is not implemented in this service".to_owned(),
         ))
+    }
+
+    async fn patch_resource(
+        &self,
+        request: ResourcePatchRequest,
+    ) -> miku_core::Result<ResourceSummary> {
+        Err(miku_core::MikuError::UnsupportedRuntime(format!(
+            "resource patch is not implemented for {}",
+            request.name
+        )))
     }
 
     async fn delete_resource(&self, request: ResourceDeleteRequest) -> miku_core::Result<()> {
@@ -736,6 +755,22 @@ mod tests {
         assert!(query.namespace.is_none());
         assert!(query.label_selector.is_none());
         assert_eq!(query.limit, Some(250));
+    }
+
+    #[test]
+    fn resource_patch_request_round_trips_as_json() {
+        let request = ResourcePatchRequest {
+            cluster_id: ClusterId::new("local"),
+            resource: ResourceRef::grouped("apps", "v1", "deployments"),
+            namespace: Some("default".to_owned()),
+            name: "api".to_owned(),
+            patch: serde_json::json!({"spec": {"replicas": 3}}),
+        };
+
+        let serialized = serde_json::to_string(&request).unwrap();
+        let deserialized = serde_json::from_str::<ResourcePatchRequest>(&serialized).unwrap();
+
+        assert_eq!(deserialized, request);
     }
 
     #[test]

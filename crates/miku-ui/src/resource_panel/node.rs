@@ -186,6 +186,7 @@ impl NodeResourcePanel {
                         self.action_error = None;
                     }
                     Ok(ResourceActionOutcome::Applied(_))
+                    | Ok(ResourceActionOutcome::Patched(_))
                     | Ok(ResourceActionOutcome::BatchDeleted(_)) => {}
                     Err(error) => self.action_error = Some(error),
                 }

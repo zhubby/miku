@@ -7,7 +7,7 @@ use miku_api::{
     ClusterConfigStore, ClusterRegistry, KubernetesResourceReader, KubernetesResourceWriter,
     KubernetesWatchService, LocalPreferenceStore, NodeCordonRequest, NodeDrainRequest,
     PodEvictRequest, ResourceApplyRequest, ResourceDeleteRequest, ResourceDetail, ResourceEvent,
-    ResourceList, ResourceQuery, ResourceSummary,
+    ResourceList, ResourcePatchRequest, ResourceQuery, ResourceSummary,
 };
 use miku_core::{ResourceRef, ResourceScope};
 
@@ -148,6 +148,25 @@ where
         let params = PatchParams::apply("miku").force();
         let object = api
             .patch(&request.name, &params, &Patch::Apply(&request.manifest))
+            .await
+            .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?;
+
+        Ok(resource_summary(object))
+    }
+
+    #[tracing::instrument(name = "kube.patch_resource", skip(self, request), fields(name = %request.name))]
+    async fn patch_resource(
+        &self,
+        request: ResourcePatchRequest,
+    ) -> miku_core::Result<ResourceSummary> {
+        let client = self.client_for_cluster(&request.cluster_id).await?;
+        let api = dynamic_api(client, &request.resource, request.namespace.as_deref());
+        let object = api
+            .patch(
+                &request.name,
+                &PatchParams::default(),
+                &Patch::Merge(&request.patch),
+            )
             .await
             .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?;
 

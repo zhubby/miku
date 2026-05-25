@@ -27,7 +27,7 @@ use crate::resource_panel::{
 use crate::resources::{RESOURCE_CATEGORIES, ResourceNavItem};
 use crate::state::{AppState, ClusterConnectionState};
 
-const AGENT_COMPOSER_OUTER_HEIGHT: f32 = 112.0;
+const AGENT_COMPOSER_OUTER_HEIGHT: f32 = 148.0;
 const AGENT_MESSAGE_FRAME_VERTICAL_INSET: f32 = 16.0;
 const AGENT_SECTION_SPACING: f32 = 8.0;
 
@@ -1248,10 +1248,10 @@ fn show_agent_composer(
         .corner_radius(egui::CornerRadius::same(6))
         .inner_margin(egui::Margin::symmetric(8, 8))
         .show(ui, |ui| {
-            ui.set_min_height(92.0);
+            ui.set_min_height(128.0);
             let input_response = ui.add(
                 egui::TextEdit::multiline(input)
-                    .desired_rows(3)
+                    .desired_rows(5)
                     .desired_width(ui.available_width())
                     .return_key(egui::KeyboardShortcut::new(
                         egui::Modifiers::SHIFT,
@@ -1333,6 +1333,7 @@ impl ClusterStatusPanel {
         }
 
         ui.horizontal(|ui| {
+            ui.set_width(ui.available_width());
             ui.heading(cluster_name);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
@@ -1381,12 +1382,7 @@ impl ClusterStatusPanel {
                 });
             }
             ClusterStatusPanelState::Loading { .. } => {
-                show_centered_in_rect(ui, page_rect, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new().size(18.0));
-                        ui.label("Loading cluster status...");
-                    });
-                });
+                show_centered_loading_row(ui, page_rect, "Loading cluster status...");
             }
             ClusterStatusPanelState::Ready { report, .. } => show_status_report(ui, report),
             ClusterStatusPanelState::Failed { error, .. } => {
@@ -1464,6 +1460,32 @@ fn show_centered_in_rect<R>(
     )
 }
 
+fn show_centered_loading_row(ui: &mut egui::Ui, rect: egui::Rect, text: &str) {
+    const SPINNER_SIZE: f32 = 18.0;
+
+    let font_id = egui::TextStyle::Body.resolve(ui.style());
+    let text_size = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), font_id, ui.visuals().text_color())
+        .size();
+    let row_size = egui::vec2(
+        SPINNER_SIZE + ui.spacing().item_spacing.x + text_size.x,
+        SPINNER_SIZE.max(text_size.y),
+    );
+    let row_rect = egui::Rect::from_center_size(rect.center(), row_size);
+
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(row_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            ui.set_min_size(row_size);
+            ui.add(egui::Spinner::new().size(SPINNER_SIZE));
+            ui.label(text);
+        },
+    );
+}
+
 impl AppTabViewer<'_> {
     fn show_cluster_card(&mut self, ui: &mut egui::Ui, cluster: &ClusterSummary) {
         let selected = self.state.selected_cluster_id() == Some(&cluster.id);
@@ -1530,6 +1552,7 @@ impl AppTabViewer<'_> {
                         .strong(),
                 );
             });
+            ui.separator();
 
             for resource in category.items {
                 let selected = self.active_resource == Some(*resource);
