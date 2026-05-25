@@ -1,14 +1,23 @@
+use std::collections::BTreeSet;
+
 use eframe::egui::{self, TextWrapMode};
 use egui_extras::{Column, TableBuilder};
 use miku_api::ResourceSummary;
-use miku_core::ClusterId;
+use miku_core::{ClusterId, ResourceRef};
 
 #[cfg(test)]
 use super::ResourceLoadRequest;
-use super::components::ResourceYamlViewDialog;
+use super::components::{
+    GenericBatchDeleteDialog, GenericCreateDialog, ResourceBatchDeleteDialogInput,
+    ResourceCreateDialogInput, ResourceCreateDialogResponse, ResourceDeleteDialogResponse,
+    ResourceMetadata, ResourceRowTarget, ResourceToolbar, ResourceYamlViewDialog,
+    SELECT_COLUMN_WIDTH, apply_resource_request, batch_delete_resource_request,
+    default_resource_yaml, selected_delete_targets, show_resource_batch_delete_dialog,
+    show_resource_create_dialog, show_row_selection_checkbox, visible_keys,
+};
 use super::{
-    LoadStatus, ResourceLoadKind, ResourcePanelRequests, ResourceUiEvent, ResourceWatchRequest,
-    namespaces_from_list,
+    LoadStatus, ResourceActionKind, ResourceActionOutcome, ResourceLoadKind, ResourcePanelRequests,
+    ResourceUiEvent, ResourceWatchRequest, namespaces_from_list,
 };
 use crate::time::human_age_from_rfc3339;
 
@@ -20,6 +29,7 @@ pub(crate) struct ResourceQuotaResourcePanel {
     namespace_status: LoadStatus,
     row_status: LoadStatus,
     rows: Vec<ResourceQuotaRow>,
+    selected_rows: BTreeSet<String>,
     next_request_id: u64,
     namespace_request_id: Option<u64>,
     row_request_id: Option<u64>,
@@ -28,6 +38,10 @@ pub(crate) struct ResourceQuotaResourcePanel {
     last_cluster_id: Option<ClusterId>,
     describe_dialog: Option<ResourceQuotaDescribeDialog>,
     view_dialog: Option<ResourceQuotaViewDialog>,
+    create_dialog: Option<GenericCreateDialog>,
+    batch_delete_dialog: Option<GenericBatchDeleteDialog>,
+    action_request_id: Option<u64>,
+    action_error: Option<String>,
 }
 
 impl ResourceQuotaResourcePanel {
@@ -61,6 +75,8 @@ impl ResourceQuotaResourcePanel {
         self.show_body(ui);
         self.show_describe_dialog(ui.ctx());
         self.show_view_dialog(ui.ctx());
+        self.show_create_dialog(ui.ctx(), cluster_id, &mut requests.actions);
+        self.show_batch_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         requests
     }
 
@@ -86,7 +102,7 @@ impl ResourceQuotaResourcePanel {
                     self.row_request_id = None;
                     match result {
                         Ok(list) => {
-                            self.rows = resource_quota_rows_from_list(&list.items);
+                            self.replace_rows(resource_quota_rows_from_list(&list.items));
                             self.row_status = LoadStatus::Loaded;
                         }
                         Err(error) => self.row_status = LoadStatus::Error(error),
@@ -148,7 +164,7 @@ impl ResourceQuotaResourcePanel {
                     }
                     match result {
                         Ok(miku_api::ResourceEvent::Snapshot(list)) => {
-                            self.rows = resource_quota_rows_from_list(&list.items);
+                            self.replace_rows(resource_quota_rows_from_list(&list.items));
                             self.row_status = LoadStatus::Loaded;
                         }
                         Ok(_) => {}
@@ -191,8 +207,47 @@ impl ResourceQuotaResourcePanel {
                 | ResourceLoadKind::CustomResourceDefinitions
                 | ResourceLoadKind::CustomResources { .. } => {}
             },
-            ResourceUiEvent::ResourceActionCompleted { .. }
-            | ResourceUiEvent::PodLogsLoaded { .. }
+            ResourceUiEvent::ResourceActionCompleted { request, result } => {
+                if self.action_request_id != Some(request.request_id) {
+                    return;
+                }
+                self.action_request_id = None;
+                match result {
+                    Ok(ResourceActionOutcome::Applied(_)) => {
+                        self.create_dialog = None;
+                        self.action_error = None;
+                    }
+                    Ok(ResourceActionOutcome::Deleted) => {
+                        if let ResourceActionKind::DeleteResource {
+                            resource,
+                            namespace,
+                            name,
+                        } = request.kind
+                            && resource == resource_quota_metadata().resource
+                        {
+                            let key = namespaced_key(namespace.as_deref().unwrap_or(""), &name);
+                            self.rows.retain(|row| row.key != key);
+                            self.selected_rows.remove(&key);
+                        }
+                        self.action_error = None;
+                    }
+                    Ok(ResourceActionOutcome::BatchDeleted(targets)) => {
+                        for target in targets {
+                            let key = namespaced_key(
+                                target.namespace.as_deref().unwrap_or(""),
+                                &target.name,
+                            );
+                            self.rows.retain(|row| row.key != key);
+                            self.selected_rows.remove(&key);
+                        }
+                        self.batch_delete_dialog = None;
+                        self.action_error = None;
+                    }
+                    Ok(ResourceActionOutcome::Evicted) => {}
+                    Err(error) => self.action_error = Some(error),
+                }
+            }
+            ResourceUiEvent::PodLogsLoaded { .. }
             | ResourceUiEvent::PodAttachConnected { .. }
             | ResourceUiEvent::PodAttachOutput { .. } => {}
         }
@@ -207,6 +262,7 @@ impl ResourceQuotaResourcePanel {
         self.search_text.clear();
         self.namespaces.clear();
         self.rows.clear();
+        self.selected_rows.clear();
         self.namespace_status = LoadStatus::Idle;
         self.row_status = LoadStatus::Idle;
         self.namespace_request_id = None;
@@ -215,6 +271,10 @@ impl ResourceQuotaResourcePanel {
         self.row_watch_request_id = None;
         self.describe_dialog = None;
         self.view_dialog = None;
+        self.create_dialog = None;
+        self.batch_delete_dialog = None;
+        self.action_request_id = None;
+        self.action_error = None;
     }
 
     fn show_toolbar(
@@ -223,62 +283,55 @@ impl ResourceQuotaResourcePanel {
         cluster_id: &ClusterId,
         requests: &mut ResourcePanelRequests,
     ) {
-        ui.horizontal(|ui| {
-            let mut namespace_changed = false;
-            egui::ComboBox::from_id_salt("resource_quota_namespace_filter")
-                .selected_text(
-                    self.namespace_filter
-                        .as_deref()
-                        .unwrap_or("All namespaces")
-                        .to_owned(),
-                )
-                .width(220.0)
-                .show_ui(ui, |ui| {
-                    namespace_changed |= ui
-                        .selectable_value(&mut self.namespace_filter, None, "All namespaces")
-                        .changed();
-                    for namespace in &self.namespaces {
-                        namespace_changed |= ui
-                            .selectable_value(
-                                &mut self.namespace_filter,
-                                Some(namespace.clone()),
-                                namespace,
-                            )
-                            .changed();
-                    }
-                });
+        let item_count = self.filtered_row_count();
+        let response = ResourceToolbar {
+            id_salt: "resource_quota_toolbar",
+            namespaces: &self.namespaces,
+            namespace_filter: &mut self.namespace_filter,
+            search_text: &mut self.search_text,
+            search_hint: "Search ResourceQuotas...",
+            item_count,
+            selected_count: self.selected_rows.len(),
+            loading: matches!(self.row_status, LoadStatus::Loading),
+        }
+        .show(ui);
 
-            ui.add(
-                egui::TextEdit::singleline(&mut self.search_text)
-                    .hint_text("Search ResourceQuotas...")
-                    .desired_width(280.0),
-            );
-            if ui
-                .button(egui_phosphor::regular::ARROWS_CLOCKWISE)
-                .on_hover_text("Refresh")
-                .clicked()
-            {
-                requests
-                    .watches
-                    .push(self.request_namespace_watch(cluster_id.clone()));
-                requests
-                    .watches
-                    .push(self.request_resource_quota_watch(cluster_id.clone()));
+        if response.namespace_changed {
+            requests
+                .watches
+                .push(self.request_resource_quota_watch(cluster_id.clone()));
+        }
+        if response.search_changed {
+            self.prune_selection_to_visible();
+        }
+        if response.refresh_clicked {
+            requests
+                .watches
+                .push(self.request_namespace_watch(cluster_id.clone()));
+            requests
+                .watches
+                .push(self.request_resource_quota_watch(cluster_id.clone()));
+        }
+        if response.create_clicked {
+            self.create_dialog = Some(GenericCreateDialog {
+                yaml: default_resource_yaml(
+                    resource_quota_metadata(),
+                    self.namespace_filter.as_deref(),
+                ),
+                parse_error: None,
+            });
+            self.action_error = None;
+        }
+        if response.batch_delete_clicked {
+            let targets = self.selected_delete_targets();
+            if !targets.is_empty() {
+                self.batch_delete_dialog = Some(GenericBatchDeleteDialog { targets });
+                self.action_error = None;
             }
-            ui.separator();
-            ui.label(format!("{} items", self.filtered_row_count()));
-            if matches!(self.row_status, LoadStatus::Loading) {
-                ui.label("Loading...");
-            }
-            if matches!(self.namespace_status, LoadStatus::Error(_)) {
-                ui.colored_label(ui.visuals().error_fg_color, "Namespaces unavailable");
-            }
-            if namespace_changed {
-                requests
-                    .watches
-                    .push(self.request_resource_quota_watch(cluster_id.clone()));
-            }
-        });
+        }
+        if matches!(self.namespace_status, LoadStatus::Error(_)) {
+            ui.colored_label(ui.visuals().error_fg_color, "Namespaces unavailable");
+        }
     }
 
     fn show_body(&mut self, ui: &mut egui::Ui) {
@@ -301,7 +354,8 @@ impl ResourceQuotaResourcePanel {
                     });
                     return;
                 }
-                let action = show_resource_quota_table(ui, &self.rows, row_indices);
+                let action =
+                    show_resource_quota_table(ui, &self.rows, row_indices, &mut self.selected_rows);
                 self.apply_table_action(action);
             }
         }
@@ -378,6 +432,79 @@ impl ResourceQuotaResourcePanel {
         }
     }
 
+    fn show_create_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<super::ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.create_dialog.as_mut() else {
+            return;
+        };
+        match show_resource_create_dialog(
+            ctx,
+            ResourceCreateDialogInput {
+                metadata: resource_quota_metadata(),
+                dialog,
+                action_error: self.action_error.as_deref(),
+                action_in_flight: self.action_request_id.is_some(),
+                namespace_default: self.namespace_filter.as_deref(),
+            },
+        ) {
+            ResourceCreateDialogResponse::None => {}
+            ResourceCreateDialogResponse::Cancel => {
+                self.create_dialog = None;
+                self.action_error = None;
+            }
+            ResourceCreateDialogResponse::Apply(parsed) => {
+                let request = apply_resource_request(
+                    self.allocate_request_id(),
+                    cluster_id.clone(),
+                    resource_quota_metadata(),
+                    parsed,
+                );
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+        }
+    }
+
+    fn show_batch_delete_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<super::ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.batch_delete_dialog.clone() else {
+            return;
+        };
+        match show_resource_batch_delete_dialog(
+            ctx,
+            ResourceBatchDeleteDialogInput {
+                metadata: resource_quota_metadata(),
+                targets: &dialog.targets,
+                action_error: self.action_error.as_deref(),
+                action_in_flight: self.action_request_id.is_some(),
+            },
+        ) {
+            ResourceDeleteDialogResponse::None => {}
+            ResourceDeleteDialogResponse::Cancel => {
+                self.batch_delete_dialog = None;
+                self.action_error = None;
+            }
+            ResourceDeleteDialogResponse::Delete => {
+                let request = batch_delete_resource_request(
+                    self.allocate_request_id(),
+                    cluster_id.clone(),
+                    resource_quota_metadata(),
+                    dialog.targets,
+                );
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+        }
+    }
+
     #[cfg(test)]
     fn request_resource_quotas(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
         let request = ResourceLoadRequest {
@@ -439,16 +566,49 @@ impl ResourceQuotaResourcePanel {
     fn row_by_key(&self, key: &str) -> Option<&ResourceQuotaRow> {
         self.rows.iter().find(|row| row.key == key)
     }
+
+    fn replace_rows(&mut self, rows: Vec<ResourceQuotaRow>) {
+        let targets = rows
+            .iter()
+            .map(ResourceQuotaRow::target)
+            .collect::<Vec<_>>();
+        let visible_keys = visible_keys(&targets);
+        self.selected_rows.retain(|key| visible_keys.contains(key));
+        self.rows = rows;
+    }
+
+    fn prune_selection_to_visible(&mut self) {
+        let targets = self
+            .filtered_row_indices()
+            .into_iter()
+            .filter_map(|index| self.rows.get(index))
+            .map(ResourceQuotaRow::target)
+            .collect::<Vec<_>>();
+        let visible_keys = visible_keys(&targets);
+        self.selected_rows.retain(|key| visible_keys.contains(key));
+    }
+
+    fn selected_delete_targets(&self) -> Vec<super::ResourceDeleteTarget> {
+        let targets = self
+            .rows
+            .iter()
+            .map(ResourceQuotaRow::target)
+            .collect::<Vec<_>>();
+        selected_delete_targets(&targets, &self.selected_rows)
+    }
 }
 
 fn show_resource_quota_table(
     ui: &mut egui::Ui,
     rows: &[ResourceQuotaRow],
     row_indices: Vec<usize>,
+    selected_rows: &mut BTreeSet<String>,
 ) -> Option<ResourceQuotaTableAction> {
     let row_height = ui.spacing().interact_size.y;
     let widths = [240.0, 160.0, 180.0, 360.0, 360.0, 90.0];
-    let table_width = widths.iter().sum::<f32>() + ui.spacing().item_spacing.x * 5.0;
+    let table_width = SELECT_COLUMN_WIDTH
+        + widths.iter().sum::<f32>()
+        + ui.spacing().item_spacing.x * widths.len() as f32;
     let mut action = None;
     egui::ScrollArea::horizontal()
         .id_salt("resource_quota_table_horizontal")
@@ -462,11 +622,13 @@ fn show_resource_quota_table(
                 .sense(egui::Sense::click())
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .min_scrolled_height(0.0);
+            table = table.column(Column::exact(SELECT_COLUMN_WIDTH));
             for width in widths {
                 table = table.column(Column::exact(width));
             }
             table
                 .header(row_height, |mut header| {
+                    header.col(|_| {});
                     for label in ["Name", "Namespace", "Scopes", "Hard", "Used", "Age"] {
                         header.col(|ui| {
                             ui.strong(label);
@@ -481,6 +643,13 @@ fn show_resource_quota_table(
                         else {
                             return;
                         };
+                        let row_selected = selected_rows.contains(&row.key);
+                        table_row.set_selected(row_selected);
+                        let mut checkbox_changed = false;
+                        table_row.col(|ui| {
+                            checkbox_changed =
+                                show_row_selection_checkbox(ui, selected_rows, &row.key);
+                        });
                         table_row.col(|ui| {
                             ui.label(&row.name);
                         });
@@ -499,7 +668,12 @@ fn show_resource_quota_table(
                         table_row.col(|ui| {
                             ui.label(&row.age);
                         });
-                        table_row.response().context_menu(|ui| {
+                        let response = table_row.response();
+                        if response.clicked() && !checkbox_changed {
+                            selected_rows.clear();
+                            selected_rows.insert(row.key.clone());
+                        }
+                        response.context_menu(|ui| {
                             if ui
                                 .button(format!("{} Describe", egui_phosphor::regular::INFO))
                                 .clicked()
@@ -545,6 +719,29 @@ fn filter_resource_quota_rows<'a>(
         .collect()
 }
 
+fn namespaced_key(namespace: &str, name: &str) -> String {
+    format!("{namespace}/{name}")
+}
+
+fn namespace_value(namespace: &str) -> Option<String> {
+    if namespace.is_empty() || namespace == "N/A" {
+        None
+    } else {
+        Some(namespace.to_owned())
+    }
+}
+
+fn resource_quota_metadata() -> ResourceMetadata {
+    ResourceMetadata {
+        id: "resource_quota",
+        title: "ResourceQuotas",
+        api_version: "v1",
+        kind: "ResourceQuota",
+        resource: ResourceRef::core("v1", "resourcequotas"),
+        namespaced: true,
+    }
+}
+
 fn resource_quota_rows_from_list(items: &[ResourceSummary]) -> Vec<ResourceQuotaRow> {
     let mut rows = items
         .iter()
@@ -578,7 +775,7 @@ impl ResourceQuotaRow {
             .or(summary.namespace.as_deref())
             .unwrap_or("N/A");
         Self {
-            key: format!("{namespace}/{name}"),
+            key: namespaced_key(namespace, name),
             name: name.to_owned(),
             namespace: namespace.to_owned(),
             scopes: string_array(raw.pointer("/spec/scopes")),
@@ -592,6 +789,14 @@ impl ResourceQuotaRow {
                 })
                 .unwrap_or_else(|| "N/A".to_owned()),
             raw: summary.raw.clone(),
+        }
+    }
+
+    fn target(&self) -> ResourceRowTarget {
+        ResourceRowTarget {
+            key: self.key.clone(),
+            namespace: namespace_value(&self.namespace),
+            name: self.name.clone(),
         }
     }
 }

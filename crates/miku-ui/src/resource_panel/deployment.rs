@@ -1,14 +1,24 @@
+use std::collections::BTreeSet;
+
 use eframe::egui::{self, TextWrapMode};
 use egui_extras::{Column, TableBuilder};
 use miku_api::ResourceSummary;
-use miku_core::ClusterId;
+use miku_core::{ClusterId, ResourceRef};
 
 #[cfg(test)]
 use super::ResourceLoadRequest;
-use super::components::{ResourceMapEntry, ResourceMapView, ResourceYamlViewDialog};
+use super::components::{
+    GenericBatchDeleteDialog, GenericCreateDialog, ResourceBatchDeleteDialogInput,
+    ResourceCreateDialogInput, ResourceCreateDialogResponse, ResourceDeleteDialogResponse,
+    ResourceMapEntry, ResourceMapView, ResourceMetadata, ResourceRowTarget, ResourceToolbar,
+    ResourceYamlViewDialog, SELECT_COLUMN_WIDTH, apply_resource_request,
+    batch_delete_resource_request, default_resource_yaml, selected_delete_targets,
+    show_resource_batch_delete_dialog, show_resource_create_dialog, show_row_selection_checkbox,
+    visible_keys,
+};
 use super::{
-    LoadStatus, ResourceLoadKind, ResourcePanelRequests, ResourceUiEvent, ResourceWatchRequest,
-    namespaces_from_list,
+    LoadStatus, ResourceActionKind, ResourceActionOutcome, ResourceLoadKind, ResourcePanelRequests,
+    ResourceUiEvent, ResourceWatchRequest, namespaces_from_list,
 };
 use crate::time::human_age_from_rfc3339;
 
@@ -20,6 +30,7 @@ pub(crate) struct DeploymentResourcePanel {
     namespace_status: LoadStatus,
     row_status: LoadStatus,
     rows: Vec<DeploymentRow>,
+    selected_rows: BTreeSet<String>,
     next_request_id: u64,
     namespace_request_id: Option<u64>,
     row_request_id: Option<u64>,
@@ -28,6 +39,10 @@ pub(crate) struct DeploymentResourcePanel {
     last_cluster_id: Option<ClusterId>,
     describe_dialog: Option<DeploymentDescribeDialog>,
     view_dialog: Option<DeploymentViewDialog>,
+    create_dialog: Option<GenericCreateDialog>,
+    batch_delete_dialog: Option<GenericBatchDeleteDialog>,
+    action_request_id: Option<u64>,
+    action_error: Option<String>,
 }
 
 impl DeploymentResourcePanel {
@@ -61,6 +76,8 @@ impl DeploymentResourcePanel {
         self.show_body(ui);
         self.show_describe_dialog(ui.ctx());
         self.show_view_dialog(ui.ctx());
+        self.show_create_dialog(ui.ctx(), cluster_id, &mut requests.actions);
+        self.show_batch_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
 
         requests
     }
@@ -87,7 +104,7 @@ impl DeploymentResourcePanel {
                     self.row_request_id = None;
                     match result {
                         Ok(list) => {
-                            self.rows = deployment_rows_from_list(&list.items);
+                            self.replace_rows(deployment_rows_from_list(&list.items));
                             self.row_status = LoadStatus::Loaded;
                         }
                         Err(error) => self.row_status = LoadStatus::Error(error),
@@ -149,7 +166,7 @@ impl DeploymentResourcePanel {
                     }
                     match result {
                         Ok(miku_api::ResourceEvent::Snapshot(list)) => {
-                            self.rows = deployment_rows_from_list(&list.items);
+                            self.replace_rows(deployment_rows_from_list(&list.items));
                             self.row_status = LoadStatus::Loaded;
                         }
                         Ok(_) => {}
@@ -192,8 +209,47 @@ impl DeploymentResourcePanel {
                 | ResourceLoadKind::CustomResourceDefinitions
                 | ResourceLoadKind::CustomResources { .. } => {}
             },
-            ResourceUiEvent::ResourceActionCompleted { .. }
-            | ResourceUiEvent::PodLogsLoaded { .. }
+            ResourceUiEvent::ResourceActionCompleted { request, result } => {
+                if self.action_request_id != Some(request.request_id) {
+                    return;
+                }
+                self.action_request_id = None;
+                match result {
+                    Ok(ResourceActionOutcome::Applied(_)) => {
+                        self.create_dialog = None;
+                        self.action_error = None;
+                    }
+                    Ok(ResourceActionOutcome::Deleted) => {
+                        if let ResourceActionKind::DeleteResource {
+                            resource,
+                            namespace,
+                            name,
+                        } = request.kind
+                            && resource == deployment_metadata().resource
+                        {
+                            let key = deployment_key(namespace.as_deref().unwrap_or(""), &name);
+                            self.rows.retain(|row| row.key != key);
+                            self.selected_rows.remove(&key);
+                        }
+                        self.action_error = None;
+                    }
+                    Ok(ResourceActionOutcome::BatchDeleted(targets)) => {
+                        for target in targets {
+                            let key = deployment_key(
+                                target.namespace.as_deref().unwrap_or(""),
+                                &target.name,
+                            );
+                            self.rows.retain(|row| row.key != key);
+                            self.selected_rows.remove(&key);
+                        }
+                        self.batch_delete_dialog = None;
+                        self.action_error = None;
+                    }
+                    Ok(ResourceActionOutcome::Evicted) => {}
+                    Err(error) => self.action_error = Some(error),
+                }
+            }
+            ResourceUiEvent::PodLogsLoaded { .. }
             | ResourceUiEvent::PodAttachConnected { .. }
             | ResourceUiEvent::PodAttachOutput { .. } => {}
         }
@@ -209,6 +265,7 @@ impl DeploymentResourcePanel {
         self.search_text.clear();
         self.namespaces.clear();
         self.rows.clear();
+        self.selected_rows.clear();
         self.namespace_status = LoadStatus::Idle;
         self.row_status = LoadStatus::Idle;
         self.namespace_request_id = None;
@@ -217,6 +274,10 @@ impl DeploymentResourcePanel {
         self.row_watch_request_id = None;
         self.describe_dialog = None;
         self.view_dialog = None;
+        self.create_dialog = None;
+        self.batch_delete_dialog = None;
+        self.action_request_id = None;
+        self.action_error = None;
     }
 
     fn show_toolbar(
@@ -225,68 +286,55 @@ impl DeploymentResourcePanel {
         cluster_id: &ClusterId,
         requests: &mut ResourcePanelRequests,
     ) {
-        ui.horizontal(|ui| {
-            let selected_label = self
-                .namespace_filter
-                .as_deref()
-                .unwrap_or("All namespaces")
-                .to_owned();
+        let item_count = self.filtered_row_count();
+        let response = ResourceToolbar {
+            id_salt: "deployment_resource_toolbar",
+            namespaces: &self.namespaces,
+            namespace_filter: &mut self.namespace_filter,
+            search_text: &mut self.search_text,
+            search_hint: "Search Deployments...",
+            item_count,
+            selected_count: self.selected_rows.len(),
+            loading: matches!(self.row_status, LoadStatus::Loading),
+        }
+        .show(ui);
 
-            let mut namespace_changed = false;
-            egui::ComboBox::from_id_salt("deployment_resource_namespace_filter")
-                .selected_text(selected_label)
-                .width(220.0)
-                .show_ui(ui, |ui| {
-                    namespace_changed |= ui
-                        .selectable_value(&mut self.namespace_filter, None, "All namespaces")
-                        .changed();
-                    for namespace in &self.namespaces {
-                        namespace_changed |= ui
-                            .selectable_value(
-                                &mut self.namespace_filter,
-                                Some(namespace.clone()),
-                                namespace,
-                            )
-                            .changed();
-                    }
-                });
-
-            ui.add(
-                egui::TextEdit::singleline(&mut self.search_text)
-                    .hint_text("Search Deployments...")
-                    .desired_width(280.0),
-            );
-
-            if ui
-                .button(egui_phosphor::regular::ARROWS_CLOCKWISE)
-                .on_hover_text("Refresh")
-                .clicked()
-            {
-                requests
-                    .watches
-                    .push(self.request_namespace_watch(cluster_id.clone()));
-                requests
-                    .watches
-                    .push(self.request_deployment_watch(cluster_id.clone()));
+        if response.namespace_changed {
+            requests
+                .watches
+                .push(self.request_deployment_watch(cluster_id.clone()));
+        }
+        if response.search_changed {
+            self.prune_selection_to_visible();
+        }
+        if response.refresh_clicked {
+            requests
+                .watches
+                .push(self.request_namespace_watch(cluster_id.clone()));
+            requests
+                .watches
+                .push(self.request_deployment_watch(cluster_id.clone()));
+        }
+        if response.create_clicked {
+            self.create_dialog = Some(GenericCreateDialog {
+                yaml: default_resource_yaml(
+                    deployment_metadata(),
+                    self.namespace_filter.as_deref(),
+                ),
+                parse_error: None,
+            });
+            self.action_error = None;
+        }
+        if response.batch_delete_clicked {
+            let targets = self.selected_delete_targets();
+            if !targets.is_empty() {
+                self.batch_delete_dialog = Some(GenericBatchDeleteDialog { targets });
+                self.action_error = None;
             }
-
-            ui.separator();
-            ui.label(format!("{} items", self.filtered_row_count()));
-
-            if matches!(self.row_status, LoadStatus::Loading) {
-                ui.label("Loading...");
-            }
-
-            if matches!(self.namespace_status, LoadStatus::Error(_)) {
-                ui.colored_label(ui.visuals().error_fg_color, "Namespaces unavailable");
-            }
-
-            if namespace_changed {
-                requests
-                    .watches
-                    .push(self.request_deployment_watch(cluster_id.clone()));
-            }
-        });
+        }
+        if matches!(self.namespace_status, LoadStatus::Error(_)) {
+            ui.colored_label(ui.visuals().error_fg_color, "Namespaces unavailable");
+        }
     }
 
     fn show_body(&mut self, ui: &mut egui::Ui) {
@@ -310,7 +358,8 @@ impl DeploymentResourcePanel {
                     return;
                 }
 
-                let action = show_deployment_table(ui, &self.rows, row_indices);
+                let action =
+                    show_deployment_table(ui, &self.rows, row_indices, &mut self.selected_rows);
                 self.apply_table_action(action);
             }
         }
@@ -398,6 +447,79 @@ impl DeploymentResourcePanel {
         }
     }
 
+    fn show_create_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<super::ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.create_dialog.as_mut() else {
+            return;
+        };
+        match show_resource_create_dialog(
+            ctx,
+            ResourceCreateDialogInput {
+                metadata: deployment_metadata(),
+                dialog,
+                action_error: self.action_error.as_deref(),
+                action_in_flight: self.action_request_id.is_some(),
+                namespace_default: self.namespace_filter.as_deref(),
+            },
+        ) {
+            ResourceCreateDialogResponse::None => {}
+            ResourceCreateDialogResponse::Cancel => {
+                self.create_dialog = None;
+                self.action_error = None;
+            }
+            ResourceCreateDialogResponse::Apply(parsed) => {
+                let request = apply_resource_request(
+                    self.allocate_request_id(),
+                    cluster_id.clone(),
+                    deployment_metadata(),
+                    parsed,
+                );
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+        }
+    }
+
+    fn show_batch_delete_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<super::ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.batch_delete_dialog.clone() else {
+            return;
+        };
+        match show_resource_batch_delete_dialog(
+            ctx,
+            ResourceBatchDeleteDialogInput {
+                metadata: deployment_metadata(),
+                targets: &dialog.targets,
+                action_error: self.action_error.as_deref(),
+                action_in_flight: self.action_request_id.is_some(),
+            },
+        ) {
+            ResourceDeleteDialogResponse::None => {}
+            ResourceDeleteDialogResponse::Cancel => {
+                self.batch_delete_dialog = None;
+                self.action_error = None;
+            }
+            ResourceDeleteDialogResponse::Delete => {
+                let request = batch_delete_resource_request(
+                    self.allocate_request_id(),
+                    cluster_id.clone(),
+                    deployment_metadata(),
+                    dialog.targets,
+                );
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+        }
+    }
+
     #[cfg(test)]
     fn request_deployments(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
         let request = ResourceLoadRequest {
@@ -459,16 +581,45 @@ impl DeploymentResourcePanel {
     fn row_by_key(&self, key: &str) -> Option<&DeploymentRow> {
         self.rows.iter().find(|row| row.key == key)
     }
+
+    fn replace_rows(&mut self, rows: Vec<DeploymentRow>) {
+        let targets = rows.iter().map(DeploymentRow::target).collect::<Vec<_>>();
+        let visible_keys = visible_keys(&targets);
+        self.selected_rows.retain(|key| visible_keys.contains(key));
+        self.rows = rows;
+    }
+
+    fn prune_selection_to_visible(&mut self) {
+        let targets = self
+            .filtered_row_indices()
+            .into_iter()
+            .filter_map(|index| self.rows.get(index))
+            .map(DeploymentRow::target)
+            .collect::<Vec<_>>();
+        let visible_keys = visible_keys(&targets);
+        self.selected_rows.retain(|key| visible_keys.contains(key));
+    }
+
+    fn selected_delete_targets(&self) -> Vec<super::ResourceDeleteTarget> {
+        let targets = self
+            .rows
+            .iter()
+            .map(DeploymentRow::target)
+            .collect::<Vec<_>>();
+        selected_delete_targets(&targets, &self.selected_rows)
+    }
 }
 
 fn show_deployment_table(
     ui: &mut egui::Ui,
     rows: &[DeploymentRow],
     row_indices: Vec<usize>,
+    selected_rows: &mut BTreeSet<String>,
 ) -> Option<DeploymentTableAction> {
     let row_height = ui.spacing().interact_size.y;
-    let table_width: f32 = DEPLOYMENT_COLUMN_WIDTHS.iter().sum::<f32>()
-        + ui.spacing().item_spacing.x * DEPLOYMENT_COLUMN_WIDTHS.len().saturating_sub(1) as f32;
+    let table_width: f32 = SELECT_COLUMN_WIDTH
+        + DEPLOYMENT_COLUMN_WIDTHS.iter().sum::<f32>()
+        + ui.spacing().item_spacing.x * DEPLOYMENT_COLUMNS.len() as f32;
     let mut action = None;
 
     egui::ScrollArea::horizontal()
@@ -485,12 +636,14 @@ fn show_deployment_table(
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .min_scrolled_height(0.0);
 
+            table = table.column(Column::exact(SELECT_COLUMN_WIDTH));
             for width in DEPLOYMENT_COLUMN_WIDTHS {
                 table = table.column(Column::exact(width));
             }
 
             table
                 .header(row_height, |mut header| {
+                    header.col(|_| {});
                     for label in DEPLOYMENT_COLUMNS {
                         header.col(|ui| {
                             ui.strong(label);
@@ -507,6 +660,13 @@ fn show_deployment_table(
                             return;
                         };
 
+                        let row_selected = selected_rows.contains(&row.key);
+                        table_row.set_selected(row_selected);
+                        let mut checkbox_changed = false;
+                        table_row.col(|ui| {
+                            checkbox_changed =
+                                show_row_selection_checkbox(ui, selected_rows, &row.key);
+                        });
                         table_row.col(|ui| {
                             ui.label(&row.name);
                         });
@@ -541,7 +701,12 @@ fn show_deployment_table(
                             ui.label(&row.age);
                         });
 
-                        table_row.response().context_menu(|ui| {
+                        let response = table_row.response();
+                        if response.clicked() && !checkbox_changed {
+                            selected_rows.clear();
+                            selected_rows.insert(row.key.clone());
+                        }
+                        response.context_menu(|ui| {
                             if ui
                                 .button(format!("{} Describe", egui_phosphor::regular::INFO))
                                 .clicked()
@@ -613,6 +778,17 @@ fn row_matches_search(row: &DeploymentRow, search_text: &str) -> bool {
         || row.conditions.to_lowercase().contains(&needle)
 }
 
+fn deployment_metadata() -> ResourceMetadata {
+    ResourceMetadata {
+        id: "deployment",
+        title: "Deployments",
+        api_version: "apps/v1",
+        kind: "Deployment",
+        resource: ResourceRef::grouped("apps", "v1", "deployments"),
+        namespaced: true,
+    }
+}
+
 fn deployment_rows_from_list(items: &[ResourceSummary]) -> Vec<DeploymentRow> {
     let mut rows = items
         .iter()
@@ -676,6 +852,14 @@ impl DeploymentRow {
                 })
                 .unwrap_or_else(|| "N/A".to_owned()),
             raw: summary.raw.clone(),
+        }
+    }
+
+    fn target(&self) -> ResourceRowTarget {
+        ResourceRowTarget {
+            key: self.key.clone(),
+            namespace: namespace_value(&self.namespace),
+            name: self.name.clone(),
         }
     }
 }
@@ -987,6 +1171,14 @@ fn deployment_describe_from_row(row: &DeploymentRow) -> DeploymentDescribe {
 
 fn deployment_key(namespace: &str, name: &str) -> String {
     format!("{namespace}/{name}")
+}
+
+fn namespace_value(namespace: &str) -> Option<String> {
+    if namespace.is_empty() || namespace == "N/A" {
+        None
+    } else {
+        Some(namespace.to_owned())
+    }
 }
 
 fn replica_ratio(current: u64, desired: Option<u64>) -> String {

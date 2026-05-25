@@ -1,13 +1,24 @@
+use std::collections::BTreeSet;
+
 use eframe::egui::{self, TextWrapMode};
 use egui_extras::{Column, TableBuilder};
 use miku_api::ResourceSummary;
-use miku_core::ClusterId;
+use miku_core::{ClusterId, ResourceRef};
 
 #[cfg(test)]
 use super::ResourceLoadRequest;
-use super::components::{ResourceMapEntry, ResourceMapView, ResourceYamlViewDialog};
+use super::components::{
+    GenericBatchDeleteDialog, GenericCreateDialog, ResourceBatchDeleteDialogInput,
+    ResourceCreateDialogInput, ResourceCreateDialogResponse, ResourceDeleteDialogResponse,
+    ResourceMapEntry, ResourceMapView, ResourceMetadata, ResourceRowTarget, ResourceToolbar,
+    ResourceYamlViewDialog, SELECT_COLUMN_WIDTH, apply_resource_request,
+    batch_delete_resource_request, default_resource_yaml, selected_delete_targets,
+    show_resource_batch_delete_dialog, show_resource_create_dialog, show_row_selection_checkbox,
+    visible_keys,
+};
 use super::{
-    LoadStatus, ResourceLoadKind, ResourcePanelRequests, ResourceUiEvent, ResourceWatchRequest,
+    LoadStatus, ResourceActionKind, ResourceActionOutcome, ResourceLoadKind, ResourcePanelRequests,
+    ResourceUiEvent, ResourceWatchRequest,
 };
 use crate::time::human_age_from_rfc3339;
 
@@ -16,12 +27,17 @@ pub(crate) struct NamespaceResourcePanel {
     search_text: String,
     row_status: LoadStatus,
     rows: Vec<NamespaceRow>,
+    selected_rows: BTreeSet<String>,
     next_request_id: u64,
     row_request_id: Option<u64>,
     row_watch_request_id: Option<u64>,
     last_cluster_id: Option<ClusterId>,
     describe_dialog: Option<NamespaceDescribeDialog>,
     view_dialog: Option<NamespaceViewDialog>,
+    create_dialog: Option<GenericCreateDialog>,
+    batch_delete_dialog: Option<GenericBatchDeleteDialog>,
+    action_request_id: Option<u64>,
+    action_error: Option<String>,
 }
 
 impl NamespaceResourcePanel {
@@ -50,6 +66,8 @@ impl NamespaceResourcePanel {
         self.show_body(ui);
         self.show_describe_dialog(ui.ctx());
         self.show_view_dialog(ui.ctx());
+        self.show_create_dialog(ui.ctx(), cluster_id, &mut requests.actions);
+        self.show_batch_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
 
         requests
     }
@@ -64,7 +82,7 @@ impl NamespaceResourcePanel {
                     self.row_request_id = None;
                     match result {
                         Ok(list) => {
-                            self.rows = namespace_rows_from_list(&list.items);
+                            self.replace_rows(namespace_rows_from_list(&list.items));
                             self.row_status = LoadStatus::Loaded;
                         }
                         Err(error) => self.row_status = LoadStatus::Error(error),
@@ -114,7 +132,7 @@ impl NamespaceResourcePanel {
                     }
                     match result {
                         Ok(miku_api::ResourceEvent::Snapshot(list)) => {
-                            self.rows = namespace_rows_from_list(&list.items);
+                            self.replace_rows(namespace_rows_from_list(&list.items));
                             self.row_status = LoadStatus::Loaded;
                         }
                         Ok(_) => {}
@@ -158,8 +176,39 @@ impl NamespaceResourcePanel {
                 | ResourceLoadKind::CustomResourceDefinitions
                 | ResourceLoadKind::CustomResources { .. } => {}
             },
-            ResourceUiEvent::ResourceActionCompleted { .. }
-            | ResourceUiEvent::PodLogsLoaded { .. }
+            ResourceUiEvent::ResourceActionCompleted { request, result } => {
+                if self.action_request_id != Some(request.request_id) {
+                    return;
+                }
+                self.action_request_id = None;
+                match result {
+                    Ok(ResourceActionOutcome::Applied(_)) => {
+                        self.create_dialog = None;
+                        self.action_error = None;
+                    }
+                    Ok(ResourceActionOutcome::Deleted) => {
+                        if let ResourceActionKind::DeleteResource { resource, name, .. } =
+                            request.kind
+                            && resource == namespace_metadata().resource
+                        {
+                            self.rows.retain(|row| row.key != name);
+                            self.selected_rows.remove(&name);
+                        }
+                        self.action_error = None;
+                    }
+                    Ok(ResourceActionOutcome::BatchDeleted(targets)) => {
+                        for target in targets {
+                            self.rows.retain(|row| row.key != target.name);
+                            self.selected_rows.remove(&target.name);
+                        }
+                        self.batch_delete_dialog = None;
+                        self.action_error = None;
+                    }
+                    Ok(ResourceActionOutcome::Evicted) => {}
+                    Err(error) => self.action_error = Some(error),
+                }
+            }
+            ResourceUiEvent::PodLogsLoaded { .. }
             | ResourceUiEvent::PodAttachConnected { .. }
             | ResourceUiEvent::PodAttachOutput { .. } => {}
         }
@@ -174,10 +223,15 @@ impl NamespaceResourcePanel {
         self.search_text.clear();
         self.row_status = LoadStatus::Idle;
         self.rows.clear();
+        self.selected_rows.clear();
         self.row_request_id = None;
         self.row_watch_request_id = None;
         self.describe_dialog = None;
         self.view_dialog = None;
+        self.create_dialog = None;
+        self.batch_delete_dialog = None;
+        self.action_request_id = None;
+        self.action_error = None;
     }
 
     fn show_toolbar(
@@ -186,30 +240,41 @@ impl NamespaceResourcePanel {
         cluster_id: &ClusterId,
         requests: &mut ResourcePanelRequests,
     ) {
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.search_text)
-                    .hint_text("Search Namespaces...")
-                    .desired_width(280.0),
-            );
+        let item_count = self.filtered_row_count();
+        let response = ResourceToolbar {
+            id_salt: "namespace_resource_toolbar",
+            namespaces: &[],
+            namespace_filter: &mut None,
+            search_text: &mut self.search_text,
+            search_hint: "Search Namespaces...",
+            item_count,
+            selected_count: self.selected_rows.len(),
+            loading: matches!(self.row_status, LoadStatus::Loading),
+        }
+        .show(ui);
 
-            if ui
-                .button(egui_phosphor::regular::ARROWS_CLOCKWISE)
-                .on_hover_text("Refresh")
-                .clicked()
-            {
-                requests
-                    .watches
-                    .push(self.request_namespace_watch(cluster_id.clone()));
+        if response.search_changed {
+            self.prune_selection_to_visible();
+        }
+        if response.refresh_clicked {
+            requests
+                .watches
+                .push(self.request_namespace_watch(cluster_id.clone()));
+        }
+        if response.create_clicked {
+            self.create_dialog = Some(GenericCreateDialog {
+                yaml: default_resource_yaml(namespace_metadata(), None),
+                parse_error: None,
+            });
+            self.action_error = None;
+        }
+        if response.batch_delete_clicked {
+            let targets = self.selected_delete_targets();
+            if !targets.is_empty() {
+                self.batch_delete_dialog = Some(GenericBatchDeleteDialog { targets });
+                self.action_error = None;
             }
-
-            ui.separator();
-            ui.label(format!("{} items", self.filtered_row_count()));
-
-            if matches!(self.row_status, LoadStatus::Loading) {
-                ui.label("Loading...");
-            }
-        });
+        }
     }
 
     fn show_body(&mut self, ui: &mut egui::Ui) {
@@ -233,7 +298,8 @@ impl NamespaceResourcePanel {
                     return;
                 }
 
-                let action = show_namespace_table(ui, &self.rows, row_indices);
+                let action =
+                    show_namespace_table(ui, &self.rows, row_indices, &mut self.selected_rows);
                 self.apply_table_action(action);
             }
         }
@@ -321,6 +387,79 @@ impl NamespaceResourcePanel {
         }
     }
 
+    fn show_create_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<super::ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.create_dialog.as_mut() else {
+            return;
+        };
+        match show_resource_create_dialog(
+            ctx,
+            ResourceCreateDialogInput {
+                metadata: namespace_metadata(),
+                dialog,
+                action_error: self.action_error.as_deref(),
+                action_in_flight: self.action_request_id.is_some(),
+                namespace_default: None,
+            },
+        ) {
+            ResourceCreateDialogResponse::None => {}
+            ResourceCreateDialogResponse::Cancel => {
+                self.create_dialog = None;
+                self.action_error = None;
+            }
+            ResourceCreateDialogResponse::Apply(parsed) => {
+                let request = apply_resource_request(
+                    self.allocate_request_id(),
+                    cluster_id.clone(),
+                    namespace_metadata(),
+                    parsed,
+                );
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+        }
+    }
+
+    fn show_batch_delete_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<super::ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.batch_delete_dialog.clone() else {
+            return;
+        };
+        match show_resource_batch_delete_dialog(
+            ctx,
+            ResourceBatchDeleteDialogInput {
+                metadata: namespace_metadata(),
+                targets: &dialog.targets,
+                action_error: self.action_error.as_deref(),
+                action_in_flight: self.action_request_id.is_some(),
+            },
+        ) {
+            ResourceDeleteDialogResponse::None => {}
+            ResourceDeleteDialogResponse::Cancel => {
+                self.batch_delete_dialog = None;
+                self.action_error = None;
+            }
+            ResourceDeleteDialogResponse::Delete => {
+                let request = batch_delete_resource_request(
+                    self.allocate_request_id(),
+                    cluster_id.clone(),
+                    namespace_metadata(),
+                    dialog.targets,
+                );
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+        }
+    }
+
     #[cfg(test)]
     fn request_namespaces(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
         let request = ResourceLoadRequest {
@@ -367,16 +506,45 @@ impl NamespaceResourcePanel {
     fn row_by_key(&self, key: &str) -> Option<&NamespaceRow> {
         self.rows.iter().find(|row| row.key == key)
     }
+
+    fn replace_rows(&mut self, rows: Vec<NamespaceRow>) {
+        let targets = rows.iter().map(NamespaceRow::target).collect::<Vec<_>>();
+        let visible_keys = visible_keys(&targets);
+        self.selected_rows.retain(|key| visible_keys.contains(key));
+        self.rows = rows;
+    }
+
+    fn prune_selection_to_visible(&mut self) {
+        let targets = self
+            .filtered_row_indices()
+            .into_iter()
+            .filter_map(|index| self.rows.get(index))
+            .map(NamespaceRow::target)
+            .collect::<Vec<_>>();
+        let visible_keys = visible_keys(&targets);
+        self.selected_rows.retain(|key| visible_keys.contains(key));
+    }
+
+    fn selected_delete_targets(&self) -> Vec<super::ResourceDeleteTarget> {
+        let targets = self
+            .rows
+            .iter()
+            .map(NamespaceRow::target)
+            .collect::<Vec<_>>();
+        selected_delete_targets(&targets, &self.selected_rows)
+    }
 }
 
 fn show_namespace_table(
     ui: &mut egui::Ui,
     rows: &[NamespaceRow],
     row_indices: Vec<usize>,
+    selected_rows: &mut BTreeSet<String>,
 ) -> Option<NamespaceTableAction> {
     let row_height = ui.spacing().interact_size.y;
-    let table_width: f32 = NAMESPACE_COLUMN_WIDTHS.iter().sum::<f32>()
-        + ui.spacing().item_spacing.x * NAMESPACE_COLUMN_WIDTHS.len().saturating_sub(1) as f32;
+    let table_width: f32 = SELECT_COLUMN_WIDTH
+        + NAMESPACE_COLUMN_WIDTHS.iter().sum::<f32>()
+        + ui.spacing().item_spacing.x * NAMESPACE_COLUMNS.len() as f32;
     let mut action = None;
 
     egui::ScrollArea::horizontal()
@@ -393,12 +561,14 @@ fn show_namespace_table(
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .min_scrolled_height(0.0);
 
+            table = table.column(Column::exact(SELECT_COLUMN_WIDTH));
             for width in NAMESPACE_COLUMN_WIDTHS {
                 table = table.column(Column::exact(width));
             }
 
             table
                 .header(row_height, |mut header| {
+                    header.col(|_| {});
                     for label in NAMESPACE_COLUMNS {
                         header.col(|ui| {
                             ui.strong(label);
@@ -415,6 +585,13 @@ fn show_namespace_table(
                             return;
                         };
 
+                        let row_selected = selected_rows.contains(&row.key);
+                        table_row.set_selected(row_selected);
+                        let mut checkbox_changed = false;
+                        table_row.col(|ui| {
+                            checkbox_changed =
+                                show_row_selection_checkbox(ui, selected_rows, &row.key);
+                        });
                         table_row.col(|ui| {
                             ui.label(&row.name);
                         });
@@ -431,7 +608,12 @@ fn show_namespace_table(
                             ui.label(&row.age);
                         });
 
-                        table_row.response().context_menu(|ui| {
+                        let response = table_row.response();
+                        if response.clicked() && !checkbox_changed {
+                            selected_rows.clear();
+                            selected_rows.insert(row.key.clone());
+                        }
+                        response.context_menu(|ui| {
                             if ui
                                 .button(format!("{} Describe", egui_phosphor::regular::INFO))
                                 .clicked()
@@ -490,6 +672,17 @@ fn row_matches_search(row: &NamespaceRow, search_text: &str) -> bool {
     needle.is_empty() || row.name.to_lowercase().contains(&needle)
 }
 
+fn namespace_metadata() -> ResourceMetadata {
+    ResourceMetadata {
+        id: "namespace",
+        title: "Namespaces",
+        api_version: "v1",
+        kind: "Namespace",
+        resource: ResourceRef::core("v1", "namespaces").cluster_scoped(),
+        namespaced: false,
+    }
+}
+
 fn namespace_rows_from_list(items: &[ResourceSummary]) -> Vec<NamespaceRow> {
     let mut rows = items
         .iter()
@@ -527,6 +720,14 @@ impl NamespaceRow {
                 })
                 .unwrap_or_else(|| "N/A".to_owned()),
             raw: summary.raw.clone(),
+        }
+    }
+
+    fn target(&self) -> ResourceRowTarget {
+        ResourceRowTarget {
+            key: self.key.clone(),
+            namespace: None,
+            name: self.name.clone(),
         }
     }
 }
