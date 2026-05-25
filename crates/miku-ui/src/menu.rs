@@ -22,13 +22,21 @@ impl MikuApp {
 
         ui.add_space(8.0);
 
-        let drag_response = ui.interact(
-            ui.available_rect_before_wrap(),
-            ui.id().with("title_bar_drag_region"),
-            egui::Sense::click_and_drag(),
-        );
-        if drag_response.drag_started() {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        let control_button_width = 3.0 * ui.spacing().interact_size.x
+            + 2.0 * ui.spacing().item_spacing.x
+            + ui.spacing().item_spacing.x;
+        let mut drag_rect = ui.available_rect_before_wrap();
+        drag_rect.max.x = (drag_rect.max.x - control_button_width).max(drag_rect.min.x);
+
+        if drag_rect.is_positive() {
+            let drag_response = ui.interact(
+                drag_rect,
+                ui.id().with("title_bar_drag_region"),
+                egui::Sense::click_and_drag(),
+            );
+            if drag_response.drag_started() {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

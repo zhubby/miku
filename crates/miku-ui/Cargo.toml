@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+build = "build.rs"
 
 [dependencies]
 eframe = { workspace = true }
@@ -28,6 +29,9 @@ tokio = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
+
+[build-dependencies]
+vergen-git2 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

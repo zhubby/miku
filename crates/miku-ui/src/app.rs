@@ -63,6 +63,7 @@ pub struct MikuApp {
     pub(crate) resource_watch_tasks: HashMap<ResourceWatchKey, tokio::task::JoinHandle<()>>,
     pub(crate) status_event_sender: resource_mpsc::Sender<ClusterStatusUiEvent>,
     pub(crate) status_event_receiver: resource_mpsc::Receiver<ClusterStatusUiEvent>,
+    pub(crate) local_status: LocalStatusInfo,
     pub(crate) agent_event_sender: resource_mpsc::Sender<AgentUiEvent>,
     pub(crate) agent_event_receiver: resource_mpsc::Receiver<AgentUiEvent>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -328,6 +329,7 @@ impl MikuApp {
             resource_watch_tasks: HashMap::new(),
             status_event_sender,
             status_event_receiver,
+            local_status: LocalStatusInfo::default(),
             agent_event_sender,
             agent_event_receiver,
             #[cfg(not(target_arch = "wasm32"))]
@@ -402,6 +404,9 @@ impl eframe::App for MikuApp {
                     egui_theme_switch::global_theme_switch(ui);
                     ui.separator();
                     self.show_status_bar_connection(ui);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        self.show_status_bar_local_status(ui);
+                    });
                 });
             });
 
@@ -819,6 +824,15 @@ impl MikuApp {
             StatusBarConnectionTone::Error => ui.visuals().error_fg_color,
         };
         let response = ui.label(egui::RichText::new(summary.text).color(color));
+        if let Some(hover) = summary.hover {
+            response.on_hover_text(hover);
+        }
+    }
+
+    fn show_status_bar_local_status(&self, ui: &mut egui::Ui) {
+        let summary = status_bar_local_summary(&self.local_status);
+        let response =
+            ui.label(egui::RichText::new(summary.text).color(ui.visuals().weak_text_color()));
         if let Some(hover) = summary.hover {
             response.on_hover_text(hover);
         }
@@ -2072,6 +2086,33 @@ struct StatusBarConnectionSummary {
     tone: StatusBarConnectionTone,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LocalStatusInfo {
+    git: Result<GitStatusInfo, String>,
+    release_version: &'static str,
+}
+
+impl Default for LocalStatusInfo {
+    fn default() -> Self {
+        Self {
+            git: compile_time_git_status(),
+            release_version: env!("CARGO_PKG_VERSION"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GitStatusInfo {
+    branch: String,
+    dirty: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StatusBarLocalSummary {
+    text: String,
+    hover: Option<String>,
+}
+
 fn status_bar_connection_summary(
     cluster_name: Option<&str>,
     connection_state: Option<&ClusterConnectionState>,
@@ -2136,6 +2177,63 @@ fn status_bar_cluster_version(version: &str) -> &str {
         "version unknown"
     } else {
         version
+    }
+}
+
+fn compile_time_git_status() -> Result<GitStatusInfo, String> {
+    let branch = option_env!("VERGEN_GIT_BRANCH")
+        .filter(|branch| !branch.is_empty())
+        .ok_or_else(|| "git branch was not available at compile time".to_owned())?;
+    let dirty = match option_env!("VERGEN_GIT_DIRTY") {
+        Some("true") => true,
+        Some("false") => false,
+        Some(value) => {
+            return Err(format!(
+                "git dirty flag had unexpected compile-time value: {value}"
+            ));
+        }
+        None => return Err("git status was not available at compile time".to_owned()),
+    };
+
+    Ok(GitStatusInfo {
+        branch: branch.to_owned(),
+        dirty,
+    })
+}
+
+fn status_bar_local_summary(status: &LocalStatusInfo) -> StatusBarLocalSummary {
+    let version_text = format!(
+        "{} v{}",
+        egui_phosphor::regular::PACKAGE,
+        status.release_version
+    );
+    let (git_text, git_hover) = match &status.git {
+        Ok(git) => {
+            let state = if git.dirty { "dirty" } else { "clean" };
+            (
+                format!(
+                    "{} {} {}",
+                    egui_phosphor::regular::GIT_BRANCH,
+                    git.branch,
+                    state
+                ),
+                Some(format!("Git branch: {}\nWorking tree: {state}", git.branch)),
+            )
+        }
+        Err(error) => (
+            format!("{} unavailable", egui_phosphor::regular::GIT_BRANCH),
+            Some(format!("Git status unavailable: {error}")),
+        ),
+    };
+
+    StatusBarLocalSummary {
+        text: format!("{version_text} | {git_text}"),
+        hover: git_hover.map(|git_hover| {
+            format!(
+                "Miku release version: {}\n{git_hover}",
+                status.release_version
+            )
+        }),
     }
 }
 
@@ -2675,5 +2773,50 @@ mod tests {
         );
         assert_eq!(summary.hover.as_deref(), Some("forbidden"));
         assert_eq!(summary.tone, StatusBarConnectionTone::Error);
+    }
+
+    #[test]
+    fn status_bar_local_summary_includes_release_version_and_git_state() {
+        let summary = status_bar_local_summary(&LocalStatusInfo {
+            git: Ok(GitStatusInfo {
+                branch: "main".to_owned(),
+                dirty: true,
+            }),
+            release_version: "1.2.3",
+        });
+
+        assert_eq!(
+            summary.text,
+            format!(
+                "{} v1.2.3 | {} main dirty",
+                egui_phosphor::regular::PACKAGE,
+                egui_phosphor::regular::GIT_BRANCH
+            )
+        );
+        assert_eq!(
+            summary.hover.as_deref(),
+            Some("Miku release version: 1.2.3\nGit branch: main\nWorking tree: dirty")
+        );
+    }
+
+    #[test]
+    fn status_bar_local_summary_reports_unavailable_git_status() {
+        let summary = status_bar_local_summary(&LocalStatusInfo {
+            git: Err("not a git repository".to_owned()),
+            release_version: "1.2.3",
+        });
+
+        assert_eq!(
+            summary.text,
+            format!(
+                "{} v1.2.3 | {} unavailable",
+                egui_phosphor::regular::PACKAGE,
+                egui_phosphor::regular::GIT_BRANCH
+            )
+        );
+        assert_eq!(
+            summary.hover.as_deref(),
+            Some("Miku release version: 1.2.3\nGit status unavailable: not a git repository")
+        );
     }
 }

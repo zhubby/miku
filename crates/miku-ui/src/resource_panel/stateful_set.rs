@@ -224,7 +224,8 @@ impl StatefulSetResourcePanel {
                         self.create_dialog = None;
                         self.action_error = None;
                     }
-                    Ok(ResourceActionOutcome::Patched(_)) => {
+                    Ok(ResourceActionOutcome::Patched(summary)) => {
+                        self.upsert_row(StatefulSetRow::from_summary(&summary));
                         self.scale_dialog = None;
                         self.action_error = None;
                     }
@@ -679,6 +680,8 @@ impl StatefulSetResourcePanel {
                 scale_patch(dialog.replicas),
             );
             self.action_request_id = Some(request.request_id);
+            self.scale_dialog = None;
+            self.action_error = None;
             requests.push(request);
         }
     }
@@ -750,6 +753,23 @@ impl StatefulSetResourcePanel {
         let visible_keys = visible_keys(&targets);
         self.selected_rows.retain(|key| visible_keys.contains(key));
         self.rows = rows;
+    }
+
+    fn upsert_row(&mut self, row: StatefulSetRow) {
+        if let Some(existing) = self
+            .rows
+            .iter_mut()
+            .find(|existing| existing.key == row.key)
+        {
+            *existing = row;
+        } else {
+            self.rows.push(row);
+        }
+        self.rows.sort_by(|left, right| {
+            left.namespace
+                .cmp(&right.namespace)
+                .then(left.name.cmp(&right.name))
+        });
     }
 
     fn prune_selection_to_visible(&mut self) {
@@ -1787,11 +1807,50 @@ mod tests {
         assert_eq!(target.name, "api");
     }
 
+    #[test]
+    fn patch_completion_updates_existing_row() {
+        let mut panel = StatefulSetResourcePanel::default();
+        let cluster_id = ClusterId::new("local");
+        panel.rows = vec![StatefulSetRow::from_summary(&stateful_set_summary())];
+        panel.action_request_id = Some(7);
+
+        panel.apply_event(ResourceUiEvent::ResourceActionCompleted {
+            request: super::super::ResourceActionRequest {
+                request_id: 7,
+                cluster_id,
+                kind: ResourceActionKind::PatchResource {
+                    resource: stateful_set_metadata().resource,
+                    namespace: Some("default".to_owned()),
+                    name: "api".to_owned(),
+                    patch: scale_patch(5),
+                },
+            },
+            result: Ok(ResourceActionOutcome::Patched(
+                stateful_set_summary_with_replicas(5),
+            )),
+        });
+
+        assert_eq!(panel.rows.len(), 1);
+        assert_eq!(panel.rows[0].replicas, "3/5");
+    }
+
     fn stateful_set_summary() -> ResourceSummary {
         stateful_set_summary_with_name("default", "api")
     }
 
     fn stateful_set_summary_with_name(namespace: &str, name: &str) -> ResourceSummary {
+        stateful_set_summary_with_replicas_for_name(namespace, name, 3)
+    }
+
+    fn stateful_set_summary_with_replicas(replicas: u64) -> ResourceSummary {
+        stateful_set_summary_with_replicas_for_name("default", "api", replicas)
+    }
+
+    fn stateful_set_summary_with_replicas_for_name(
+        namespace: &str,
+        name: &str,
+        replicas: u64,
+    ) -> ResourceSummary {
         ResourceSummary {
             name: name.to_owned(),
             namespace: Some(namespace.to_owned()),
@@ -1806,7 +1865,7 @@ mod tests {
                     "annotations": {"apps.kubernetes.io/revision": "3"}
                 },
                 "spec": {
-                    "replicas": 3,
+                    "replicas": replicas,
                     "serviceName": "api-headless",
                     "minReadySeconds": 5,
                     "revisionHistoryLimit": 10,

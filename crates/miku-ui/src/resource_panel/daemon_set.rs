@@ -249,7 +249,8 @@ impl DaemonSetResourcePanel {
                         self.batch_delete_dialog = None;
                         self.action_error = None;
                     }
-                    Ok(ResourceActionOutcome::Patched(_)) => {
+                    Ok(ResourceActionOutcome::Patched(summary)) => {
+                        self.upsert_row(DaemonSetRow::from_summary(&summary));
                         self.action_error = None;
                     }
                     Ok(ResourceActionOutcome::Evicted) => {}
@@ -665,6 +666,23 @@ impl DaemonSetResourcePanel {
         let visible_keys = visible_keys(&targets);
         self.selected_rows.retain(|key| visible_keys.contains(key));
         self.rows = rows;
+    }
+
+    fn upsert_row(&mut self, row: DaemonSetRow) {
+        if let Some(existing) = self
+            .rows
+            .iter_mut()
+            .find(|existing| existing.key == row.key)
+        {
+            *existing = row;
+        } else {
+            self.rows.push(row);
+        }
+        self.rows.sort_by(|left, right| {
+            left.namespace
+                .cmp(&right.namespace)
+                .then(left.name.cmp(&right.name))
+        });
     }
 
     fn prune_selection_to_visible(&mut self) {
@@ -1630,6 +1648,33 @@ mod tests {
 
         assert_eq!(target.namespace.as_deref(), Some("default"));
         assert_eq!(target.name, "api");
+    }
+
+    #[test]
+    fn patch_completion_updates_existing_row() {
+        let mut panel = DaemonSetResourcePanel::default();
+        let cluster_id = ClusterId::new("local");
+        panel.rows = vec![DaemonSetRow::from_summary(&daemon_set_summary())];
+        panel.action_request_id = Some(7);
+
+        panel.apply_event(ResourceUiEvent::ResourceActionCompleted {
+            request: super::super::ResourceActionRequest {
+                request_id: 7,
+                cluster_id,
+                kind: ResourceActionKind::PatchResource {
+                    resource: daemon_set_metadata().resource,
+                    namespace: Some("default".to_owned()),
+                    name: "api".to_owned(),
+                    patch: restart_patch_with_timestamp("2026-05-25T10:00:00Z"),
+                },
+            },
+            result: Ok(ResourceActionOutcome::Patched(
+                daemon_set_summary_with_name("default", "api"),
+            )),
+        });
+
+        assert_eq!(panel.rows.len(), 1);
+        assert_eq!(panel.rows[0].name, "api");
     }
 
     fn daemon_set_summary() -> ResourceSummary {
