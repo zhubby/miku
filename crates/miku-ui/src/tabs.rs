@@ -663,15 +663,19 @@ impl AgentPanel {
         let mut request = None;
 
         show_agent_header(ui, panel_id, self);
-        ui.add_space(6.0);
-        show_agent_context(ui, selected_cluster_name, active_resource);
         ui.add_space(8.0);
 
-        let message_height = (ui.available_height() - 118.0).max(120.0);
+        let message_height = (ui.available_height() - 126.0).max(120.0);
         show_agent_messages(ui, panel_id, message_height, self);
 
         let can_send = self.in_flight.is_none() && !self.input.trim().is_empty();
-        if show_agent_composer(ui, &mut self.input, can_send) {
+        if show_agent_composer(
+            ui,
+            &mut self.input,
+            can_send,
+            selected_cluster_name,
+            active_resource,
+        ) {
             let message = self.input.trim().to_owned();
             self.input.clear();
             self.error = None;
@@ -917,12 +921,25 @@ fn current_conversation_title(panel: &AgentPanel) -> &str {
         .unwrap_or("Kubernetes assistant")
 }
 
-fn show_agent_context(
+fn context_chip(ui: &mut egui::Ui, icon: &str, text: &str) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.label(
+            egui::RichText::new(icon)
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+        ui.label(egui::RichText::new(text).small());
+    });
+}
+
+fn show_agent_context_bar(
     ui: &mut egui::Ui,
     selected_cluster_name: Option<&str>,
     active_resource: Option<ResourceNavItem>,
 ) {
-    ui.horizontal_wrapped(|ui| {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 14.0;
         context_chip(
             ui,
             egui_phosphor::regular::TREE_STRUCTURE,
@@ -936,27 +953,6 @@ fn show_agent_context(
                 .unwrap_or("No resource"),
         );
     });
-}
-
-fn context_chip(ui: &mut egui::Ui, icon: &str, text: &str) {
-    egui::Frame::new()
-        .fill(ui.visuals().extreme_bg_color)
-        .stroke(egui::Stroke::new(
-            1.0,
-            ui.visuals().widgets.noninteractive.bg_stroke.color,
-        ))
-        .corner_radius(egui::CornerRadius::same(6))
-        .inner_margin(egui::Margin::symmetric(8, 4))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(icon)
-                        .small()
-                        .color(ui.visuals().weak_text_color()),
-                );
-                ui.label(egui::RichText::new(text).small());
-            });
-        });
 }
 
 fn show_agent_messages(
@@ -1189,7 +1185,13 @@ fn status_frame<R>(
         });
 }
 
-fn show_agent_composer(ui: &mut egui::Ui, input: &mut String, can_send: bool) -> bool {
+fn show_agent_composer(
+    ui: &mut egui::Ui,
+    input: &mut String,
+    can_send: bool,
+    selected_cluster_name: Option<&str>,
+    active_resource: Option<ResourceNavItem>,
+) -> bool {
     let mut send_clicked = false;
     egui::Frame::new()
         .fill(ui.visuals().extreme_bg_color)
@@ -1201,25 +1203,37 @@ fn show_agent_composer(ui: &mut egui::Ui, input: &mut String, can_send: bool) ->
         .inner_margin(egui::Margin::symmetric(8, 8))
         .show(ui, |ui| {
             ui.set_min_height(92.0);
-            ui.add(
+            let input_response = ui.add(
                 egui::TextEdit::multiline(input)
                     .desired_rows(3)
                     .desired_width(ui.available_width())
+                    .return_key(egui::KeyboardShortcut::new(
+                        egui::Modifiers::SHIFT,
+                        egui::Key::Enter,
+                    ))
                     .hint_text("Ask about the selected cluster..."),
             );
+            let enter_pressed = input_response.has_focus()
+                && ui.input(|input| input.key_pressed(egui::Key::Enter) && !input.modifiers.shift);
             ui.add_space(4.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let send_text = egui::RichText::new(egui_phosphor::regular::PAPER_PLANE_TILT)
-                    .color(if can_send {
-                        ui.visuals().hyperlink_color
-                    } else {
-                        ui.visuals().weak_text_color()
-                    });
-                send_clicked = ui
-                    .add_enabled(can_send, egui::Button::new(send_text))
-                    .on_hover_text("Send")
-                    .clicked();
+            ui.horizontal(|ui| {
+                show_agent_context_bar(ui, selected_cluster_name, active_resource);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let send_text = egui::RichText::new(egui_phosphor::regular::PAPER_PLANE_TILT)
+                        .color(if can_send {
+                            ui.visuals().hyperlink_color
+                        } else {
+                            ui.visuals().weak_text_color()
+                        });
+                    send_clicked = ui
+                        .add_enabled(can_send, egui::Button::new(send_text))
+                        .on_hover_text("Send")
+                        .clicked();
+                });
             });
+            if can_send && enter_pressed {
+                send_clicked = true;
+            }
         });
     send_clicked
 }

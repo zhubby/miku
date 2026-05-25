@@ -412,8 +412,8 @@ impl eframe::App for MikuApp {
 
         egui::Panel::right("right_sidebar")
             .resizable(true)
-            .default_size(260.0)
-            .size_range(180.0..=420.0)
+            .default_size(340.0)
+            .size_range(300.0..=520.0)
             .frame(egui::Frame::NONE)
             .show_inside(ui, |ui| {
                 let active_resource = self.selected_workspace_resource();
