@@ -10,10 +10,10 @@ pub(in crate::resource_panel) const SELECT_COLUMN_WIDTH: f32 = 36.0;
 
 #[derive(Clone, Debug)]
 pub(in crate::resource_panel) struct ResourceMetadata {
-    pub(in crate::resource_panel) id: &'static str,
-    pub(in crate::resource_panel) title: &'static str,
-    pub(in crate::resource_panel) api_version: &'static str,
-    pub(in crate::resource_panel) kind: &'static str,
+    pub(in crate::resource_panel) id: String,
+    pub(in crate::resource_panel) title: String,
+    pub(in crate::resource_panel) api_version: String,
+    pub(in crate::resource_panel) kind: String,
     pub(in crate::resource_panel) resource: ResourceRef,
     pub(in crate::resource_panel) namespaced: bool,
 }
@@ -162,7 +162,7 @@ pub(in crate::resource_panel) fn show_resource_create_dialog(
     input: ResourceCreateDialogInput<'_>,
 ) -> ResourceCreateDialogResponse {
     let response = ResourceYamlEditDialog {
-        id: egui::Id::new((input.metadata.id, "create-dialog")),
+        id: egui::Id::new((&input.metadata.id, "create-dialog")),
         title: format!("Create {}", input.metadata.kind),
         yaml: &mut input.dialog.yaml,
         error: input.action_error.or(input.dialog.parse_error.as_deref()),
@@ -215,7 +215,7 @@ pub(in crate::resource_panel) fn show_resource_batch_delete_dialog(
     let mut cancel_clicked = false;
     let mut delete_clicked = false;
     egui::Window::new(format!("Delete selected {}", input.metadata.title))
-        .id(egui::Id::new((input.metadata.id, "batch-delete-dialog")))
+        .id(egui::Id::new((&input.metadata.id, "batch-delete-dialog")))
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .collapsible(false)
         .resizable(false)

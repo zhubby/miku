@@ -1,11 +1,21 @@
+use std::collections::BTreeSet;
+
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use miku_api::ResourceSummary;
 use miku_core::{ClusterId, ResourceRef};
 
 use super::{
-    LoadStatus, ResourceLoadKind, ResourceLoadRequest, ResourcePanelRequests, ResourceUiEvent,
-    components::ResourceYamlViewDialog,
+    LoadStatus, ResourceActionKind, ResourceActionOutcome, ResourceDeleteTarget, ResourceLoadKind,
+    ResourceLoadRequest, ResourcePanelRequests, ResourceUiEvent,
+    components::{
+        GenericBatchDeleteDialog, GenericCreateDialog, ResourceBatchDeleteDialogInput,
+        ResourceCreateDialogInput, ResourceCreateDialogResponse, ResourceDeleteDialogResponse,
+        ResourceMetadata, ResourceRowTarget, ResourceToolbar, ResourceYamlViewDialog,
+        SELECT_COLUMN_WIDTH, apply_resource_request, batch_delete_resource_request,
+        default_resource_yaml, selected_delete_targets, show_resource_batch_delete_dialog,
+        show_resource_create_dialog, show_row_selection_checkbox, visible_keys,
+    },
 };
 use crate::time::human_age_from_rfc3339;
 
@@ -23,9 +33,14 @@ pub(crate) struct CustomResourcesPanel {
     search_text: String,
     status: LoadStatus,
     rows: Vec<CustomResourceRow>,
+    selected_rows: BTreeSet<String>,
     selected_row_key: Option<String>,
     expand_dialog: Option<CustomResourceExpandDialog>,
     view_dialog: Option<CustomResourceViewDialog>,
+    create_dialog: Option<GenericCreateDialog>,
+    batch_delete_dialog: Option<GenericBatchDeleteDialog>,
+    action_request_id: Option<u64>,
+    action_error: Option<String>,
     next_request_id: u64,
     row_request_id: Option<u64>,
     last_cluster_id: Option<ClusterId>,
@@ -50,7 +65,12 @@ struct CustomResourceExpandDialog {
     resource: Option<ResourceRef>,
     status: LoadStatus,
     rows: Vec<CustomResourceInstanceRow>,
+    selected_rows: BTreeSet<String>,
     selected_row_key: Option<String>,
+    create_dialog: Option<GenericCreateDialog>,
+    batch_delete_dialog: Option<GenericBatchDeleteDialog>,
+    action_request_id: Option<u64>,
+    action_error: Option<String>,
     request_id: Option<u64>,
 }
 
@@ -97,49 +117,57 @@ impl CustomResourcesPanel {
         ui.separator();
         self.show_body(ui, cluster_id, &mut requests);
         self.show_expand_dialog(ui.ctx(), cluster_id, &mut requests);
+        self.show_create_dialog(ui.ctx(), cluster_id, &mut requests.actions);
+        self.show_batch_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_view_dialog(ui.ctx());
         requests
     }
 
     pub(crate) fn apply_event(&mut self, event: ResourceUiEvent) {
-        let ResourceUiEvent::ResourcesLoaded { request, result } = event else {
-            return;
-        };
-
-        match &request.kind {
-            ResourceLoadKind::CustomResourceDefinitions => {
-                if self.row_request_id != Some(request.request_id) {
-                    return;
-                }
-
-                self.row_request_id = None;
-                match result {
-                    Ok(list) => {
-                        self.replace_rows(custom_resource_rows_from_items(&list.items));
-                        self.status = LoadStatus::Loaded;
+        match event {
+            ResourceUiEvent::ResourcesLoaded { request, result } => match &request.kind {
+                ResourceLoadKind::CustomResourceDefinitions => {
+                    if self.row_request_id != Some(request.request_id) {
+                        return;
                     }
-                    Err(error) => self.status = LoadStatus::Error(error),
-                }
-            }
-            ResourceLoadKind::CustomResources { .. } => {
-                let Some(dialog) = self.expand_dialog.as_mut() else {
-                    return;
-                };
-                if dialog.request_id != Some(request.request_id) {
-                    return;
-                }
 
-                dialog.request_id = None;
-                match result {
-                    Ok(list) => {
-                        dialog.rows = custom_resource_instance_rows_from_items(&list.items);
-                        dialog.selected_row_key = None;
-                        dialog.status = LoadStatus::Loaded;
+                    self.row_request_id = None;
+                    match result {
+                        Ok(list) => {
+                            self.replace_rows(custom_resource_rows_from_items(&list.items));
+                            self.status = LoadStatus::Loaded;
+                        }
+                        Err(error) => self.status = LoadStatus::Error(error),
                     }
-                    Err(error) => dialog.status = LoadStatus::Error(error),
                 }
+                ResourceLoadKind::CustomResources { .. } => {
+                    let Some(dialog) = self.expand_dialog.as_mut() else {
+                        return;
+                    };
+                    if dialog.request_id != Some(request.request_id) {
+                        return;
+                    }
+
+                    dialog.request_id = None;
+                    match result {
+                        Ok(list) => {
+                            dialog.replace_rows(custom_resource_instance_rows_from_items(
+                                &list.items,
+                            ));
+                            dialog.status = LoadStatus::Loaded;
+                        }
+                        Err(error) => dialog.status = LoadStatus::Error(error),
+                    }
+                }
+                _ => {}
+            },
+            ResourceUiEvent::ResourceActionCompleted { request, result } => {
+                self.apply_action_result(request, result);
             }
-            _ => {}
+            ResourceUiEvent::ResourceWatchUpdated { .. }
+            | ResourceUiEvent::PodLogsLoaded { .. }
+            | ResourceUiEvent::PodAttachConnected { .. }
+            | ResourceUiEvent::PodAttachOutput { .. } => {}
         }
     }
 
@@ -151,9 +179,14 @@ impl CustomResourcesPanel {
         self.last_cluster_id = Some(cluster_id.clone());
         self.search_text.clear();
         self.rows.clear();
+        self.selected_rows.clear();
         self.selected_row_key = None;
         self.expand_dialog = None;
         self.view_dialog = None;
+        self.create_dialog = None;
+        self.batch_delete_dialog = None;
+        self.action_request_id = None;
+        self.action_error = None;
         self.status = LoadStatus::Idle;
         self.row_request_id = None;
     }
@@ -164,29 +197,41 @@ impl CustomResourcesPanel {
         cluster_id: &ClusterId,
         requests: &mut ResourcePanelRequests,
     ) {
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.search_text)
-                    .hint_text("Search Custom Resources...")
-                    .desired_width(280.0),
-            );
+        let item_count = self.filtered_row_indices().len();
+        let response = ResourceToolbar {
+            id_salt: "custom_resources_toolbar",
+            namespaces: &[],
+            namespace_filter: &mut None,
+            search_text: &mut self.search_text,
+            search_hint: "Search Custom Resources...",
+            item_count,
+            selected_count: self.selected_rows.len(),
+            loading: matches!(self.status, LoadStatus::Loading),
+        }
+        .show(ui);
 
-            if ui
-                .button(egui_phosphor::regular::ARROWS_CLOCKWISE)
-                .on_hover_text("Refresh")
-                .clicked()
-            {
-                requests
-                    .loads
-                    .push(self.request_crd_load(cluster_id.clone()));
+        if response.search_changed {
+            self.prune_selection_to_visible();
+        }
+        if response.refresh_clicked {
+            requests
+                .loads
+                .push(self.request_crd_load(cluster_id.clone()));
+        }
+        if response.create_clicked {
+            self.create_dialog = Some(GenericCreateDialog {
+                yaml: default_resource_yaml(crd_metadata(), None),
+                parse_error: None,
+            });
+            self.action_error = None;
+        }
+        if response.batch_delete_clicked {
+            let targets = self.selected_crd_delete_targets();
+            if !targets.is_empty() {
+                self.batch_delete_dialog = Some(GenericBatchDeleteDialog { targets });
+                self.action_error = None;
             }
-
-            ui.separator();
-            ui.label(format!("{} items", self.filtered_row_indices().len()));
-            if matches!(self.status, LoadStatus::Loading) {
-                ui.label("Loading...");
-            }
-        });
+        }
     }
 
     fn show_body(
@@ -219,6 +264,7 @@ impl CustomResourcesPanel {
                     ui,
                     &self.rows,
                     row_indices,
+                    &mut self.selected_rows,
                     &mut self.selected_row_key,
                 );
                 self.apply_table_action(action, cluster_id, requests);
@@ -246,7 +292,12 @@ impl CustomResourcesPanel {
             resource: resource.clone(),
             status: LoadStatus::Loading,
             rows: Vec::new(),
+            selected_rows: BTreeSet::new(),
             selected_row_key: None,
+            create_dialog: None,
+            batch_delete_dialog: None,
+            action_request_id: None,
+            action_error: None,
             request_id: None,
         };
 
@@ -275,6 +326,8 @@ impl CustomResourcesPanel {
 
         let mut open = true;
         let mut refresh_clicked = false;
+        let mut create_clicked = false;
+        let mut batch_delete_clicked = false;
         let mut view_key = None;
         egui::Window::new(format!("Expand {}", dialog.title))
             .id(egui::Id::new(("custom_resource_expand", &dialog.crd_key)))
@@ -299,6 +352,21 @@ impl CustomResourcesPanel {
                     if matches!(dialog.status, LoadStatus::Loading) {
                         ui.label("Loading...");
                     }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        create_clicked = ui
+                            .button(egui_phosphor::regular::PLUS)
+                            .on_hover_text("Create")
+                            .clicked();
+                        let delete_text = egui::RichText::new(egui_phosphor::regular::TRASH)
+                            .color(ui.visuals().error_fg_color);
+                        batch_delete_clicked = ui
+                            .add_enabled(
+                                !dialog.selected_rows.is_empty(),
+                                egui::Button::new(delete_text),
+                            )
+                            .on_hover_text("Delete selected")
+                            .clicked();
+                    });
                 });
                 ui.separator();
 
@@ -328,6 +396,7 @@ impl CustomResourcesPanel {
                         view_key = show_custom_resource_instance_table(
                             ui,
                             &dialog.rows,
+                            &mut dialog.selected_rows,
                             &mut dialog.selected_row_key,
                         )
                         .map(|action| match action {
@@ -345,6 +414,27 @@ impl CustomResourcesPanel {
                 requests.loads.push(request);
             }
         }
+
+        if create_clicked && let Some(dialog) = self.expand_dialog.as_mut() {
+            if let Some(metadata) = dialog.resource_metadata() {
+                dialog.create_dialog = Some(GenericCreateDialog {
+                    yaml: default_resource_yaml(metadata, None),
+                    parse_error: None,
+                });
+                dialog.action_error = None;
+            }
+        }
+
+        if batch_delete_clicked && let Some(dialog) = self.expand_dialog.as_mut() {
+            let targets = dialog.selected_delete_targets();
+            if !targets.is_empty() {
+                dialog.batch_delete_dialog = Some(GenericBatchDeleteDialog { targets });
+                dialog.action_error = None;
+            }
+        }
+
+        self.show_instance_create_dialog(ctx, cluster_id, requests);
+        self.show_instance_batch_delete_dialog(ctx, cluster_id, requests);
 
         if let Some(key) = view_key {
             let Some(dialog) = self.expand_dialog.as_ref() else {
@@ -384,6 +474,170 @@ impl CustomResourcesPanel {
         }
     }
 
+    fn show_create_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<super::ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.create_dialog.as_mut() else {
+            return;
+        };
+        match show_resource_create_dialog(
+            ctx,
+            ResourceCreateDialogInput {
+                metadata: crd_metadata(),
+                dialog,
+                action_error: self.action_error.as_deref(),
+                action_in_flight: self.action_request_id.is_some(),
+                namespace_default: None,
+            },
+        ) {
+            ResourceCreateDialogResponse::None => {}
+            ResourceCreateDialogResponse::Cancel => {
+                self.create_dialog = None;
+                self.action_error = None;
+            }
+            ResourceCreateDialogResponse::Apply(parsed) => {
+                let request = apply_resource_request(
+                    self.allocate_request_id(),
+                    cluster_id.clone(),
+                    crd_metadata(),
+                    parsed,
+                );
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+        }
+    }
+
+    fn show_batch_delete_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<super::ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.batch_delete_dialog.clone() else {
+            return;
+        };
+        match show_resource_batch_delete_dialog(
+            ctx,
+            ResourceBatchDeleteDialogInput {
+                metadata: crd_metadata(),
+                targets: &dialog.targets,
+                action_error: self.action_error.as_deref(),
+                action_in_flight: self.action_request_id.is_some(),
+            },
+        ) {
+            ResourceDeleteDialogResponse::None => {}
+            ResourceDeleteDialogResponse::Cancel => {
+                self.batch_delete_dialog = None;
+                self.action_error = None;
+            }
+            ResourceDeleteDialogResponse::Delete => {
+                let request = batch_delete_resource_request(
+                    self.allocate_request_id(),
+                    cluster_id.clone(),
+                    crd_metadata(),
+                    dialog.targets,
+                );
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+        }
+    }
+
+    fn show_instance_create_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut ResourcePanelRequests,
+    ) {
+        let Some(dialog) = self.expand_dialog.as_mut() else {
+            return;
+        };
+        let Some(create_dialog) = dialog.create_dialog.as_mut() else {
+            return;
+        };
+        let Some(metadata) = dialog.resource_metadata() else {
+            return;
+        };
+        match show_resource_create_dialog(
+            ctx,
+            ResourceCreateDialogInput {
+                metadata,
+                dialog: create_dialog,
+                action_error: dialog.action_error.as_deref(),
+                action_in_flight: dialog.action_request_id.is_some(),
+                namespace_default: None,
+            },
+        ) {
+            ResourceCreateDialogResponse::None => {}
+            ResourceCreateDialogResponse::Cancel => {
+                dialog.create_dialog = None;
+                dialog.action_error = None;
+            }
+            ResourceCreateDialogResponse::Apply(parsed) => {
+                let request = apply_resource_request(
+                    self.allocate_request_id(),
+                    cluster_id.clone(),
+                    metadata,
+                    parsed,
+                );
+                if let Some(dialog) = self.expand_dialog.as_mut() {
+                    dialog.action_request_id = Some(request.request_id);
+                }
+                requests.actions.push(request);
+            }
+        }
+    }
+
+    fn show_instance_batch_delete_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut ResourcePanelRequests,
+    ) {
+        let Some(dialog) = self.expand_dialog.as_ref() else {
+            return;
+        };
+        let Some(delete_dialog) = dialog.batch_delete_dialog.clone() else {
+            return;
+        };
+        let Some(metadata) = dialog.resource_metadata() else {
+            return;
+        };
+        match show_resource_batch_delete_dialog(
+            ctx,
+            ResourceBatchDeleteDialogInput {
+                metadata,
+                targets: &delete_dialog.targets,
+                action_error: dialog.action_error.as_deref(),
+                action_in_flight: dialog.action_request_id.is_some(),
+            },
+        ) {
+            ResourceDeleteDialogResponse::None => {}
+            ResourceDeleteDialogResponse::Cancel => {
+                if let Some(dialog) = self.expand_dialog.as_mut() {
+                    dialog.batch_delete_dialog = None;
+                    dialog.action_error = None;
+                }
+            }
+            ResourceDeleteDialogResponse::Delete => {
+                let request = batch_delete_resource_request(
+                    self.allocate_request_id(),
+                    cluster_id.clone(),
+                    metadata,
+                    delete_dialog.targets,
+                );
+                if let Some(dialog) = self.expand_dialog.as_mut() {
+                    dialog.action_request_id = Some(request.request_id);
+                }
+                requests.actions.push(request);
+            }
+        }
+    }
+
     fn filtered_row_indices(&self) -> Vec<usize> {
         let search_text = self.search_text.trim().to_lowercase();
         self.rows
@@ -406,7 +660,30 @@ impl CustomResourcesPanel {
         {
             self.selected_row_key = None;
         }
+        let visible_keys = rows.iter().map(|row| row.name.clone()).collect::<BTreeSet<_>>();
+        self.selected_rows.retain(|key| visible_keys.contains(key));
         self.rows = rows;
+    }
+
+    fn prune_selection_to_visible(&mut self) {
+        let visible_keys = self
+            .filtered_row_indices()
+            .into_iter()
+            .filter_map(|index| self.rows.get(index))
+            .map(|row| row.name.clone())
+            .collect::<BTreeSet<_>>();
+        self.selected_rows.retain(|key| visible_keys.contains(key));
+    }
+
+    fn selected_crd_delete_targets(&self) -> Vec<ResourceDeleteTarget> {
+        self.rows
+            .iter()
+            .filter(|row| self.selected_rows.contains(&row.name))
+            .map(|row| ResourceDeleteTarget {
+                namespace: None,
+                name: row.name.clone(),
+            })
+            .collect()
     }
 
     fn request_crd_load(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
@@ -445,7 +722,45 @@ impl CustomResourceRow {
             return None;
         }
 
-        Some(ResourceRef::grouped(&self.group, version, &self.plural).cluster_scoped())
+        let resource = ResourceRef::grouped(&self.group, version, &self.plural);
+        if self.scope == "Namespaced" {
+            Some(resource)
+        } else {
+            Some(resource.cluster_scoped())
+        }
+    }
+}
+
+impl CustomResourceExpandDialog {
+    fn resource_metadata(&self) -> Option<ResourceMetadata> {
+        let resource = self.resource.clone()?;
+        Some(ResourceMetadata {
+            id: "custom_resource_instance",
+            title: "CustomResources",
+            api_version: custom_resource_api_version(&resource),
+            kind: custom_resource_kind_from_title(&self.title),
+            namespaced: !resource.cluster_scoped,
+            resource,
+        })
+    }
+
+    fn replace_rows(&mut self, rows: Vec<CustomResourceInstanceRow>) {
+        let visible_keys = rows
+            .iter()
+            .map(|row| row.key.clone())
+            .collect::<BTreeSet<_>>();
+        self.selected_rows.retain(|key| visible_keys.contains(key));
+        if let Some(selected_key) = self.selected_row_key.as_ref()
+            && !visible_keys.contains(selected_key)
+        {
+            self.selected_row_key = None;
+        }
+        self.rows = rows;
+    }
+
+    fn selected_delete_targets(&self) -> Vec<ResourceDeleteTarget> {
+        let targets = self.rows.iter().map(CustomResourceInstanceRow::target);
+        selected_delete_targets(&targets.collect::<Vec<_>>(), &self.selected_rows)
     }
 }
 
