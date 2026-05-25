@@ -11,6 +11,7 @@ eframe = { workspace = true }
 egui-file-dialog = { workspace = true }
 egui-phosphor = { workspace = true }
 egui-theme-switch = { workspace = true }
+egui_commonmark = { workspace = true }
 egui_extras = { workspace = true }
 egui_dock = { workspace = true }
 futures = { workspace = true }

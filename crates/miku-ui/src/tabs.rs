@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use eframe::egui;
+use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use egui_dock::TabViewer;
 use miku_api::{
     AgentContext, AgentConversationSummary, AgentEvent, AgentMessage, AgentRole, AgentTurnRequest,
@@ -140,6 +141,7 @@ pub(crate) struct AgentPanel {
     conversation_id: Option<String>,
     conversations: Vec<AgentConversationSummary>,
     messages: Vec<AgentMessage>,
+    markdown_cache: CommonMarkCache,
     events: Vec<AgentEvent>,
     in_flight: Option<u64>,
     loading: bool,
@@ -665,7 +667,7 @@ impl AgentPanel {
         show_agent_header(ui, panel_id, self);
         ui.add_space(8.0);
 
-        let message_height = (ui.available_height() - 126.0).max(120.0);
+        let message_height = (ui.available_height() - 112.0).max(120.0);
         show_agent_messages(ui, panel_id, message_height, self);
 
         let can_send = self.in_flight.is_none() && !self.input.trim().is_empty();
@@ -959,7 +961,7 @@ fn show_agent_messages(
     ui: &mut egui::Ui,
     panel_id: usize,
     message_height: f32,
-    panel: &AgentPanel,
+    panel: &mut AgentPanel,
 ) {
     egui::Frame::new()
         .fill(ui.visuals().panel_fill)
@@ -985,8 +987,9 @@ fn show_agent_messages(
                         }
                     }
 
-                    for message in &panel.messages {
-                        show_agent_message(ui, message);
+                    for index in 0..panel.messages.len() {
+                        let message = panel.messages[index].clone();
+                        show_agent_message(ui, &message, &mut panel.markdown_cache);
                         ui.add_space(8.0);
                     }
 
@@ -1004,7 +1007,6 @@ fn show_agent_messages(
                     }
                 });
         });
-    ui.add_space(8.0);
 }
 
 fn show_agent_loading_state(ui: &mut egui::Ui) {
@@ -1036,10 +1038,14 @@ fn show_agent_empty_state(ui: &mut egui::Ui) {
     });
 }
 
-fn show_agent_message(ui: &mut egui::Ui, message: &AgentMessage) {
+fn show_agent_message(
+    ui: &mut egui::Ui,
+    message: &AgentMessage,
+    markdown_cache: &mut CommonMarkCache,
+) {
     match message.role {
         AgentRole::User => show_user_message(ui, message),
-        AgentRole::Assistant => show_assistant_message(ui, message),
+        AgentRole::Assistant => show_assistant_message(ui, message, markdown_cache),
         AgentRole::Tool => show_tool_message(ui, message),
     }
 }
@@ -1062,10 +1068,15 @@ fn show_user_message(ui: &mut egui::Ui, message: &AgentMessage) {
     });
 }
 
-fn show_assistant_message(ui: &mut egui::Ui, message: &AgentMessage) {
-    message_bubble(
+fn show_assistant_message(
+    ui: &mut egui::Ui,
+    message: &AgentMessage,
+    markdown_cache: &mut CommonMarkCache,
+) {
+    markdown_message_bubble(
         ui,
         &message.content,
+        markdown_cache,
         MessageBubbleStyle {
             label: "Miku",
             icon: egui_phosphor::regular::SPARKLE,
@@ -1122,6 +1133,34 @@ fn message_bubble(ui: &mut egui::Ui, content: &str, style: MessageBubbleStyle) {
                 egui::Label::new(egui::RichText::new(content).color(ui.visuals().text_color()))
                     .wrap(),
             );
+        });
+}
+
+fn markdown_message_bubble(
+    ui: &mut egui::Ui,
+    content: &str,
+    markdown_cache: &mut CommonMarkCache,
+    style: MessageBubbleStyle,
+) {
+    egui::Frame::new()
+        .fill(style.fill)
+        .stroke(style.stroke)
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_max_width(style.max_width);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(style.icon).small().color(style.accent));
+                ui.label(
+                    egui::RichText::new(style.label)
+                        .small()
+                        .strong()
+                        .color(style.accent),
+                );
+            });
+            CommonMarkViewer::new()
+                .default_width(Some(style.max_width as usize))
+                .show(ui, markdown_cache, content);
         });
 }
 

@@ -30,6 +30,7 @@ egui-phosphor = "0.12.0"
 egui_extras = { version = "0.34.2", features = ["syntect"] }
 egui-file-dialog = "0.13.0"
 egui-theme-switch = "0.7.0"
+egui_commonmark = { version = "0.23.0", default-features = false, features = ["pulldown_cmark"] }
 egui_dock = "0.19.1"
 futures = "0.3.31"
 js-sys = "0.3.85"
