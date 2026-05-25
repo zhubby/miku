@@ -39,6 +39,7 @@ use crate::tabs::{
 const MAX_RESOURCE_EVENTS_PER_PASS: usize = 8;
 const MAX_RESOURCE_CHANNEL_DRAIN_PER_PASS: usize = 256;
 const MAX_PENDING_WATCH_EVENTS_PER_PASS: usize = 8;
+const RESOURCE_ACTION_TIMEOUT: Duration = Duration::from_secs(30);
 const RESOURCE_ACTION_TOAST_DURATION: Duration = Duration::from_secs(5);
 
 pub struct MikuApp {
@@ -1787,9 +1788,18 @@ impl MikuApp {
                 return;
             };
             runtime.spawn(async move {
-                let result = run_resource_action(services.as_ref(), &request)
-                    .await
-                    .map_err(|error| error.to_string());
+                let result = match tokio::time::timeout(
+                    RESOURCE_ACTION_TIMEOUT,
+                    run_resource_action(services.as_ref(), &request),
+                )
+                .await
+                {
+                    Ok(result) => result.map_err(|error| error.to_string()),
+                    Err(_) => Err(format!(
+                        "resource action timed out after {} seconds",
+                        RESOURCE_ACTION_TIMEOUT.as_secs()
+                    )),
+                };
                 let _ = sender.send(ResourceUiEvent::ResourceActionCompleted { request, result });
                 repaint.request_repaint();
             });
