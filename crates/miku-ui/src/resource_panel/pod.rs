@@ -18,6 +18,10 @@ use super::{
 };
 use crate::time::human_age_from_rfc3339;
 
+const MAX_POD_LOG_LINES: usize = 5_000;
+const MAX_POD_LOG_TEXT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_POD_ATTACH_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PodResourcePanel {
     namespace_filter: Option<String>,
@@ -26,6 +30,8 @@ pub(crate) struct PodResourcePanel {
     namespace_status: LoadStatus,
     row_status: LoadStatus,
     rows: Vec<PodRow>,
+    rows_version: u64,
+    filter_cache: PodFilterCache,
     selected_rows: BTreeSet<String>,
     next_request_id: u64,
     namespace_request_id: Option<u64>,
@@ -115,7 +121,7 @@ impl PodResourcePanel {
                     self.row_request_id = None;
                     match result {
                         Ok(list) => {
-                            self.rows = pod_rows_from_list(&list.items);
+                            self.replace_rows(pod_rows_from_list(&list.items));
                             self.row_status = LoadStatus::Loaded;
                         }
                         Err(error) => self.row_status = LoadStatus::Error(error),
@@ -178,6 +184,7 @@ impl PodResourcePanel {
                         {
                             let key = pod_key(namespace.as_deref().unwrap_or(""), &name);
                             self.rows.retain(|row| row.key != key);
+                            self.invalidate_rows();
                             self.selected_rows.remove(&key);
                         }
                         self.delete_dialog = None;
@@ -188,6 +195,7 @@ impl PodResourcePanel {
                             let key =
                                 pod_key(target.namespace.as_deref().unwrap_or(""), &target.name);
                             self.rows.retain(|row| row.key != key);
+                            self.invalidate_rows();
                             self.selected_rows.remove(&key);
                         }
                         self.batch_delete_dialog = None;
@@ -208,7 +216,10 @@ impl PodResourcePanel {
                 if let Some(dialog) = self.log_dialog.as_mut() {
                     match result {
                         Ok(lines) => {
-                            dialog.lines = lines;
+                            let limited = limited_log_lines(lines);
+                            dialog.lines = limited.lines;
+                            dialog.display_text = limited.display_text;
+                            dialog.truncated = limited.truncated;
                             dialog.status = LoadStatus::Loaded;
                             dialog.error = None;
                         }
@@ -248,10 +259,14 @@ impl PodResourcePanel {
                 }
                 match result {
                     Ok(PodAttachOutput::Stdout(bytes)) | Ok(PodAttachOutput::Stderr(bytes)) => {
-                        dialog.output.push_str(&String::from_utf8_lossy(&bytes));
+                        dialog.output_truncated |= append_limited_output(
+                            &mut dialog.output,
+                            &String::from_utf8_lossy(&bytes),
+                        );
                     }
                     Ok(PodAttachOutput::Closed) => {
-                        dialog.output.push_str("\ndisconnected\n");
+                        dialog.output_truncated |=
+                            append_limited_output(&mut dialog.output, "\ndisconnected\n");
                         dialog.status = PodAttachStatus::Disconnected;
                         dialog.request_id = None;
                     }
@@ -338,6 +353,7 @@ impl PodResourcePanel {
         self.search_text.clear();
         self.namespaces.clear();
         self.rows.clear();
+        self.invalidate_rows();
         self.selected_rows.clear();
         self.namespace_status = LoadStatus::Idle;
         self.row_status = LoadStatus::Idle;
@@ -467,6 +483,8 @@ impl PodResourcePanel {
                     containers,
                     selected_container,
                     lines: Vec::new(),
+                    display_text: String::new(),
+                    truncated: false,
                     status: LoadStatus::Idle,
                     error: None,
                 });
@@ -491,6 +509,7 @@ impl PodResourcePanel {
                     selected_container,
                     input: String::new(),
                     output: String::new(),
+                    output_truncated: false,
                     request_id: None,
                     status: PodAttachStatus::Disconnected,
                     error: None,
@@ -1017,15 +1036,14 @@ impl PodResourcePanel {
                                 } else if dialog.lines.is_empty() {
                                     ui.label("No log lines.");
                                 } else {
-                                    let text = dialog
-                                        .lines
-                                        .iter()
-                                        .map(|line| line.text.as_str())
-                                        .collect::<Vec<_>>()
-                                        .join("\n");
+                                    if dialog.truncated {
+                                        ui.label("Earlier log output was truncated.");
+                                    }
                                     ui.add(
-                                        egui::Label::new(egui::RichText::new(text).monospace())
-                                            .selectable(true),
+                                        egui::Label::new(
+                                            egui::RichText::new(&dialog.display_text).monospace(),
+                                        )
+                                        .selectable(true),
                                     );
                                 }
                             });
@@ -1043,6 +1061,8 @@ impl PodResourcePanel {
             if let Some(dialog) = self.log_dialog.as_mut() {
                 dialog.status = LoadStatus::Idle;
                 dialog.lines.clear();
+                dialog.display_text.clear();
+                dialog.truncated = false;
                 dialog.error = None;
             }
             let request = self.request_logs(cluster_id.clone());
@@ -1138,6 +1158,9 @@ impl PodResourcePanel {
                                 } else {
                                     &dialog.output
                                 };
+                                if dialog.output_truncated {
+                                    ui.label("Earlier attach output was truncated.");
+                                }
                                 ui.add(
                                     egui::Label::new(egui::RichText::new(output).monospace())
                                         .selectable(true),
@@ -1178,6 +1201,7 @@ impl PodResourcePanel {
 
         if clear_clicked {
             dialog.output.clear();
+            dialog.output_truncated = false;
         }
 
         if disconnect_clicked {
@@ -1291,19 +1315,26 @@ impl PodResourcePanel {
         self.next_request_id
     }
 
-    fn filtered_row_count(&self) -> usize {
-        self.rows
-            .iter()
-            .filter(|row| row_matches_search(row, &self.search_text))
-            .count()
+    fn filtered_row_count(&mut self) -> usize {
+        self.filtered_row_indices().len()
     }
 
-    fn filtered_row_indices(&self) -> Vec<usize> {
-        self.rows
-            .iter()
-            .enumerate()
-            .filter_map(|(index, row)| row_matches_search(row, &self.search_text).then_some(index))
-            .collect()
+    fn filtered_row_indices(&mut self) -> Vec<usize> {
+        if self.filter_cache.rows_version != self.rows_version
+            || self.filter_cache.search_text != self.search_text
+        {
+            self.filter_cache.rows_version = self.rows_version;
+            self.filter_cache.search_text.clone_from(&self.search_text);
+            self.filter_cache.indices = self
+                .rows
+                .iter()
+                .enumerate()
+                .filter_map(|(index, row)| {
+                    row_matches_search(row, &self.search_text).then_some(index)
+                })
+                .collect();
+        }
+        self.filter_cache.indices.clone()
     }
 
     fn replace_rows(&mut self, rows: Vec<PodRow>) {
@@ -1313,6 +1344,12 @@ impl PodResourcePanel {
             .collect::<BTreeSet<_>>();
         self.selected_rows.retain(|key| visible_keys.contains(key));
         self.rows = rows;
+        self.invalidate_rows();
+    }
+
+    fn invalidate_rows(&mut self) {
+        self.rows_version = self.rows_version.wrapping_add(1);
+        self.filter_cache.indices.clear();
     }
 
     fn row_by_key(&self, key: &str) -> Option<&PodRow> {
@@ -1575,6 +1612,63 @@ fn row_matches_search(row: &PodRow, search_text: &str) -> bool {
     needle.is_empty() || row.name.to_lowercase().contains(&needle)
 }
 
+#[derive(Debug, PartialEq)]
+struct LimitedLogLines {
+    lines: Vec<LogLine>,
+    display_text: String,
+    truncated: bool,
+}
+
+fn limited_log_lines(mut lines: Vec<LogLine>) -> LimitedLogLines {
+    let mut truncated = false;
+    if lines.len() > MAX_POD_LOG_LINES {
+        let excess = lines.len() - MAX_POD_LOG_LINES;
+        lines.drain(0..excess);
+        truncated = true;
+    }
+
+    let mut total_bytes = lines.iter().map(|line| line.text.len() + 1).sum::<usize>();
+    let mut first_kept = 0;
+    while first_kept < lines.len() && total_bytes > MAX_POD_LOG_TEXT_BYTES {
+        total_bytes = total_bytes.saturating_sub(lines[first_kept].text.len() + 1);
+        first_kept += 1;
+        truncated = true;
+    }
+    if first_kept > 0 {
+        lines.drain(0..first_kept);
+    }
+
+    let display_text = lines
+        .iter()
+        .map(|line| line.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    LimitedLogLines {
+        lines,
+        display_text,
+        truncated,
+    }
+}
+
+fn append_limited_output(output: &mut String, text: &str) -> bool {
+    output.push_str(text);
+    trim_string_to_recent_bytes(output, MAX_POD_ATTACH_OUTPUT_BYTES)
+}
+
+fn trim_string_to_recent_bytes(value: &mut String, max_bytes: usize) -> bool {
+    if value.len() <= max_bytes {
+        return false;
+    }
+
+    let mut start = value.len() - max_bytes;
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
+    value.drain(..start);
+    true
+}
+
 fn pod_rows_from_list(items: &[ResourceSummary]) -> Vec<PodRow> {
     let mut rows = items.iter().map(PodRow::from_summary).collect::<Vec<_>>();
     rows.sort_by(|left, right| {
@@ -1770,8 +1864,27 @@ struct PodLogDialog {
     containers: Vec<String>,
     selected_container: Option<String>,
     lines: Vec<LogLine>,
+    display_text: String,
+    truncated: bool,
     status: LoadStatus,
     error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PodFilterCache {
+    rows_version: u64,
+    search_text: String,
+    indices: Vec<usize>,
+}
+
+impl Default for PodFilterCache {
+    fn default() -> Self {
+        Self {
+            rows_version: u64::MAX,
+            search_text: String::new(),
+            indices: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1783,6 +1896,7 @@ struct PodAttachDialog {
     selected_container: Option<String>,
     input: String,
     output: String,
+    output_truncated: bool,
     request_id: Option<u64>,
     status: PodAttachStatus,
     error: Option<String>,
@@ -3010,6 +3124,39 @@ spec:
         assert_eq!(panel.rows.len(), 1);
         assert!(panel.selected_rows.contains("default/api-75f"));
         assert!(!panel.selected_rows.contains("default/worker"));
+    }
+
+    #[test]
+    fn limited_log_lines_keep_recent_lines_and_cached_display_text() {
+        let lines = (0..=MAX_POD_LOG_LINES)
+            .map(|index| LogLine {
+                text: format!("line-{index}"),
+            })
+            .collect::<Vec<_>>();
+
+        let limited = limited_log_lines(lines);
+
+        assert!(limited.truncated);
+        assert_eq!(limited.lines.len(), MAX_POD_LOG_LINES);
+        assert_eq!(limited.lines[0].text, "line-1");
+        assert!(limited.display_text.starts_with("line-1\nline-2"));
+        assert!(
+            limited
+                .display_text
+                .ends_with(&format!("line-{MAX_POD_LOG_LINES}"))
+        );
+    }
+
+    #[test]
+    fn limited_output_keeps_recent_utf8_text() {
+        let mut output = "å".repeat(MAX_POD_ATTACH_OUTPUT_BYTES / "å".len());
+
+        let truncated = append_limited_output(&mut output, "tail");
+
+        assert!(truncated);
+        assert!(output.len() <= MAX_POD_ATTACH_OUTPUT_BYTES);
+        assert!(output.ends_with("tail"));
+        assert!(output.is_char_boundary(0));
     }
 
     fn pod_summary() -> ResourceSummary {

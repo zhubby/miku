@@ -11,7 +11,7 @@ use kube::runtime::reflector::{Store, store};
 use kube::runtime::{reflector, watcher};
 use miku_api::ResourceQuery;
 use miku_core::{ClusterId, ResourceRef, ResourceScope};
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio::time::timeout;
 
 use crate::api_resource;
@@ -20,6 +20,7 @@ const CACHE_READY_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_CACHE_IDLE_TTL: Duration = Duration::from_secs(5 * 60);
 const DEFAULT_CACHE_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 const DEFAULT_CACHE_MAX_ENTRIES: usize = 128;
+const RESOURCE_CHANGE_DEBOUNCE: Duration = Duration::from_millis(150);
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct ResourceCacheKey {
@@ -265,6 +266,7 @@ pub(crate) struct ResourceCacheEntry {
     store: Store<DynamicObject>,
     changes: broadcast::Sender<()>,
     _task: ReflectorTask,
+    _debounce_task: ReflectorTask,
 }
 
 impl ResourceCacheEntry {
@@ -275,6 +277,15 @@ impl ResourceCacheEntry {
         let config = watcher_config(&key);
         let (changes, _) = broadcast::channel(64);
         let change_sender = changes.clone();
+        let (change_request_sender, mut change_request_receiver) = mpsc::channel(1);
+
+        let debounce_task = tokio::spawn(async move {
+            while change_request_receiver.recv().await.is_some() {
+                tokio::time::sleep(RESOURCE_CHANGE_DEBOUNCE).await;
+                while change_request_receiver.try_recv().is_ok() {}
+                let _ = change_sender.send(());
+            }
+        });
 
         let stream = watcher(api, config).default_backoff();
         let reflected = reflector(writer, stream);
@@ -284,7 +295,7 @@ impl ResourceCacheEntry {
                 match event {
                     Ok(event) => {
                         if watcher_event_updates_snapshot(&event) {
-                            let _ = change_sender.send(());
+                            let _ = change_request_sender.try_send(());
                         }
                     }
                     Err(error) => {
@@ -298,6 +309,7 @@ impl ResourceCacheEntry {
             store,
             changes,
             _task: ReflectorTask(task),
+            _debounce_task: ReflectorTask(debounce_task),
         })
     }
 
@@ -514,6 +526,7 @@ mod tests {
             store: reader,
             changes: broadcast::channel(1).0,
             _task: ReflectorTask(tokio::spawn(async {})),
+            _debounce_task: ReflectorTask(tokio::spawn(async {})),
         };
 
         let snapshot = entry.snapshot(Some(1));
@@ -710,6 +723,7 @@ mod tests {
                 store: reader,
                 changes: broadcast::channel(1).0,
                 _task: ReflectorTask(task),
+                _debounce_task: ReflectorTask(tokio::spawn(async {})),
             },
             abort_rx,
         )
@@ -726,6 +740,7 @@ mod tests {
             store: reader,
             changes: broadcast::channel(1).0,
             _task: ReflectorTask(task),
+            _debounce_task: ReflectorTask(tokio::spawn(async {})),
         }
     }
 

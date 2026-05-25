@@ -91,7 +91,6 @@ pub(crate) struct ResourceLoadRequest {
     pub(crate) kind: ResourceLoadKind,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct ResourceWatchKey {
     pub(crate) cluster_id: ClusterId,
@@ -255,7 +254,6 @@ impl ResourceLoadRequest {
 }
 
 impl ResourceWatchRequest {
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn key(&self) -> ResourceWatchKey {
         let kind = match &self.kind {
             ResourceLoadKind::Namespaces => ResourceLoadKind::Namespaces,

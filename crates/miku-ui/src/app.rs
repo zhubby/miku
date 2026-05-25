@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, mpsc as resource_mpsc};
 
 use eframe::egui;
@@ -9,7 +9,6 @@ use miku_api::{ClusterSummary, MikuServices, PodAttachInput};
 use crate::cluster_events::ClusterUiEvent;
 use crate::dock::show_dock_region;
 use crate::forms::NewClusterForm;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::resource_panel::ResourceWatchKey;
 use crate::resource_panel::{
     ClusterRoleBindingResourcePanel, ClusterRoleResourcePanel, ConfigMapResourcePanel,
@@ -36,6 +35,8 @@ use crate::tabs::{
 };
 
 const MAX_RESOURCE_EVENTS_PER_PASS: usize = 8;
+const MAX_RESOURCE_CHANNEL_DRAIN_PER_PASS: usize = 256;
+const MAX_PENDING_WATCH_EVENTS_PER_PASS: usize = 8;
 
 pub struct MikuApp {
     pub(crate) state: AppState,
@@ -52,6 +53,7 @@ pub struct MikuApp {
     pub(crate) services: Option<Arc<dyn MikuServices>>,
     pub(crate) resource_event_sender: resource_mpsc::Sender<ResourceUiEvent>,
     pub(crate) resource_event_receiver: resource_mpsc::Receiver<ResourceUiEvent>,
+    pub(crate) pending_resource_events: PendingResourceEvents,
     pub(crate) pod_attach_inputs:
         HashMap<u64, futures::channel::mpsc::UnboundedSender<PodAttachInput>>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -70,6 +72,42 @@ pub struct MikuApp {
     pub(crate) settings_event_receiver: resource_mpsc::Receiver<SettingsUiEvent>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) file_dialog: egui_file_dialog::FileDialog,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PendingResourceEvents {
+    ordered: VecDeque<ResourceUiEvent>,
+    latest_watch: HashMap<ResourceWatchKey, ResourceUiEvent>,
+}
+
+impl PendingResourceEvents {
+    fn push(&mut self, event: ResourceUiEvent) {
+        match &event {
+            ResourceUiEvent::ResourceWatchUpdated { request, .. } => {
+                self.latest_watch.insert(request.key(), event);
+            }
+            ResourceUiEvent::ResourcesLoaded { .. }
+            | ResourceUiEvent::ResourceActionCompleted { .. }
+            | ResourceUiEvent::PodLogsLoaded { .. }
+            | ResourceUiEvent::PodAttachConnected { .. }
+            | ResourceUiEvent::PodAttachOutput { .. } => {
+                self.ordered.push_back(event);
+            }
+        }
+    }
+
+    fn pop_ordered(&mut self) -> Option<ResourceUiEvent> {
+        self.ordered.pop_front()
+    }
+
+    fn pop_watch(&mut self) -> Option<ResourceUiEvent> {
+        let key = self.latest_watch.keys().next().cloned()?;
+        self.latest_watch.remove(&key)
+    }
+
+    fn has_pending(&self) -> bool {
+        !self.ordered.is_empty() || !self.latest_watch.is_empty()
+    }
 }
 
 #[derive(Debug)]
@@ -228,6 +266,7 @@ impl MikuApp {
             services: None,
             resource_event_sender,
             resource_event_receiver,
+            pending_resource_events: PendingResourceEvents::default(),
             pod_attach_inputs: HashMap::new(),
             #[cfg(not(target_arch = "wasm32"))]
             resource_watch_tasks: HashMap::new(),
@@ -728,15 +767,31 @@ impl MikuApp {
     }
 
     fn process_resource_events(&mut self, ctx: &egui::Context) {
-        for _ in 0..MAX_RESOURCE_EVENTS_PER_PASS {
+        for _ in 0..MAX_RESOURCE_CHANNEL_DRAIN_PER_PASS {
             match self.resource_event_receiver.try_recv() {
-                Ok(event) => self.apply_resource_event(event),
-                Err(resource_mpsc::TryRecvError::Empty) => return,
-                Err(resource_mpsc::TryRecvError::Disconnected) => return,
+                Ok(event) => self.pending_resource_events.push(event),
+                Err(resource_mpsc::TryRecvError::Empty) => break,
+                Err(resource_mpsc::TryRecvError::Disconnected) => break,
             }
         }
 
-        ctx.request_repaint();
+        for _ in 0..MAX_RESOURCE_EVENTS_PER_PASS {
+            let Some(event) = self.pending_resource_events.pop_ordered() else {
+                break;
+            };
+            self.apply_resource_event(event);
+        }
+
+        for _ in 0..MAX_PENDING_WATCH_EVENTS_PER_PASS {
+            let Some(event) = self.pending_resource_events.pop_watch() else {
+                break;
+            };
+            self.apply_resource_event(event);
+        }
+
+        if self.pending_resource_events.has_pending() {
+            ctx.request_repaint();
+        }
     }
 
     fn process_status_events(&mut self) {
@@ -2044,6 +2099,79 @@ mod tests {
 
     fn pods_resource() -> ResourceNavItem {
         ResourceNavItem { name: "Pods" }
+    }
+
+    #[test]
+    fn pending_resource_events_coalesce_watch_updates_by_key() {
+        let cluster_id = miku_core::ClusterId::new("local");
+        let first = ResourceUiEvent::ResourceWatchUpdated {
+            request: ResourceWatchRequest {
+                request_id: 1,
+                cluster_id: cluster_id.clone(),
+                kind: ResourceLoadKind::Pods { namespace: None },
+            },
+            result: Err("first".to_owned()),
+        };
+        let second = ResourceUiEvent::ResourceWatchUpdated {
+            request: ResourceWatchRequest {
+                request_id: 2,
+                cluster_id,
+                kind: ResourceLoadKind::Pods {
+                    namespace: Some("default".to_owned()),
+                },
+            },
+            result: Err("second".to_owned()),
+        };
+        let mut pending = PendingResourceEvents::default();
+
+        pending.push(first);
+        pending.push(second);
+
+        let Some(ResourceUiEvent::ResourceWatchUpdated { request, result }) = pending.pop_watch()
+        else {
+            panic!("expected a coalesced watch event");
+        };
+        assert_eq!(request.request_id, 2);
+        assert_eq!(result, Err("second".to_owned()));
+        assert!(!pending.has_pending());
+    }
+
+    #[test]
+    fn pending_resource_events_preserve_non_watch_order() {
+        let cluster_id = miku_core::ClusterId::new("local");
+        let mut pending = PendingResourceEvents::default();
+
+        pending.push(ResourceUiEvent::ResourceActionCompleted {
+            request: ResourceActionRequest {
+                request_id: 1,
+                cluster_id: cluster_id.clone(),
+                kind: ResourceActionKind::DrainNode {
+                    name: "node-a".to_owned(),
+                },
+            },
+            result: Ok(ResourceActionOutcome::Evicted),
+        });
+        pending.push(ResourceUiEvent::PodLogsLoaded {
+            request: PodLogRequest {
+                request_id: 2,
+                cluster_id,
+                namespace: "default".to_owned(),
+                pod: "api".to_owned(),
+                container: None,
+                tail_lines: None,
+            },
+            result: Ok(Vec::new()),
+        });
+
+        assert!(matches!(
+            pending.pop_ordered(),
+            Some(ResourceUiEvent::ResourceActionCompleted { .. })
+        ));
+        assert!(matches!(
+            pending.pop_ordered(),
+            Some(ResourceUiEvent::PodLogsLoaded { .. })
+        ));
+        assert!(!pending.has_pending());
     }
 
     #[test]

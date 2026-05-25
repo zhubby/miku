@@ -42,6 +42,8 @@ pub(crate) struct ConfigResourcePanel {
     namespace_status: LoadStatus,
     row_status: LoadStatus,
     rows: Vec<ConfigRow>,
+    rows_version: u64,
+    filter_cache: ConfigFilterCache,
     selected_rows: BTreeSet<String>,
     next_request_id: u64,
     namespace_request_id: Option<u64>,
@@ -67,6 +69,8 @@ impl ConfigResourcePanel {
             namespace_status: LoadStatus::Idle,
             row_status: LoadStatus::Idle,
             rows: Vec::new(),
+            rows_version: 0,
+            filter_cache: ConfigFilterCache::default(),
             selected_rows: BTreeSet::new(),
             next_request_id: 0,
             namespace_request_id: None,
@@ -154,6 +158,7 @@ impl ConfigResourcePanel {
                         {
                             let key = config_key(namespace.as_deref().unwrap_or(""), &name);
                             self.rows.retain(|row| row.key != key);
+                            self.invalidate_rows();
                             self.selected_rows.remove(&key);
                         }
                         self.action_error = None;
@@ -163,6 +168,7 @@ impl ConfigResourcePanel {
                             let key =
                                 config_key(target.namespace.as_deref().unwrap_or(""), &target.name);
                             self.rows.retain(|row| row.key != key);
+                            self.invalidate_rows();
                             self.selected_rows.remove(&key);
                         }
                         self.batch_delete_dialog = None;
@@ -254,6 +260,7 @@ impl ConfigResourcePanel {
         self.search_text.clear();
         self.namespaces.clear();
         self.rows.clear();
+        self.invalidate_rows();
         self.selected_rows.clear();
         self.namespace_status = LoadStatus::Idle;
         self.row_status = LoadStatus::Idle;
@@ -543,19 +550,26 @@ impl ConfigResourcePanel {
         self.next_request_id
     }
 
-    fn filtered_row_count(&self) -> usize {
-        self.rows
-            .iter()
-            .filter(|row| row_matches_search(row, &self.search_text))
-            .count()
+    fn filtered_row_count(&mut self) -> usize {
+        self.filtered_row_indices().len()
     }
 
-    fn filtered_row_indices(&self) -> Vec<usize> {
-        self.rows
-            .iter()
-            .enumerate()
-            .filter_map(|(index, row)| row_matches_search(row, &self.search_text).then_some(index))
-            .collect()
+    fn filtered_row_indices(&mut self) -> Vec<usize> {
+        if self.filter_cache.rows_version != self.rows_version
+            || self.filter_cache.search_text != self.search_text
+        {
+            self.filter_cache.rows_version = self.rows_version;
+            self.filter_cache.search_text.clone_from(&self.search_text);
+            self.filter_cache.indices = self
+                .rows
+                .iter()
+                .enumerate()
+                .filter_map(|(index, row)| {
+                    row_matches_search(row, &self.search_text).then_some(index)
+                })
+                .collect();
+        }
+        self.filter_cache.indices.clone()
     }
 
     fn row_by_key(&self, key: &str) -> Option<&ConfigRow> {
@@ -567,6 +581,12 @@ impl ConfigResourcePanel {
         let visible_keys = visible_keys(&targets);
         self.selected_rows.retain(|key| visible_keys.contains(key));
         self.rows = rows;
+        self.invalidate_rows();
+    }
+
+    fn invalidate_rows(&mut self) {
+        self.rows_version = self.rows_version.wrapping_add(1);
+        self.filter_cache.indices.clear();
     }
 
     fn prune_selection_to_visible(&mut self) {
@@ -936,6 +956,23 @@ struct ConfigRow {
     details: Vec<(String, String)>,
     raw: serde_json::Value,
     search_text: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ConfigFilterCache {
+    rows_version: u64,
+    search_text: String,
+    indices: Vec<usize>,
+}
+
+impl Default for ConfigFilterCache {
+    fn default() -> Self {
+        Self {
+            rows_version: u64::MAX,
+            search_text: String::new(),
+            indices: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
