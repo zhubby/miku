@@ -1997,12 +1997,14 @@ async fn run_resource_action(
     }
 
     if let Some(delete_requests) = request.batch_delete_requests() {
+        let targets = match &request.kind {
+            ResourceActionKind::BatchDeleteResources { targets, .. } => targets.clone(),
+            _ => Vec::new(),
+        };
         for delete_request in delete_requests {
             services.delete_resource(delete_request).await?;
         }
-        if let ResourceActionKind::BatchDeletePods { targets } = &request.kind {
-            return Ok(ResourceActionOutcome::BatchDeleted(targets.clone()));
-        }
+        return Ok(ResourceActionOutcome::BatchDeleted(targets));
     }
 
     if let Some(evict_request) = request.evict_request() {

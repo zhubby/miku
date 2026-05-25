@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use eframe::egui::{self, TextWrapMode};
 use egui_extras::{Column, TableBuilder};
 use miku_api::{LogLine, PodAttachInput, PodAttachOutput, ResourceSummary};
-use miku_core::ClusterId;
+use miku_core::{ClusterId, ResourceRef};
 
 #[cfg(test)]
 use super::ResourceLoadRequest;
@@ -169,7 +169,13 @@ impl PodResourcePanel {
                         self.action_error = None;
                     }
                     Ok(ResourceActionOutcome::Deleted) => {
-                        if let ResourceActionKind::DeletePod { namespace, name } = request.kind {
+                        if let ResourceActionKind::DeleteResource {
+                            resource,
+                            namespace,
+                            name,
+                        } = request.kind
+                            && resource == ResourceRef::core("v1", "pods")
+                        {
                             let key = pod_key(namespace.as_deref().unwrap_or(""), &name);
                             self.rows.retain(|row| row.key != key);
                             self.selected_rows.remove(&key);
@@ -656,7 +662,8 @@ impl PodResourcePanel {
                 let request = ResourceActionRequest {
                     request_id: self.allocate_request_id(),
                     cluster_id: cluster_id.clone(),
-                    kind: ResourceActionKind::ApplyPod {
+                    kind: ResourceActionKind::ApplyResource {
+                        resource: ResourceRef::core("v1", "pods"),
                         namespace,
                         name,
                         manifest,
@@ -710,7 +717,8 @@ impl PodResourcePanel {
                 let request = ResourceActionRequest {
                     request_id: self.allocate_request_id(),
                     cluster_id: cluster_id.clone(),
-                    kind: ResourceActionKind::ApplyPod {
+                    kind: ResourceActionKind::ApplyResource {
+                        resource: ResourceRef::core("v1", "pods"),
                         namespace,
                         name,
                         manifest,
@@ -779,7 +787,8 @@ impl PodResourcePanel {
             let request = ResourceActionRequest {
                 request_id: self.allocate_request_id(),
                 cluster_id: cluster_id.clone(),
-                kind: ResourceActionKind::DeletePod {
+                kind: ResourceActionKind::DeleteResource {
+                    resource: ResourceRef::core("v1", "pods"),
                     namespace: dialog.namespace,
                     name: dialog.name,
                 },
@@ -853,7 +862,8 @@ impl PodResourcePanel {
             let request = ResourceActionRequest {
                 request_id: self.allocate_request_id(),
                 cluster_id: cluster_id.clone(),
-                kind: ResourceActionKind::BatchDeletePods {
+                kind: ResourceActionKind::BatchDeleteResources {
+                    resource: ResourceRef::core("v1", "pods"),
                     targets: dialog.targets,
                 },
             };

@@ -114,16 +114,19 @@ pub(crate) struct ResourceActionRequest {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ResourceActionKind {
-    ApplyPod {
+    ApplyResource {
+        resource: ResourceRef,
         namespace: Option<String>,
         name: String,
         manifest: serde_json::Value,
     },
-    DeletePod {
+    DeleteResource {
+        resource: ResourceRef,
         namespace: Option<String>,
         name: String,
     },
-    BatchDeletePods {
+    BatchDeleteResources {
+        resource: ResourceRef,
         targets: Vec<ResourceDeleteTarget>,
     },
     EvictPod {
@@ -333,31 +336,36 @@ impl ResourceWatchRequest {
 impl ResourceActionRequest {
     pub(crate) fn apply_request(&self) -> Option<ResourceApplyRequest> {
         match &self.kind {
-            ResourceActionKind::ApplyPod {
+            ResourceActionKind::ApplyResource {
+                resource,
                 namespace,
                 name,
                 manifest,
             } => Some(ResourceApplyRequest {
                 cluster_id: self.cluster_id.clone(),
-                resource: ResourceRef::core("v1", "pods"),
+                resource: resource.clone(),
                 namespace: namespace.clone(),
                 name: name.clone(),
                 manifest: manifest.clone(),
             }),
-            ResourceActionKind::DeletePod { .. }
-            | ResourceActionKind::BatchDeletePods { .. }
+            ResourceActionKind::DeleteResource { .. }
+            | ResourceActionKind::BatchDeleteResources { .. }
             | ResourceActionKind::EvictPod { .. } => None,
         }
     }
 
     pub(crate) fn delete_request(&self) -> Option<ResourceDeleteRequest> {
         match &self.kind {
-            ResourceActionKind::ApplyPod { .. }
-            | ResourceActionKind::BatchDeletePods { .. }
+            ResourceActionKind::ApplyResource { .. }
+            | ResourceActionKind::BatchDeleteResources { .. }
             | ResourceActionKind::EvictPod { .. } => None,
-            ResourceActionKind::DeletePod { namespace, name } => Some(ResourceDeleteRequest {
+            ResourceActionKind::DeleteResource {
+                resource,
+                namespace,
+                name,
+            } => Some(ResourceDeleteRequest {
                 cluster_id: self.cluster_id.clone(),
-                resource: ResourceRef::core("v1", "pods"),
+                resource: resource.clone(),
                 namespace: namespace.clone(),
                 name: name.clone(),
             }),
@@ -365,7 +373,7 @@ impl ResourceActionRequest {
     }
 
     pub(crate) fn batch_delete_requests(&self) -> Option<Vec<ResourceDeleteRequest>> {
-        let ResourceActionKind::BatchDeletePods { targets } = &self.kind else {
+        let ResourceActionKind::BatchDeleteResources { resource, targets } = &self.kind else {
             return None;
         };
 
@@ -374,7 +382,7 @@ impl ResourceActionRequest {
                 .iter()
                 .map(|target| ResourceDeleteRequest {
                     cluster_id: self.cluster_id.clone(),
-                    resource: ResourceRef::core("v1", "pods"),
+                    resource: resource.clone(),
                     namespace: target.namespace.clone(),
                     name: target.name.clone(),
                 })
@@ -389,9 +397,9 @@ impl ResourceActionRequest {
                 namespace: namespace.clone(),
                 pod: name.clone(),
             }),
-            ResourceActionKind::ApplyPod { .. }
-            | ResourceActionKind::DeletePod { .. }
-            | ResourceActionKind::BatchDeletePods { .. } => None,
+            ResourceActionKind::ApplyResource { .. }
+            | ResourceActionKind::DeleteResource { .. }
+            | ResourceActionKind::BatchDeleteResources { .. } => None,
         }
     }
 }
@@ -1423,5 +1431,86 @@ mod tests {
             ResourceRef::grouped("apps", "v1", "statefulsets")
         );
         assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn generic_apply_action_builds_resource_apply_request() {
+        let request = ResourceActionRequest {
+            request_id: 7,
+            cluster_id: ClusterId::new("local"),
+            kind: ResourceActionKind::ApplyResource {
+                resource: ResourceRef::grouped("apps", "v1", "deployments"),
+                namespace: Some("production".to_owned()),
+                name: "api".to_owned(),
+                manifest: serde_json::json!({
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "metadata": {"name": "api", "namespace": "production"}
+                }),
+            },
+        };
+
+        let apply = request.apply_request().unwrap();
+
+        assert_eq!(apply.cluster_id, ClusterId::new("local"));
+        assert_eq!(
+            apply.resource,
+            ResourceRef::grouped("apps", "v1", "deployments")
+        );
+        assert_eq!(apply.namespace.as_deref(), Some("production"));
+        assert_eq!(apply.name, "api");
+        assert_eq!(apply.manifest["kind"], "Deployment");
+    }
+
+    #[test]
+    fn generic_delete_action_builds_cluster_scoped_delete_request() {
+        let request = ResourceActionRequest {
+            request_id: 8,
+            cluster_id: ClusterId::new("local"),
+            kind: ResourceActionKind::DeleteResource {
+                resource: ResourceRef::core("v1", "persistentvolumes").cluster_scoped(),
+                namespace: None,
+                name: "pv-fast".to_owned(),
+            },
+        };
+
+        let delete = request.delete_request().unwrap();
+
+        assert_eq!(
+            delete.resource,
+            ResourceRef::core("v1", "persistentvolumes").cluster_scoped()
+        );
+        assert_eq!(delete.namespace, None);
+        assert_eq!(delete.name, "pv-fast");
+    }
+
+    #[test]
+    fn generic_batch_delete_action_builds_delete_requests_for_targets() {
+        let request = ResourceActionRequest {
+            request_id: 9,
+            cluster_id: ClusterId::new("local"),
+            kind: ResourceActionKind::BatchDeleteResources {
+                resource: ResourceRef::core("v1", "services"),
+                targets: vec![
+                    ResourceDeleteTarget {
+                        namespace: Some("default".to_owned()),
+                        name: "api".to_owned(),
+                    },
+                    ResourceDeleteTarget {
+                        namespace: Some("kube-system".to_owned()),
+                        name: "dns".to_owned(),
+                    },
+                ],
+            },
+        };
+
+        let deletes = request.batch_delete_requests().unwrap();
+
+        assert_eq!(deletes.len(), 2);
+        assert_eq!(deletes[0].resource, ResourceRef::core("v1", "services"));
+        assert_eq!(deletes[0].namespace.as_deref(), Some("default"));
+        assert_eq!(deletes[0].name, "api");
+        assert_eq!(deletes[1].namespace.as_deref(), Some("kube-system"));
+        assert_eq!(deletes[1].name, "dns");
     }
 }

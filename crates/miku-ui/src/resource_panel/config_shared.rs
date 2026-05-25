@@ -1,14 +1,24 @@
+use std::collections::BTreeSet;
+
 use eframe::egui::{self, TextWrapMode};
 use egui_extras::{Column, TableBuilder};
 use miku_api::ResourceSummary;
-use miku_core::ClusterId;
+use miku_core::{ClusterId, ResourceRef};
 
 #[cfg(test)]
 use super::ResourceLoadRequest;
 use super::components::ResourceYamlViewDialog;
+use super::components::{
+    GenericBatchDeleteDialog, GenericCreateDialog, ResourceBatchDeleteDialogInput,
+    ResourceCreateDialogInput, ResourceCreateDialogResponse, ResourceDeleteDialogResponse,
+    ResourceMetadata, ResourceRowTarget, ResourceToolbar, SELECT_COLUMN_WIDTH,
+    apply_resource_request, batch_delete_resource_request, default_resource_yaml,
+    selected_delete_targets, show_resource_batch_delete_dialog, show_resource_create_dialog,
+    show_row_selection_checkbox, visible_keys,
+};
 use super::{
-    LoadStatus, ResourceLoadKind, ResourcePanelRequests, ResourceUiEvent, ResourceWatchRequest,
-    namespaces_from_list,
+    LoadStatus, ResourceActionKind, ResourceActionOutcome, ResourceLoadKind, ResourcePanelRequests,
+    ResourceUiEvent, ResourceWatchRequest, namespaces_from_list,
 };
 use crate::time::human_age_from_rfc3339;
 
@@ -32,6 +42,7 @@ pub(crate) struct ConfigResourcePanel {
     namespace_status: LoadStatus,
     row_status: LoadStatus,
     rows: Vec<ConfigRow>,
+    selected_rows: BTreeSet<String>,
     next_request_id: u64,
     namespace_request_id: Option<u64>,
     row_request_id: Option<u64>,
@@ -40,6 +51,10 @@ pub(crate) struct ConfigResourcePanel {
     last_cluster_id: Option<ClusterId>,
     describe_dialog: Option<ConfigDescribeDialog>,
     view_dialog: Option<ConfigViewDialog>,
+    create_dialog: Option<GenericCreateDialog>,
+    batch_delete_dialog: Option<GenericBatchDeleteDialog>,
+    action_request_id: Option<u64>,
+    action_error: Option<String>,
 }
 
 impl ConfigResourcePanel {
@@ -52,6 +67,7 @@ impl ConfigResourcePanel {
             namespace_status: LoadStatus::Idle,
             row_status: LoadStatus::Idle,
             rows: Vec::new(),
+            selected_rows: BTreeSet::new(),
             next_request_id: 0,
             namespace_request_id: None,
             row_request_id: None,
@@ -60,6 +76,10 @@ impl ConfigResourcePanel {
             last_cluster_id: None,
             describe_dialog: None,
             view_dialog: None,
+            create_dialog: None,
+            batch_delete_dialog: None,
+            action_request_id: None,
+            action_error: None,
         }
     }
 
@@ -93,6 +113,8 @@ impl ConfigResourcePanel {
         self.show_body(ui);
         self.show_describe_dialog(ui.ctx());
         self.show_view_dialog(ui.ctx());
+        self.show_create_dialog(ui.ctx(), cluster_id, &mut requests.actions);
+        self.show_batch_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         requests
     }
 
@@ -112,8 +134,45 @@ impl ConfigResourcePanel {
                     self.apply_rows_watch(request.request_id, result);
                 }
             }
-            ResourceUiEvent::ResourceActionCompleted { .. }
-            | ResourceUiEvent::PodLogsLoaded { .. }
+            ResourceUiEvent::ResourceActionCompleted { request, result } => {
+                if self.action_request_id != Some(request.request_id) {
+                    return;
+                }
+                self.action_request_id = None;
+                match result {
+                    Ok(ResourceActionOutcome::Applied(_)) => {
+                        self.create_dialog = None;
+                        self.action_error = None;
+                    }
+                    Ok(ResourceActionOutcome::Deleted) => {
+                        if let ResourceActionKind::DeleteResource {
+                            resource,
+                            namespace,
+                            name,
+                        } = request.kind
+                            && resource == self.kind.metadata().resource
+                        {
+                            let key = config_key(namespace.as_deref().unwrap_or(""), &name);
+                            self.rows.retain(|row| row.key != key);
+                            self.selected_rows.remove(&key);
+                        }
+                        self.action_error = None;
+                    }
+                    Ok(ResourceActionOutcome::BatchDeleted(targets)) => {
+                        for target in targets {
+                            let key =
+                                config_key(target.namespace.as_deref().unwrap_or(""), &target.name);
+                            self.rows.retain(|row| row.key != key);
+                            self.selected_rows.remove(&key);
+                        }
+                        self.batch_delete_dialog = None;
+                        self.action_error = None;
+                    }
+                    Ok(ResourceActionOutcome::Evicted) => {}
+                    Err(error) => self.action_error = Some(error),
+                }
+            }
+            ResourceUiEvent::PodLogsLoaded { .. }
             | ResourceUiEvent::PodAttachConnected { .. }
             | ResourceUiEvent::PodAttachOutput { .. } => {}
         }
@@ -143,7 +202,7 @@ impl ConfigResourcePanel {
         self.row_request_id = None;
         match result {
             Ok(list) => {
-                self.rows = self.kind.rows_from_list(&list.items);
+                self.replace_rows(self.kind.rows_from_list(&list.items));
                 self.row_status = LoadStatus::Loaded;
             }
             Err(error) => self.row_status = LoadStatus::Error(error),
@@ -178,7 +237,7 @@ impl ConfigResourcePanel {
         }
         match result {
             Ok(miku_api::ResourceEvent::Snapshot(list)) => {
-                self.rows = self.kind.rows_from_list(&list.items);
+                self.replace_rows(self.kind.rows_from_list(&list.items));
                 self.row_status = LoadStatus::Loaded;
             }
             Ok(_) => {}
@@ -195,6 +254,7 @@ impl ConfigResourcePanel {
         self.search_text.clear();
         self.namespaces.clear();
         self.rows.clear();
+        self.selected_rows.clear();
         self.namespace_status = LoadStatus::Idle;
         self.row_status = LoadStatus::Idle;
         self.namespace_request_id = None;
@@ -203,6 +263,10 @@ impl ConfigResourcePanel {
         self.row_watch_request_id = None;
         self.describe_dialog = None;
         self.view_dialog = None;
+        self.create_dialog = None;
+        self.batch_delete_dialog = None;
+        self.action_request_id = None;
+        self.action_error = None;
     }
 
     fn show_toolbar(
@@ -211,65 +275,59 @@ impl ConfigResourcePanel {
         cluster_id: &ClusterId,
         requests: &mut ResourcePanelRequests,
     ) {
-        ui.horizontal(|ui| {
-            let mut namespace_changed = false;
+        let item_count = self.filtered_row_count();
+        let response = ResourceToolbar {
+            id_salt: self.kind.id(),
+            namespaces: if self.kind.is_namespaced() {
+                &self.namespaces
+            } else {
+                &[]
+            },
+            namespace_filter: &mut self.namespace_filter,
+            search_text: &mut self.search_text,
+            search_hint: "Search resources...",
+            item_count,
+            selected_count: self.selected_rows.len(),
+            loading: matches!(self.row_status, LoadStatus::Loading),
+        }
+        .show(ui);
+
+        if response.namespace_changed && self.kind.is_namespaced() {
+            requests
+                .watches
+                .push(self.request_resource_watch(cluster_id.clone()));
+        }
+        if response.search_changed {
+            self.prune_selection_to_visible();
+        }
+        if response.refresh_clicked {
             if self.kind.is_namespaced() {
-                egui::ComboBox::from_id_salt((self.kind.id(), "namespace_filter"))
-                    .selected_text(
-                        self.namespace_filter
-                            .as_deref()
-                            .unwrap_or("All namespaces")
-                            .to_owned(),
-                    )
-                    .width(220.0)
-                    .show_ui(ui, |ui| {
-                        namespace_changed |= ui
-                            .selectable_value(&mut self.namespace_filter, None, "All namespaces")
-                            .changed();
-                        for namespace in &self.namespaces {
-                            namespace_changed |= ui
-                                .selectable_value(
-                                    &mut self.namespace_filter,
-                                    Some(namespace.clone()),
-                                    namespace,
-                                )
-                                .changed();
-                        }
-                    });
-            }
-            ui.add(
-                egui::TextEdit::singleline(&mut self.search_text)
-                    .hint_text(format!("Search {}...", self.kind.title()))
-                    .desired_width(280.0),
-            );
-            if ui
-                .button(egui_phosphor::regular::ARROWS_CLOCKWISE)
-                .on_hover_text("Refresh")
-                .clicked()
-            {
-                if self.kind.is_namespaced() {
-                    requests
-                        .watches
-                        .push(self.request_namespace_watch(cluster_id.clone()));
-                }
                 requests
                     .watches
-                    .push(self.request_resource_watch(cluster_id.clone()));
+                    .push(self.request_namespace_watch(cluster_id.clone()));
             }
-            ui.separator();
-            ui.label(format!("{} items", self.filtered_row_count()));
-            if matches!(self.row_status, LoadStatus::Loading) {
-                ui.label("Loading...");
+            requests
+                .watches
+                .push(self.request_resource_watch(cluster_id.clone()));
+        }
+        if response.create_clicked {
+            let metadata = self.kind.metadata();
+            self.create_dialog = Some(GenericCreateDialog {
+                yaml: default_resource_yaml(metadata, self.namespace_filter.as_deref()),
+                parse_error: None,
+            });
+            self.action_error = None;
+        }
+        if response.batch_delete_clicked {
+            let targets = self.selected_delete_targets();
+            if !targets.is_empty() {
+                self.batch_delete_dialog = Some(GenericBatchDeleteDialog { targets });
+                self.action_error = None;
             }
-            if matches!(self.namespace_status, LoadStatus::Error(_)) && self.kind.is_namespaced() {
-                ui.colored_label(ui.visuals().error_fg_color, "Namespaces unavailable");
-            }
-            if namespace_changed {
-                requests
-                    .watches
-                    .push(self.request_resource_watch(cluster_id.clone()));
-            }
-        });
+        }
+        if matches!(self.namespace_status, LoadStatus::Error(_)) && self.kind.is_namespaced() {
+            ui.colored_label(ui.visuals().error_fg_color, "Namespaces unavailable");
+        }
     }
 
     fn show_body(&mut self, ui: &mut egui::Ui) {
@@ -295,7 +353,8 @@ impl ConfigResourcePanel {
                     });
                     return;
                 }
-                let action = show_config_table(ui, self.kind, &self.rows, indices);
+                let action =
+                    show_config_table(ui, self.kind, &self.rows, indices, &mut self.selected_rows);
                 self.apply_table_action(action);
             }
         }
@@ -372,6 +431,79 @@ impl ConfigResourcePanel {
         }
     }
 
+    fn show_create_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<super::ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.create_dialog.as_mut() else {
+            return;
+        };
+        match show_resource_create_dialog(
+            ctx,
+            ResourceCreateDialogInput {
+                metadata: self.kind.metadata(),
+                dialog,
+                action_error: self.action_error.as_deref(),
+                action_in_flight: self.action_request_id.is_some(),
+                namespace_default: self.namespace_filter.as_deref(),
+            },
+        ) {
+            ResourceCreateDialogResponse::None => {}
+            ResourceCreateDialogResponse::Cancel => {
+                self.create_dialog = None;
+                self.action_error = None;
+            }
+            ResourceCreateDialogResponse::Apply(parsed) => {
+                let request = apply_resource_request(
+                    self.allocate_request_id(),
+                    cluster_id.clone(),
+                    self.kind.metadata(),
+                    parsed,
+                );
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+        }
+    }
+
+    fn show_batch_delete_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<super::ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.batch_delete_dialog.clone() else {
+            return;
+        };
+        match show_resource_batch_delete_dialog(
+            ctx,
+            ResourceBatchDeleteDialogInput {
+                metadata: self.kind.metadata(),
+                targets: &dialog.targets,
+                action_error: self.action_error.as_deref(),
+                action_in_flight: self.action_request_id.is_some(),
+            },
+        ) {
+            ResourceDeleteDialogResponse::None => {}
+            ResourceDeleteDialogResponse::Cancel => {
+                self.batch_delete_dialog = None;
+                self.action_error = None;
+            }
+            ResourceDeleteDialogResponse::Delete => {
+                let request = batch_delete_resource_request(
+                    self.allocate_request_id(),
+                    cluster_id.clone(),
+                    self.kind.metadata(),
+                    dialog.targets,
+                );
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+        }
+    }
+
     #[cfg(test)]
     fn request_resources(&mut self, cluster_id: ClusterId) -> ResourceLoadRequest {
         let request = ResourceLoadRequest {
@@ -429,6 +561,29 @@ impl ConfigResourcePanel {
     fn row_by_key(&self, key: &str) -> Option<&ConfigRow> {
         self.rows.iter().find(|row| row.key == key)
     }
+
+    fn replace_rows(&mut self, rows: Vec<ConfigRow>) {
+        let targets = rows.iter().map(ConfigRow::target).collect::<Vec<_>>();
+        let visible_keys = visible_keys(&targets);
+        self.selected_rows.retain(|key| visible_keys.contains(key));
+        self.rows = rows;
+    }
+
+    fn prune_selection_to_visible(&mut self) {
+        let targets = self
+            .filtered_row_indices()
+            .into_iter()
+            .filter_map(|index| self.rows.get(index))
+            .map(ConfigRow::target)
+            .collect::<Vec<_>>();
+        let visible_keys = visible_keys(&targets);
+        self.selected_rows.retain(|key| visible_keys.contains(key));
+    }
+
+    fn selected_delete_targets(&self) -> Vec<super::ResourceDeleteTarget> {
+        let targets = self.rows.iter().map(ConfigRow::target).collect::<Vec<_>>();
+        selected_delete_targets(&targets, &self.selected_rows)
+    }
 }
 
 impl ConfigResourceKind {
@@ -461,6 +616,72 @@ impl ConfigResourceKind {
             self,
             Self::HorizontalPodAutoscaler | Self::PodDisruptionBudget | Self::Lease
         )
+    }
+
+    fn metadata(self) -> ResourceMetadata {
+        ResourceMetadata {
+            id: self.id(),
+            title: self.title(),
+            api_version: self.api_version(),
+            kind: self.singular_kind(),
+            resource: self.resource_ref(),
+            namespaced: self.is_namespaced(),
+        }
+    }
+
+    fn singular_kind(self) -> &'static str {
+        match self {
+            Self::HorizontalPodAutoscaler => "HorizontalPodAutoscaler",
+            Self::PodDisruptionBudget => "PodDisruptionBudget",
+            Self::PriorityClass => "PriorityClass",
+            Self::RuntimeClass => "RuntimeClass",
+            Self::Lease => "Lease",
+            Self::MutatingWebhookConfiguration => "MutatingWebhookConfiguration",
+            Self::ValidatingWebhookConfiguration => "ValidatingWebhookConfiguration",
+        }
+    }
+
+    fn api_version(self) -> &'static str {
+        match self {
+            Self::HorizontalPodAutoscaler => "autoscaling/v2",
+            Self::PodDisruptionBudget => "policy/v1",
+            Self::PriorityClass => "scheduling.k8s.io/v1",
+            Self::RuntimeClass => "node.k8s.io/v1",
+            Self::Lease => "coordination.k8s.io/v1",
+            Self::MutatingWebhookConfiguration | Self::ValidatingWebhookConfiguration => {
+                "admissionregistration.k8s.io/v1"
+            }
+        }
+    }
+
+    fn resource_ref(self) -> ResourceRef {
+        match self {
+            Self::HorizontalPodAutoscaler => {
+                ResourceRef::grouped("autoscaling", "v2", "horizontalpodautoscalers")
+            }
+            Self::PodDisruptionBudget => {
+                ResourceRef::grouped("policy", "v1", "poddisruptionbudgets")
+            }
+            Self::PriorityClass => {
+                ResourceRef::grouped("scheduling.k8s.io", "v1", "priorityclasses").cluster_scoped()
+            }
+            Self::RuntimeClass => {
+                ResourceRef::grouped("node.k8s.io", "v1", "runtimeclasses").cluster_scoped()
+            }
+            Self::Lease => ResourceRef::grouped("coordination.k8s.io", "v1", "leases"),
+            Self::MutatingWebhookConfiguration => ResourceRef::grouped(
+                "admissionregistration.k8s.io",
+                "v1",
+                "mutatingwebhookconfigurations",
+            )
+            .cluster_scoped(),
+            Self::ValidatingWebhookConfiguration => ResourceRef::grouped(
+                "admissionregistration.k8s.io",
+                "v1",
+                "validatingwebhookconfigurations",
+            )
+            .cluster_scoped(),
+        }
     }
 
     fn columns(self) -> &'static [&'static str] {
@@ -585,16 +806,29 @@ impl ConfigResourceKind {
     }
 }
 
+impl ConfigRow {
+    fn target(&self) -> ResourceRowTarget {
+        ResourceRowTarget {
+            key: self.key.clone(),
+            namespace: namespace_value(&self.namespace),
+            name: self.name.clone(),
+        }
+    }
+}
+
 fn show_config_table(
     ui: &mut egui::Ui,
     kind: ConfigResourceKind,
     rows: &[ConfigRow],
     row_indices: Vec<usize>,
+    selected_rows: &mut BTreeSet<String>,
 ) -> Option<ConfigTableAction> {
     let row_height = ui.spacing().interact_size.y;
     let widths = kind.widths();
-    let table_width = widths.iter().sum::<f32>()
-        + ui.spacing().item_spacing.x * widths.len().saturating_sub(1) as f32;
+    let column_count = widths.len() + 1;
+    let table_width = SELECT_COLUMN_WIDTH
+        + widths.iter().sum::<f32>()
+        + ui.spacing().item_spacing.x * column_count.saturating_sub(1) as f32;
     let mut action = None;
     egui::ScrollArea::horizontal()
         .id_salt((kind.id(), "table_horizontal"))
@@ -608,11 +842,13 @@ fn show_config_table(
                 .sense(egui::Sense::click())
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .min_scrolled_height(0.0);
+            table = table.column(Column::exact(SELECT_COLUMN_WIDTH));
             for width in widths {
                 table = table.column(Column::exact(*width));
             }
             table
                 .header(row_height, |mut header| {
+                    header.col(|_| {});
                     for label in kind.columns() {
                         header.col(|ui| {
                             ui.strong(*label);
@@ -627,12 +863,24 @@ fn show_config_table(
                         else {
                             return;
                         };
+                        let row_selected = selected_rows.contains(&row.key);
+                        table_row.set_selected(row_selected);
+                        let mut checkbox_changed = false;
+                        table_row.col(|ui| {
+                            checkbox_changed =
+                                show_row_selection_checkbox(ui, selected_rows, &row.key);
+                        });
                         for cell in &row.cells {
                             table_row.col(|ui| {
                                 ui.label(cell);
                             });
                         }
-                        table_row.response().context_menu(|ui| {
+                        let response = table_row.response();
+                        if response.clicked() && !checkbox_changed {
+                            selected_rows.clear();
+                            selected_rows.insert(row.key.clone());
+                        }
+                        response.context_menu(|ui| {
                             if ui
                                 .button(format!("{} Describe", egui_phosphor::regular::INFO))
                                 .clicked()
@@ -661,6 +909,22 @@ fn show_config_table(
 fn row_matches_search(row: &ConfigRow, search_text: &str) -> bool {
     let needle = search_text.trim().to_lowercase();
     needle.is_empty() || row.search_text.contains(&needle)
+}
+
+fn config_key(namespace: &str, name: &str) -> String {
+    if namespace.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{namespace}/{name}")
+    }
+}
+
+fn namespace_value(namespace: &str) -> Option<String> {
+    if namespace.is_empty() || namespace == "N/A" {
+        None
+    } else {
+        Some(namespace.to_owned())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
