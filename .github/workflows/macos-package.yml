@@ -1,0 +1,64 @@
+name: macos-package
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos-package:
+    runs-on: macos-latest
+    env:
+      MACOS_TARGET: aarch64-apple-darwin
+      WASM_TARGET: wasm32-unknown-unknown
+      APP_NAME: Miku
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve app version
+        id: version
+        run: |
+          VERSION="$(awk -F' *= *' '/^version = / {gsub(/"/,"",$2); print $2; exit}' Cargo.toml)"
+          echo "app_version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,wasm32-unknown-unknown
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-bindgen CLI
+        run: |
+          WASM_BINDGEN_VERSION="$(awk -F' *= *' '/^wasm-bindgen = / {gsub(/"/,"",$2); print $2; exit}' Cargo.toml)"
+          cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION" --locked
+
+      - name: Build web assets
+        run: make build-web-assets
+
+      - name: Build macOS dmg
+        run: make package-macos-dmg
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          cp dist/macos/*.dmg release-assets/
+
+      - name: Upload dmg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Miku-dmg-${{ steps.version.outputs.app_version }}-${{ env.MACOS_TARGET }}
+          path: dist/macos/*.dmg
+
+      - name: Upload dmg to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: |
+            release-assets/*.dmg
+          fail_on_unmatched_files: true
