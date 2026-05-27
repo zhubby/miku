@@ -3,6 +3,8 @@ mod map_view;
 mod toolbar;
 mod yaml_dialog;
 
+#[cfg(test)]
+pub(super) use actions::parse_resource_apply_yaml;
 pub(super) use actions::{
     GenericBatchDeleteDialog, GenericCreateDialog, GenericDeleteDialog,
     ResourceBatchDeleteDialogInput, ResourceCreateDialogInput, ResourceCreateDialogResponse,

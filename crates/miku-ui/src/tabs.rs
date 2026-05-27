@@ -19,7 +19,7 @@ use crate::resource_panel::{
     NodeResourcePanel, PersistentVolumeClaimResourcePanel, PersistentVolumeResourcePanel,
     PodAttachInputRequest, PodAttachRequest, PodDisruptionBudgetResourcePanel, PodLogRequest,
     PodResourcePanel, PriorityClassResourcePanel, ReplicaSetResourcePanel, ResourceActionRequest,
-    ResourceLoadRequest, ResourceQuotaResourcePanel, ResourceWatchRequest,
+    ResourceLoadRequest, ResourcePanelRequests, ResourceQuotaResourcePanel, ResourceWatchRequest,
     RoleBindingResourcePanel, RoleResourcePanel, RuntimeClassResourcePanel, SecretResourcePanel,
     ServiceAccountResourcePanel, ServiceResourcePanel, StatefulSetResourcePanel,
     StorageClassResourcePanel, ValidatingWebhookConfigurationResourcePanel,
@@ -243,8 +243,7 @@ impl TabViewer for AppTabViewer<'_> {
                 if resource.name == "Cluster Role Bindings" {
                     if let Some(panel) = self.cluster_role_binding_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("ClusterRoleBinding resource panel is unavailable.");
@@ -253,8 +252,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Cluster Roles" {
                     if let Some(panel) = self.cluster_role_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("ClusterRole resource panel is unavailable.");
@@ -263,8 +261,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Config Maps" {
                     if let Some(panel) = self.config_map_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("ConfigMap resource panel is unavailable.");
@@ -273,8 +270,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Cron Jobs" {
                     if let Some(panel) = self.cron_job_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("CronJob resource panel is unavailable.");
@@ -283,8 +279,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Daemon Sets" {
                     if let Some(panel) = self.daemon_set_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("DaemonSet resource panel is unavailable.");
@@ -293,8 +288,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Deployments" {
                     if let Some(panel) = self.deployment_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Deployment resource panel is unavailable.");
@@ -303,8 +297,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Events" {
                     if let Some(panel) = self.event_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Event resource panel is unavailable.");
@@ -315,8 +308,7 @@ impl TabViewer for AppTabViewer<'_> {
                         self.horizontal_pod_autoscaler_resource_panel.as_deref_mut()
                     {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("HorizontalPodAutoscaler resource panel is unavailable.");
@@ -325,8 +317,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Endpoint Slices" {
                     if let Some(panel) = self.endpoint_slice_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("EndpointSlice resource panel is unavailable.");
@@ -335,8 +326,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Endpoints" {
                     if let Some(panel) = self.endpoints_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Endpoints resource panel is unavailable.");
@@ -345,8 +335,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Ingress Classes" {
                     if let Some(panel) = self.ingress_class_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("IngressClass resource panel is unavailable.");
@@ -355,8 +344,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Ingresses" {
                     if let Some(panel) = self.ingress_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Ingress resource panel is unavailable.");
@@ -365,8 +353,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Jobs" {
                     if let Some(panel) = self.job_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Job resource panel is unavailable.");
@@ -375,8 +362,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Leases" {
                     if let Some(panel) = self.lease_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Lease resource panel is unavailable.");
@@ -385,8 +371,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Limit Ranges" {
                     if let Some(panel) = self.limit_range_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("LimitRange resource panel is unavailable.");
@@ -395,8 +380,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Namespaces" {
                     if let Some(panel) = self.namespace_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Namespace resource panel is unavailable.");
@@ -408,8 +392,7 @@ impl TabViewer for AppTabViewer<'_> {
                         .as_deref_mut()
                     {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("MutatingWebhookConfiguration resource panel is unavailable.");
@@ -418,8 +401,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Nodes" {
                     if let Some(panel) = self.node_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Node resource panel is unavailable.");
@@ -429,8 +411,7 @@ impl TabViewer for AppTabViewer<'_> {
                     if let Some(panel) = self.persistent_volume_claim_resource_panel.as_deref_mut()
                     {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("PersistentVolumeClaim resource panel is unavailable.");
@@ -439,8 +420,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Persistent Volumes" {
                     if let Some(panel) = self.persistent_volume_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("PersistentVolume resource panel is unavailable.");
@@ -449,8 +429,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Pod Disruption Budgets" {
                     if let Some(panel) = self.pod_disruption_budget_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("PodDisruptionBudget resource panel is unavailable.");
@@ -459,13 +438,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Pods" {
                     if let Some(panel) = self.pod_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
-                        self.resource_action_requests.extend(requests.actions);
-                        self.pod_log_requests.extend(requests.logs);
-                        self.pod_attach_requests.extend(requests.attaches);
-                        self.pod_attach_input_requests
-                            .extend(requests.attach_inputs);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Pod resource panel is unavailable.");
@@ -474,8 +447,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Replica Sets" {
                     if let Some(panel) = self.replica_set_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("ReplicaSet resource panel is unavailable.");
@@ -484,8 +456,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Priority Classes" {
                     if let Some(panel) = self.priority_class_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("PriorityClass resource panel is unavailable.");
@@ -494,8 +465,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Resource Quotas" {
                     if let Some(panel) = self.resource_quota_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("ResourceQuota resource panel is unavailable.");
@@ -504,8 +474,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Role Bindings" {
                     if let Some(panel) = self.role_binding_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("RoleBinding resource panel is unavailable.");
@@ -514,8 +483,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Roles" {
                     if let Some(panel) = self.role_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Role resource panel is unavailable.");
@@ -524,8 +492,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Runtime Classes" {
                     if let Some(panel) = self.runtime_class_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("RuntimeClass resource panel is unavailable.");
@@ -534,8 +501,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Secrets" {
                     if let Some(panel) = self.secret_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Secret resource panel is unavailable.");
@@ -544,8 +510,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Service Accounts" {
                     if let Some(panel) = self.service_account_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("ServiceAccount resource panel is unavailable.");
@@ -554,8 +519,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Services" {
                     if let Some(panel) = self.service_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Service resource panel is unavailable.");
@@ -564,8 +528,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Storage Classes" {
                     if let Some(panel) = self.storage_class_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("StorageClass resource panel is unavailable.");
@@ -574,8 +537,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Network Policies" {
                     if let Some(panel) = self.network_policy_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("NetworkPolicy resource panel is unavailable.");
@@ -584,8 +546,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Stateful Sets" {
                     if let Some(panel) = self.stateful_set_resource_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("StatefulSet resource panel is unavailable.");
@@ -597,8 +558,7 @@ impl TabViewer for AppTabViewer<'_> {
                         .as_deref_mut()
                     {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
-                        self.resource_watch_requests.extend(requests.watches);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label(
@@ -609,7 +569,7 @@ impl TabViewer for AppTabViewer<'_> {
                 } else if resource.name == "Custom Resources" {
                     if let Some(panel) = self.custom_resources_panel.as_deref_mut() {
                         let requests = panel.show(ui, self.selected_cluster_id.as_ref());
-                        self.resource_load_requests.extend(requests.loads);
+                        self.extend_resource_panel_requests(requests);
                     } else {
                         ui.centered_and_justified(|ui| {
                             ui.label("Custom resources panel is unavailable.");
@@ -1487,6 +1447,16 @@ fn show_centered_loading_row(ui: &mut egui::Ui, rect: egui::Rect, text: &str) {
 }
 
 impl AppTabViewer<'_> {
+    fn extend_resource_panel_requests(&mut self, requests: ResourcePanelRequests) {
+        self.resource_load_requests.extend(requests.loads);
+        self.resource_watch_requests.extend(requests.watches);
+        self.resource_action_requests.extend(requests.actions);
+        self.pod_log_requests.extend(requests.logs);
+        self.pod_attach_requests.extend(requests.attaches);
+        self.pod_attach_input_requests
+            .extend(requests.attach_inputs);
+    }
+
     fn show_cluster_card(&mut self, ui: &mut egui::Ui, cluster: &ClusterSummary) {
         let selected = self.state.selected_cluster_id() == Some(&cluster.id);
         let connection_state = self
@@ -1802,6 +1772,95 @@ mod tests {
             panel.state,
             ClusterStatusPanelState::Loading { request_id } if request_id == current.request_id
         ));
+    }
+
+    #[test]
+    fn resource_panel_requests_collect_non_pod_actions() {
+        let cluster_id = miku_core::ClusterId::new("local");
+        let mut viewer = test_tab_viewer(cluster_id.clone());
+        let request = ResourceActionRequest {
+            request_id: 7,
+            cluster_id,
+            kind: crate::resource_panel::ResourceActionKind::ApplyResource {
+                resource: miku_core::ResourceRef::grouped("batch", "v1", "cronjobs"),
+                namespace: Some("default".to_owned()),
+                name: "example-cron-job".to_owned(),
+                manifest: serde_json::json!({"kind": "CronJob"}),
+            },
+        };
+
+        viewer.extend_resource_panel_requests(crate::resource_panel::ResourcePanelRequests {
+            actions: vec![request.clone()],
+            ..Default::default()
+        });
+
+        assert_eq!(viewer.resource_action_requests, vec![request]);
+    }
+
+    fn test_tab_viewer(cluster_id: miku_core::ClusterId) -> AppTabViewer<'static> {
+        AppTabViewer {
+            state: Box::leak(Box::new(AppState::new(crate::state::RuntimeMode::Native))),
+            clusters: &[],
+            cluster_connection_states: Box::leak(Box::new(HashMap::new())),
+            cluster_load_in_flight: false,
+            cluster_load_error: None,
+            closeable: false,
+            allow_windows: false,
+            add_tab: None,
+            add_requested: false,
+            new_cluster_requested: false,
+            selected_cluster: None,
+            active_resource: None,
+            selected_resource: None,
+            selected_cluster_id: Some(cluster_id),
+            cluster_status_panel: None,
+            cluster_role_binding_resource_panel: None,
+            cluster_role_resource_panel: None,
+            config_map_resource_panel: None,
+            cron_job_resource_panel: None,
+            daemon_set_resource_panel: None,
+            deployment_resource_panel: None,
+            endpoint_slice_resource_panel: None,
+            endpoints_resource_panel: None,
+            event_resource_panel: None,
+            horizontal_pod_autoscaler_resource_panel: None,
+            ingress_class_resource_panel: None,
+            ingress_resource_panel: None,
+            job_resource_panel: None,
+            lease_resource_panel: None,
+            limit_range_resource_panel: None,
+            mutating_webhook_configuration_resource_panel: None,
+            namespace_resource_panel: None,
+            network_policy_resource_panel: None,
+            node_resource_panel: None,
+            persistent_volume_claim_resource_panel: None,
+            persistent_volume_resource_panel: None,
+            pod_disruption_budget_resource_panel: None,
+            pod_resource_panel: None,
+            priority_class_resource_panel: None,
+            replica_set_resource_panel: None,
+            resource_quota_resource_panel: None,
+            role_binding_resource_panel: None,
+            role_resource_panel: None,
+            runtime_class_resource_panel: None,
+            secret_resource_panel: None,
+            service_account_resource_panel: None,
+            service_resource_panel: None,
+            storage_class_resource_panel: None,
+            stateful_set_resource_panel: None,
+            validating_webhook_configuration_resource_panel: None,
+            custom_resources_panel: None,
+            agent_panels: None,
+            agent_turn_requests: Vec::new(),
+            agent_conversation_requests: Vec::new(),
+            status_load_requests: Vec::new(),
+            resource_load_requests: Vec::new(),
+            resource_watch_requests: Vec::new(),
+            resource_action_requests: Vec::new(),
+            pod_log_requests: Vec::new(),
+            pod_attach_requests: Vec::new(),
+            pod_attach_input_requests: Vec::new(),
+        }
     }
 
     fn status_report() -> ClusterStatusReport {

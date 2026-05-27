@@ -7,14 +7,15 @@ use miku_core::{ClusterId, ResourceRef};
 
 #[cfg(test)]
 use super::ResourceLoadRequest;
+#[cfg(test)]
+use super::components::parse_resource_apply_yaml;
 use super::components::{
     GenericBatchDeleteDialog, GenericCreateDialog, ResourceBatchDeleteDialogInput,
     ResourceCreateDialogInput, ResourceCreateDialogResponse, ResourceDeleteDialogResponse,
     ResourceMapEntry, ResourceMapView, ResourceMetadata, ResourceRowTarget, ResourceToolbar,
     ResourceYamlViewDialog, SELECT_COLUMN_WIDTH, apply_resource_request,
-    batch_delete_resource_request, default_resource_yaml, selected_delete_targets,
-    show_resource_batch_delete_dialog, show_resource_create_dialog, show_row_selection_checkbox,
-    visible_keys,
+    batch_delete_resource_request, selected_delete_targets, show_resource_batch_delete_dialog,
+    show_resource_create_dialog, show_row_selection_checkbox, visible_keys,
 };
 use super::{
     LoadStatus, ResourceActionKind, ResourceActionOutcome, ResourceLoadKind, ResourcePanelRequests,
@@ -318,7 +319,7 @@ impl CronJobResourcePanel {
         }
         if response.create_clicked {
             self.create_dialog = Some(GenericCreateDialog {
-                yaml: default_resource_yaml(cron_job_metadata(), self.namespace_filter.as_deref()),
+                yaml: default_cron_job_yaml(self.namespace_filter.as_deref()),
                 parse_error: None,
             });
             self.action_error = None;
@@ -770,6 +771,35 @@ fn cron_job_metadata() -> ResourceMetadata {
         resource: ResourceRef::grouped("batch", "v1", "cronjobs"),
         namespaced: true,
     }
+}
+
+fn default_cron_job_yaml(namespace: Option<&str>) -> String {
+    let namespace = namespace.unwrap_or("default");
+    format!(
+        r#"apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: example-cron-job
+  namespace: {namespace}
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: app
+              image: busybox:latest
+              command:
+                - /bin/sh
+                - -c
+                - date
+"#
+    )
 }
 
 fn cron_job_rows_from_list(items: &[ResourceSummary]) -> Vec<CronJobRow> {
@@ -1262,6 +1292,30 @@ mod tests {
         assert_eq!(query.resource.plural, "cronjobs");
         assert_eq!(query.resource.group.as_deref(), Some("batch"));
         assert_eq!(query.namespace.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn default_cron_job_yaml_is_applyable() {
+        let parsed = parse_resource_apply_yaml(
+            &default_cron_job_yaml(Some("production")),
+            cron_job_metadata().namespaced,
+            Some("default"),
+        )
+        .unwrap();
+
+        assert_eq!(parsed.namespace.as_deref(), Some("production"));
+        assert_eq!(parsed.name, "example-cron-job");
+        assert_eq!(parsed.manifest["apiVersion"], "batch/v1");
+        assert_eq!(parsed.manifest["kind"], "CronJob");
+        assert_eq!(parsed.manifest["spec"]["schedule"], "*/5 * * * *");
+        assert_eq!(
+            parsed.manifest["spec"]["jobTemplate"]["spec"]["template"]["spec"]["restartPolicy"],
+            "OnFailure"
+        );
+        assert_eq!(
+            parsed.manifest["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]["image"],
+            "busybox:latest"
+        );
     }
 
     #[test]
