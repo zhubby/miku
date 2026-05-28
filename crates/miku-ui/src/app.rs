@@ -391,11 +391,13 @@ impl eframe::App for MikuApp {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            egui::Panel::top("menu_bar").show_inside(ui, |ui| {
-                egui::MenuBar::new().ui(ui, |ui| {
-                    self.show_menu_bar(ui);
+            egui::Panel::top("menu_bar")
+                .exact_size(24.0)
+                .show_inside(ui, |ui| {
+                    egui::MenuBar::new().ui(ui, |ui| {
+                        self.show_menu_bar(ui);
+                    });
                 });
-            });
         }
 
         egui::Panel::bottom("status_bar")
