@@ -1,11 +1,14 @@
 use eframe::egui;
 
-use crate::app::MikuApp;
+use crate::app::{MikuApp, about_git_commit_sha};
 
 const NEW_CLUSTER_DIALOG_WIDTH: f32 = 420.0;
 const CONFIG_TEXT_HEIGHT: f32 = 180.0;
 const SETTINGS_PANEL_WIDTH: f32 = 520.0;
 const SETTINGS_PANEL_HEIGHT: f32 = 360.0;
+const ABOUT_DIALOG_WIDTH: f32 = 360.0;
+const ABOUT_ICON_MAX_SIDE: f32 = 160.0;
+const ABOUT_APP_ICON_PNG: &[u8] = include_bytes!("../assets/icons/macOS-Default-1024x1024@1x.png");
 
 impl MikuApp {
     #[cfg(target_arch = "wasm32")]
@@ -107,6 +110,70 @@ impl MikuApp {
                 }
             }
         }
+    }
+
+    pub(crate) fn show_about_dialog(&mut self, ctx: &egui::Context) {
+        if !self.about_open {
+            return;
+        }
+
+        let mut open = self.about_open;
+        let mut close_clicked = false;
+        egui::Window::new("About Miku")
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(ABOUT_DIALOG_WIDTH);
+                ui.vertical_centered(|ui| {
+                    ui.add_space(10.0);
+                    ui.label(egui::RichText::new("Miku").strong().size(22.0));
+                    ui.add_space(18.0);
+
+                    if let Some(texture) = self.about_icon_texture(ctx) {
+                        let source_size = texture.size_vec2();
+                        let scale =
+                            (ABOUT_ICON_MAX_SIDE / source_size.x.max(source_size.y)).min(1.0);
+                        let display_size = source_size * scale;
+                        ui.add(egui::Image::from_texture(texture).fit_to_exact_size(display_size));
+                        ui.add_space(12.0);
+                    }
+
+                    ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                    ui.monospace(format!("Git commit {}", about_git_commit_sha()));
+                    ui.add_space(4.0);
+                    ui.hyperlink_to(env!("CARGO_PKG_REPOSITORY"), env!("CARGO_PKG_REPOSITORY"));
+                    ui.add_space(12.0);
+
+                    if ui.button("Close").clicked() {
+                        close_clicked = true;
+                    }
+                });
+            });
+
+        self.about_open = open && !close_clicked;
+    }
+
+    fn about_icon_texture(&mut self, ctx: &egui::Context) -> Option<&egui::TextureHandle> {
+        if self.about_icon.is_none() && !self.about_icon_load_failed {
+            match eframe::icon_data::from_png_bytes(ABOUT_APP_ICON_PNG) {
+                Ok(icon) => {
+                    let image = egui::ColorImage::from_rgba_unmultiplied(
+                        [icon.width as usize, icon.height as usize],
+                        &icon.rgba,
+                    );
+                    self.about_icon =
+                        Some(ctx.load_texture("about-dialog-app-icon", image, Default::default()));
+                }
+                Err(error) => {
+                    self.about_icon_load_failed = true;
+                    tracing::warn!(%error, "failed to decode About dialog icon");
+                }
+            }
+        }
+
+        self.about_icon.as_ref()
     }
 
     #[cfg(not(target_arch = "wasm32"))]

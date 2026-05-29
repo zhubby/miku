@@ -37,6 +37,16 @@ impl MikuApp {
             .on_hover_text("Show or hide the agent sidebar");
         });
 
+        ui.menu_button("Help", |ui| {
+            if ui
+                .button(format!("{} About Miku", egui_phosphor::regular::INFO))
+                .clicked()
+            {
+                self.about_open = true;
+                ui.close();
+            }
+        });
+
         ui.add_space(8.0);
 
         let control_button_width = 3.0 * ui.spacing().interact_size.x

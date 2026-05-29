@@ -75,9 +75,13 @@ pub struct MikuApp {
     pub(crate) cluster_event_receiver: resource_mpsc::Receiver<ClusterUiEvent>,
     pub(crate) settings_open: bool,
     pub(crate) settings_panel: SettingsPanel,
+    pub(crate) about_open: bool,
+    pub(crate) about_icon: Option<egui::TextureHandle>,
+    pub(crate) about_icon_load_failed: bool,
     pub(crate) settings_event_sender: resource_mpsc::Sender<SettingsUiEvent>,
     pub(crate) settings_event_receiver: resource_mpsc::Receiver<SettingsUiEvent>,
     pub(crate) toasts: Toasts,
+    pub(crate) pending_theme_preference: Option<egui::ThemePreference>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) file_dialog: egui_file_dialog::FileDialog,
 }
@@ -343,9 +347,13 @@ impl MikuApp {
             cluster_event_receiver,
             settings_open: false,
             settings_panel: SettingsPanel::default(),
+            about_open: false,
+            about_icon: None,
+            about_icon_load_failed: false,
             settings_event_sender,
             settings_event_receiver,
             toasts: Toasts::new().with_anchor(Anchor::BottomRight),
+            pending_theme_preference: None,
             #[cfg(not(target_arch = "wasm32"))]
             file_dialog: egui_file_dialog::FileDialog::new(),
         }
@@ -379,10 +387,15 @@ impl MikuApp {
 }
 
 impl eframe::App for MikuApp {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.apply_pending_theme_preference(ctx);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         #[cfg(debug_assertions)]
         ui.ctx()
             .global_style_mut(|style| style.debug.warn_if_rect_changes_id = false);
+        ui.set_style(ui.ctx().global_style());
 
         if ui.ctx().current_pass_index() == 0 {
             self.process_cluster_events();
@@ -408,7 +421,7 @@ impl eframe::App for MikuApp {
             .exact_size(24.0)
             .show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
-                    egui_theme_switch::global_theme_switch(ui);
+                    self.show_theme_switch(ui);
                     ui.separator();
                     self.show_status_bar_connection(ui);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -772,11 +785,19 @@ impl eframe::App for MikuApp {
 
         self.show_new_cluster_dialog(ui.ctx());
         self.show_settings_panel(ui.ctx());
+        self.show_about_dialog(ui.ctx());
         self.toasts.show(ui.ctx());
     }
 }
 
 impl MikuApp {
+    fn apply_pending_theme_preference(&mut self, ctx: &egui::Context) {
+        let Some(preference) = self.pending_theme_preference.take() else {
+            return;
+        };
+        ctx.set_theme(preference);
+    }
+
     fn select_cluster(&mut self, cluster: ClusterSummary) {
         self.state
             .select_cluster(cluster.id.clone(), cluster.name.clone());
@@ -819,6 +840,19 @@ impl MikuApp {
 
     fn selected_cluster_id(&self) -> Option<miku_core::ClusterId> {
         self.state.selected_cluster_id().cloned()
+    }
+
+    fn show_theme_switch(&mut self, ui: &mut egui::Ui) {
+        let mut preference = self
+            .pending_theme_preference
+            .unwrap_or_else(|| ui.ctx().options(|opt| opt.theme_preference));
+        if ui
+            .add(egui_theme_switch::ThemeSwitch::new(&mut preference))
+            .changed()
+        {
+            self.pending_theme_preference = Some(preference);
+            ui.ctx().request_repaint();
+        }
     }
 
     fn show_status_bar_connection(&self, ui: &mut egui::Ui) {
@@ -2219,6 +2253,10 @@ fn compile_time_git_status() -> Result<GitStatusInfo, String> {
         branch: branch.to_owned(),
         dirty,
     })
+}
+
+pub(crate) fn about_git_commit_sha() -> &'static str {
+    option_env!("VERGEN_GIT_SHA").unwrap_or("unknown")
 }
 
 fn status_bar_local_summary(status: &LocalStatusInfo) -> StatusBarLocalSummary {
