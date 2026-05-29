@@ -1,6 +1,12 @@
+<div align="center">
+
 # Miku
 
+<img src="crates/miku-ui/assets/icons/macOS-Default-1024x1024@1x.png" alt="Miku app icon" width="160" height="160">
+
 Miku is an early-stage Rust Kubernetes management application inspired by Lens. It is designed as a multi-crate workspace with one service contract shared by:
+
+</div>
 
 - a native egui desktop app (`miku` / `miku gui`)
 - a BS mode with a Rust server plus wasm egui UI (`miku server`)
