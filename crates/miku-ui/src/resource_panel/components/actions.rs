@@ -401,7 +401,7 @@ roleRef:
             },
             role_name = if metadata.namespaced { &name } else { "view" }
         ),
-        "CustomResourceDefinition" => format!(
+        "CustomResourceDefinition" => String::from(
             r#"apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -870,7 +870,7 @@ mod tests {
             title: format!("{kind}s"),
             api_version: api_version.to_owned(),
             kind: kind.to_owned(),
-            resource: ResourceRef::core(api_version, &format!("{}s", kind.to_lowercase())),
+            resource: ResourceRef::core(api_version, format!("{}s", kind.to_lowercase())),
             namespaced,
         }
     }
