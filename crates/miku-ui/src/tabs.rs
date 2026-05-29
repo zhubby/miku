@@ -27,7 +27,7 @@ use crate::resource_panel::{
 use crate::resources::{RESOURCE_CATEGORIES, ResourceNavItem};
 use crate::state::{AppState, ClusterConnectionState};
 
-const AGENT_COMPOSER_OUTER_HEIGHT: f32 = 148.0;
+const AGENT_COMPOSER_OUTER_HEIGHT: f32 = 86.0;
 const AGENT_MESSAGE_FRAME_VERTICAL_INSET: f32 = 16.0;
 const AGENT_SECTION_SPACING: f32 = 8.0;
 
@@ -1206,12 +1206,11 @@ fn show_agent_composer(
             ui.visuals().widgets.noninteractive.bg_stroke.color,
         ))
         .corner_radius(egui::CornerRadius::same(6))
-        .inner_margin(egui::Margin::symmetric(8, 8))
+        .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| {
-            ui.set_min_height(128.0);
             let input_response = ui.add(
                 egui::TextEdit::multiline(input)
-                    .desired_rows(5)
+                    .desired_rows(2)
                     .desired_width(ui.available_width())
                     .return_key(egui::KeyboardShortcut::new(
                         egui::Modifiers::SHIFT,
@@ -1221,7 +1220,7 @@ fn show_agent_composer(
             );
             let enter_pressed = input_response.has_focus()
                 && ui.input(|input| input.key_pressed(egui::Key::Enter) && !input.modifiers.shift);
-            ui.add_space(4.0);
+            ui.add_space(2.0);
             ui.horizontal(|ui| {
                 show_agent_context_bar(ui, selected_cluster_name, active_resource);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

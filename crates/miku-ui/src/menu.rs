@@ -5,19 +5,36 @@ use crate::app::MikuApp;
 impl MikuApp {
     pub(crate) fn show_menu_bar(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("File", |ui| {
-            if ui.button("Settings").clicked() {
+            if ui
+                .button(format!("{} Settings", egui_phosphor::regular::GEAR))
+                .clicked()
+            {
                 self.settings_open = true;
                 ui.close();
             }
 
-            if ui.button("Quit").clicked() {
+            ui.separator();
+
+            if ui
+                .button(format!("{} Quit", egui_phosphor::regular::SIGN_OUT))
+                .clicked()
+            {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
         });
 
         ui.menu_button("View", |ui| {
-            ui.label("Workspace");
-            ui.label("Logs");
+            ui.checkbox(
+                &mut self.left_sidebar_visible,
+                format!("{} Left Sidebar", egui_phosphor::regular::SIDEBAR),
+            )
+            .on_hover_text("Show or hide the cluster and resource sidebar");
+            ui.separator();
+            ui.checkbox(
+                &mut self.right_sidebar_visible,
+                format!("{} Right Sidebar", egui_phosphor::regular::SIDEBAR_SIMPLE),
+            )
+            .on_hover_text("Show or hide the agent sidebar");
         });
 
         ui.add_space(8.0);

@@ -51,6 +51,8 @@ pub struct MikuApp {
     pub(crate) new_cluster_form: NewClusterForm,
     pub(crate) left_dock_state: DockState<AppTab>,
     pub(crate) right_dock_state: DockState<AppTab>,
+    pub(crate) left_sidebar_visible: bool,
+    pub(crate) right_sidebar_visible: bool,
     pub(crate) workspaces: HashMap<miku_core::ClusterId, ClusterWorkspace>,
     pub(crate) agent_panels: HashMap<usize, AgentPanel>,
     pub(crate) next_agent_id: usize,
@@ -318,6 +320,8 @@ impl MikuApp {
             new_cluster_form: NewClusterForm::default(),
             left_dock_state,
             right_dock_state,
+            left_sidebar_visible: true,
+            right_sidebar_visible: true,
             workspaces: HashMap::new(),
             agent_panels: HashMap::from([(1, AgentPanel::default())]),
             next_agent_id: 2,
@@ -419,206 +423,210 @@ impl eframe::App for MikuApp {
             .tab_bar
             .show_scroll_bar_on_overflow = false;
 
-        egui::Panel::left("left_sidebar")
-            .resizable(true)
-            .default_size(220.0)
-            .size_range(160.0..=360.0)
-            .frame(egui::Frame::NONE)
-            .show_inside(ui, |ui| {
-                let mut tab_viewer = AppTabViewer {
-                    state: &self.state,
-                    clusters: &self.clusters,
-                    cluster_connection_states: &self.cluster_connection_states,
-                    cluster_load_in_flight: self.cluster_load_in_flight,
-                    cluster_load_error: self.cluster_load_error.as_deref(),
-                    closeable: false,
-                    allow_windows: false,
-                    add_tab: None,
-                    add_requested: false,
-                    new_cluster_requested: false,
-                    selected_cluster: None,
-                    active_resource: self.selected_workspace_resource(),
-                    selected_resource: None,
-                    selected_cluster_id: self.selected_cluster_id(),
-                    cluster_status_panel: None,
-                    cluster_role_binding_resource_panel: None,
-                    cluster_role_resource_panel: None,
-                    config_map_resource_panel: None,
-                    cron_job_resource_panel: None,
-                    daemon_set_resource_panel: None,
-                    deployment_resource_panel: None,
-                    endpoint_slice_resource_panel: None,
-                    endpoints_resource_panel: None,
-                    event_resource_panel: None,
-                    horizontal_pod_autoscaler_resource_panel: None,
-                    ingress_class_resource_panel: None,
-                    ingress_resource_panel: None,
-                    job_resource_panel: None,
-                    lease_resource_panel: None,
-                    limit_range_resource_panel: None,
-                    mutating_webhook_configuration_resource_panel: None,
-                    namespace_resource_panel: None,
-                    network_policy_resource_panel: None,
-                    node_resource_panel: None,
-                    persistent_volume_claim_resource_panel: None,
-                    persistent_volume_resource_panel: None,
-                    pod_disruption_budget_resource_panel: None,
-                    pod_resource_panel: None,
-                    priority_class_resource_panel: None,
-                    replica_set_resource_panel: None,
-                    resource_quota_resource_panel: None,
-                    role_binding_resource_panel: None,
-                    role_resource_panel: None,
-                    runtime_class_resource_panel: None,
-                    secret_resource_panel: None,
-                    service_account_resource_panel: None,
-                    service_resource_panel: None,
-                    storage_class_resource_panel: None,
-                    stateful_set_resource_panel: None,
-                    validating_webhook_configuration_resource_panel: None,
-                    custom_resources_panel: None,
-                    agent_panels: None,
-                    agent_turn_requests: Vec::new(),
-                    agent_conversation_requests: Vec::new(),
-                    status_load_requests: Vec::new(),
-                    resource_load_requests: Vec::new(),
-                    resource_watch_requests: Vec::new(),
-                    resource_action_requests: Vec::new(),
-                    pod_log_requests: Vec::new(),
-                    pod_attach_requests: Vec::new(),
-                    pod_attach_input_requests: Vec::new(),
-                };
+        if self.left_sidebar_visible {
+            egui::Panel::left("left_sidebar")
+                .resizable(true)
+                .default_size(220.0)
+                .size_range(160.0..=360.0)
+                .frame(egui::Frame::NONE)
+                .show_inside(ui, |ui| {
+                    let mut tab_viewer = AppTabViewer {
+                        state: &self.state,
+                        clusters: &self.clusters,
+                        cluster_connection_states: &self.cluster_connection_states,
+                        cluster_load_in_flight: self.cluster_load_in_flight,
+                        cluster_load_error: self.cluster_load_error.as_deref(),
+                        closeable: false,
+                        allow_windows: false,
+                        add_tab: None,
+                        add_requested: false,
+                        new_cluster_requested: false,
+                        selected_cluster: None,
+                        active_resource: self.selected_workspace_resource(),
+                        selected_resource: None,
+                        selected_cluster_id: self.selected_cluster_id(),
+                        cluster_status_panel: None,
+                        cluster_role_binding_resource_panel: None,
+                        cluster_role_resource_panel: None,
+                        config_map_resource_panel: None,
+                        cron_job_resource_panel: None,
+                        daemon_set_resource_panel: None,
+                        deployment_resource_panel: None,
+                        endpoint_slice_resource_panel: None,
+                        endpoints_resource_panel: None,
+                        event_resource_panel: None,
+                        horizontal_pod_autoscaler_resource_panel: None,
+                        ingress_class_resource_panel: None,
+                        ingress_resource_panel: None,
+                        job_resource_panel: None,
+                        lease_resource_panel: None,
+                        limit_range_resource_panel: None,
+                        mutating_webhook_configuration_resource_panel: None,
+                        namespace_resource_panel: None,
+                        network_policy_resource_panel: None,
+                        node_resource_panel: None,
+                        persistent_volume_claim_resource_panel: None,
+                        persistent_volume_resource_panel: None,
+                        pod_disruption_budget_resource_panel: None,
+                        pod_resource_panel: None,
+                        priority_class_resource_panel: None,
+                        replica_set_resource_panel: None,
+                        resource_quota_resource_panel: None,
+                        role_binding_resource_panel: None,
+                        role_resource_panel: None,
+                        runtime_class_resource_panel: None,
+                        secret_resource_panel: None,
+                        service_account_resource_panel: None,
+                        service_resource_panel: None,
+                        storage_class_resource_panel: None,
+                        stateful_set_resource_panel: None,
+                        validating_webhook_configuration_resource_panel: None,
+                        custom_resources_panel: None,
+                        agent_panels: None,
+                        agent_turn_requests: Vec::new(),
+                        agent_conversation_requests: Vec::new(),
+                        status_load_requests: Vec::new(),
+                        resource_load_requests: Vec::new(),
+                        resource_watch_requests: Vec::new(),
+                        resource_action_requests: Vec::new(),
+                        pod_log_requests: Vec::new(),
+                        pod_attach_requests: Vec::new(),
+                        pod_attach_input_requests: Vec::new(),
+                    };
 
-                show_dock_region(ui, |ui| {
-                    DockArea::new(&mut self.left_dock_state)
-                        .id(egui::Id::new("left_sidebar_dock"))
-                        .style(dock_style.clone())
-                        .draggable_tabs(false)
-                        .show_close_buttons(false)
-                        .show_leaf_close_all_buttons(false)
-                        .show_leaf_collapse_buttons(false)
-                        .show_inside(ui, &mut tab_viewer);
+                    show_dock_region(ui, |ui| {
+                        DockArea::new(&mut self.left_dock_state)
+                            .id(egui::Id::new("left_sidebar_dock"))
+                            .style(dock_style.clone())
+                            .draggable_tabs(false)
+                            .show_close_buttons(false)
+                            .show_leaf_close_all_buttons(false)
+                            .show_leaf_collapse_buttons(false)
+                            .show_inside(ui, &mut tab_viewer);
+                    });
+
+                    if tab_viewer.new_cluster_requested {
+                        self.new_cluster_form.open();
+                    }
+                    let selected_cluster = tab_viewer.selected_cluster;
+                    let selected_resource = tab_viewer.selected_resource;
+
+                    if let Some(cluster) = selected_cluster {
+                        self.select_cluster(cluster);
+                    }
+                    if let Some(resource) = selected_resource {
+                        self.open_resource_tab(resource);
+                    }
                 });
+        }
 
-                if tab_viewer.new_cluster_requested {
-                    self.new_cluster_form.open();
-                }
-                let selected_cluster = tab_viewer.selected_cluster;
-                let selected_resource = tab_viewer.selected_resource;
+        if self.right_sidebar_visible {
+            egui::Panel::right("right_sidebar")
+                .resizable(true)
+                .default_size(340.0)
+                .size_range(300.0..=520.0)
+                .frame(egui::Frame::NONE)
+                .show_inside(ui, |ui| {
+                    let active_resource = self.selected_workspace_resource();
+                    let selected_cluster_id = self.selected_cluster_id();
+                    let mut tab_viewer = AppTabViewer {
+                        state: &self.state,
+                        clusters: &self.clusters,
+                        cluster_connection_states: &self.cluster_connection_states,
+                        cluster_load_in_flight: self.cluster_load_in_flight,
+                        cluster_load_error: self.cluster_load_error.as_deref(),
+                        closeable: true,
+                        allow_windows: false,
+                        add_tab: Some(AppTab::Agent(self.next_agent_id)),
+                        add_requested: false,
+                        new_cluster_requested: false,
+                        selected_cluster: None,
+                        active_resource,
+                        selected_resource: None,
+                        selected_cluster_id,
+                        cluster_status_panel: None,
+                        cluster_role_binding_resource_panel: None,
+                        cluster_role_resource_panel: None,
+                        config_map_resource_panel: None,
+                        cron_job_resource_panel: None,
+                        daemon_set_resource_panel: None,
+                        deployment_resource_panel: None,
+                        endpoint_slice_resource_panel: None,
+                        endpoints_resource_panel: None,
+                        event_resource_panel: None,
+                        horizontal_pod_autoscaler_resource_panel: None,
+                        ingress_class_resource_panel: None,
+                        ingress_resource_panel: None,
+                        job_resource_panel: None,
+                        lease_resource_panel: None,
+                        limit_range_resource_panel: None,
+                        mutating_webhook_configuration_resource_panel: None,
+                        namespace_resource_panel: None,
+                        network_policy_resource_panel: None,
+                        node_resource_panel: None,
+                        persistent_volume_claim_resource_panel: None,
+                        persistent_volume_resource_panel: None,
+                        pod_disruption_budget_resource_panel: None,
+                        pod_resource_panel: None,
+                        priority_class_resource_panel: None,
+                        replica_set_resource_panel: None,
+                        resource_quota_resource_panel: None,
+                        role_binding_resource_panel: None,
+                        role_resource_panel: None,
+                        runtime_class_resource_panel: None,
+                        secret_resource_panel: None,
+                        service_account_resource_panel: None,
+                        service_resource_panel: None,
+                        storage_class_resource_panel: None,
+                        stateful_set_resource_panel: None,
+                        validating_webhook_configuration_resource_panel: None,
+                        custom_resources_panel: None,
+                        agent_panels: Some(&mut self.agent_panels),
+                        agent_turn_requests: Vec::new(),
+                        agent_conversation_requests: Vec::new(),
+                        status_load_requests: Vec::new(),
+                        resource_load_requests: Vec::new(),
+                        resource_watch_requests: Vec::new(),
+                        resource_action_requests: Vec::new(),
+                        pod_log_requests: Vec::new(),
+                        pod_attach_requests: Vec::new(),
+                        pod_attach_input_requests: Vec::new(),
+                    };
 
-                if let Some(cluster) = selected_cluster {
-                    self.select_cluster(cluster);
-                }
-                if let Some(resource) = selected_resource {
-                    self.open_resource_tab(resource);
-                }
-            });
+                    show_dock_region(ui, |ui| {
+                        DockArea::new(&mut self.right_dock_state)
+                            .id(egui::Id::new("right_sidebar_dock"))
+                            .style(dock_style_without_tab_scroll_bar.clone())
+                            .draggable_tabs(false)
+                            .show_add_buttons(true)
+                            .show_close_buttons(true)
+                            .show_leaf_close_all_buttons(false)
+                            .show_leaf_collapse_buttons(false)
+                            .show_inside(ui, &mut tab_viewer);
+                    });
 
-        egui::Panel::right("right_sidebar")
-            .resizable(true)
-            .default_size(340.0)
-            .size_range(300.0..=520.0)
-            .frame(egui::Frame::NONE)
-            .show_inside(ui, |ui| {
-                let active_resource = self.selected_workspace_resource();
-                let selected_cluster_id = self.selected_cluster_id();
-                let mut tab_viewer = AppTabViewer {
-                    state: &self.state,
-                    clusters: &self.clusters,
-                    cluster_connection_states: &self.cluster_connection_states,
-                    cluster_load_in_flight: self.cluster_load_in_flight,
-                    cluster_load_error: self.cluster_load_error.as_deref(),
-                    closeable: true,
-                    allow_windows: false,
-                    add_tab: Some(AppTab::Agent(self.next_agent_id)),
-                    add_requested: false,
-                    new_cluster_requested: false,
-                    selected_cluster: None,
-                    active_resource,
-                    selected_resource: None,
-                    selected_cluster_id,
-                    cluster_status_panel: None,
-                    cluster_role_binding_resource_panel: None,
-                    cluster_role_resource_panel: None,
-                    config_map_resource_panel: None,
-                    cron_job_resource_panel: None,
-                    daemon_set_resource_panel: None,
-                    deployment_resource_panel: None,
-                    endpoint_slice_resource_panel: None,
-                    endpoints_resource_panel: None,
-                    event_resource_panel: None,
-                    horizontal_pod_autoscaler_resource_panel: None,
-                    ingress_class_resource_panel: None,
-                    ingress_resource_panel: None,
-                    job_resource_panel: None,
-                    lease_resource_panel: None,
-                    limit_range_resource_panel: None,
-                    mutating_webhook_configuration_resource_panel: None,
-                    namespace_resource_panel: None,
-                    network_policy_resource_panel: None,
-                    node_resource_panel: None,
-                    persistent_volume_claim_resource_panel: None,
-                    persistent_volume_resource_panel: None,
-                    pod_disruption_budget_resource_panel: None,
-                    pod_resource_panel: None,
-                    priority_class_resource_panel: None,
-                    replica_set_resource_panel: None,
-                    resource_quota_resource_panel: None,
-                    role_binding_resource_panel: None,
-                    role_resource_panel: None,
-                    runtime_class_resource_panel: None,
-                    secret_resource_panel: None,
-                    service_account_resource_panel: None,
-                    service_resource_panel: None,
-                    storage_class_resource_panel: None,
-                    stateful_set_resource_panel: None,
-                    validating_webhook_configuration_resource_panel: None,
-                    custom_resources_panel: None,
-                    agent_panels: Some(&mut self.agent_panels),
-                    agent_turn_requests: Vec::new(),
-                    agent_conversation_requests: Vec::new(),
-                    status_load_requests: Vec::new(),
-                    resource_load_requests: Vec::new(),
-                    resource_watch_requests: Vec::new(),
-                    resource_action_requests: Vec::new(),
-                    pod_log_requests: Vec::new(),
-                    pod_attach_requests: Vec::new(),
-                    pod_attach_input_requests: Vec::new(),
-                };
+                    let add_requested = tab_viewer.add_requested;
+                    let agent_turn_requests = std::mem::take(&mut tab_viewer.agent_turn_requests);
+                    let agent_conversation_requests =
+                        std::mem::take(&mut tab_viewer.agent_conversation_requests);
+                    drop(tab_viewer);
 
-                show_dock_region(ui, |ui| {
-                    DockArea::new(&mut self.right_dock_state)
-                        .id(egui::Id::new("right_sidebar_dock"))
-                        .style(dock_style_without_tab_scroll_bar.clone())
-                        .draggable_tabs(false)
-                        .show_add_buttons(true)
-                        .show_close_buttons(true)
-                        .show_leaf_close_all_buttons(false)
-                        .show_leaf_collapse_buttons(false)
-                        .show_inside(ui, &mut tab_viewer);
+                    if add_requested {
+                        self.right_dock_state
+                            .push_to_focused_leaf(AppTab::Agent(self.next_agent_id));
+                        self.agent_panels
+                            .insert(self.next_agent_id, AgentPanel::default());
+                        self.request_initial_agent_conversation_load(self.next_agent_id);
+                        self.next_agent_id += 1;
+                    }
+                    for request in agent_conversation_requests {
+                        self.request_agent_conversation_action(request);
+                    }
+                    for request in agent_turn_requests {
+                        self.request_agent_turn(request);
+                    }
                 });
-
-                let add_requested = tab_viewer.add_requested;
-                let agent_turn_requests = std::mem::take(&mut tab_viewer.agent_turn_requests);
-                let agent_conversation_requests =
-                    std::mem::take(&mut tab_viewer.agent_conversation_requests);
-                drop(tab_viewer);
-
-                if add_requested {
-                    self.right_dock_state
-                        .push_to_focused_leaf(AppTab::Agent(self.next_agent_id));
-                    self.agent_panels
-                        .insert(self.next_agent_id, AgentPanel::default());
-                    self.request_initial_agent_conversation_load(self.next_agent_id);
-                    self.next_agent_id += 1;
-                }
-                for request in agent_conversation_requests {
-                    self.request_agent_conversation_action(request);
-                }
-                for request in agent_turn_requests {
-                    self.request_agent_turn(request);
-                }
-            });
+        }
 
         egui::CentralPanel::no_frame().show_inside(ui, |ui| {
             let Some(selected_cluster_id) = self.selected_cluster_id() else {
