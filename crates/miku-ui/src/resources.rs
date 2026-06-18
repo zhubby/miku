@@ -95,9 +95,6 @@ pub(crate) const RESOURCE_CATEGORIES: &[ResourceNavCategory] = &[
             ResourceNavItem {
                 name: "Network Policies",
             },
-            ResourceNavItem {
-                name: "Port Forwarding",
-            },
         ],
     },
     ResourceNavCategory {
@@ -176,6 +173,11 @@ mod tests {
     #[test]
     fn workloads_catalog_does_not_include_overview() {
         assert_category_does_not_contain("Workloads", "Overview");
+    }
+
+    #[test]
+    fn network_catalog_does_not_include_port_forwarding() {
+        assert_category_does_not_contain("Network", "Port Forwarding");
     }
 
     fn assert_category_contains(category_name: &str, item_name: &str) {
