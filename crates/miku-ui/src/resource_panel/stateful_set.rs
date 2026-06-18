@@ -8,14 +8,16 @@ use miku_core::{ClusterId, ResourceRef};
 #[cfg(test)]
 use super::ResourceLoadRequest;
 use super::components::{
-    GenericBatchDeleteDialog, GenericCreateDialog, GenericDeleteDialog,
+    GenericBatchDeleteDialog, GenericCreateDialog, GenericDeleteDialog, GenericEditDialog,
     ResourceBatchDeleteDialogInput, ResourceCreateDialogInput, ResourceCreateDialogResponse,
-    ResourceDeleteDialogInput, ResourceDeleteDialogResponse, ResourceMapEntry, ResourceMapView,
-    ResourceMetadata, ResourceRowTarget, ResourceToolbar, ResourceYamlViewDialog,
-    SELECT_COLUMN_WIDTH, apply_resource_request, batch_delete_resource_request,
-    default_resource_yaml, delete_resource_request, patch_resource_request,
+    ResourceDeleteDialogInput, ResourceDeleteDialogResponse, ResourceEditDialogInput,
+    ResourceEditDialogResponse, ResourceMapEntry, ResourceMapView, ResourceMetadata,
+    ResourceRowTarget, ResourceToolbar, ResourceYamlViewDialog, SELECT_COLUMN_WIDTH,
+    apply_resource_request, batch_delete_resource_request, default_resource_yaml,
+    delete_resource_request, edit_resource_request, editable_resource_yaml, patch_resource_request,
     selected_delete_targets, show_resource_batch_delete_dialog, show_resource_create_dialog,
-    show_resource_delete_dialog, show_row_selection_checkbox, visible_keys,
+    show_resource_delete_dialog, show_resource_edit_dialog, show_row_selection_checkbox,
+    visible_keys,
 };
 use super::{
     LoadStatus, ResourceActionKind, ResourceActionOutcome, ResourceLoadKind, ResourcePanelRequests,
@@ -40,6 +42,7 @@ pub(crate) struct StatefulSetResourcePanel {
     last_cluster_id: Option<ClusterId>,
     describe_dialog: Option<StatefulSetDescribeDialog>,
     view_dialog: Option<StatefulSetViewDialog>,
+    edit_dialog: Option<GenericEditDialog>,
     create_dialog: Option<GenericCreateDialog>,
     batch_delete_dialog: Option<GenericBatchDeleteDialog>,
     delete_dialog: Option<GenericDeleteDialog>,
@@ -79,6 +82,7 @@ impl StatefulSetResourcePanel {
         self.show_body(ui, cluster_id, &mut requests.actions);
         self.show_describe_dialog(ui.ctx());
         self.show_view_dialog(ui.ctx());
+        self.show_edit_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_create_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_batch_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
@@ -220,8 +224,10 @@ impl StatefulSetResourcePanel {
                 }
                 self.action_request_id = None;
                 match result {
-                    Ok(ResourceActionOutcome::Applied(_)) => {
+                    Ok(ResourceActionOutcome::Applied(summary)) => {
+                        self.upsert_row(StatefulSetRow::from_summary(&summary));
                         self.create_dialog = None;
+                        self.edit_dialog = None;
                         self.action_error = None;
                     }
                     Ok(ResourceActionOutcome::Patched(summary)) => {
@@ -285,6 +291,7 @@ impl StatefulSetResourcePanel {
         self.row_watch_request_id = None;
         self.describe_dialog = None;
         self.view_dialog = None;
+        self.edit_dialog = None;
         self.create_dialog = None;
         self.batch_delete_dialog = None;
         self.delete_dialog = None;
@@ -412,6 +419,20 @@ impl StatefulSetResourcePanel {
                 };
                 self.view_dialog = Some(StatefulSetViewDialog { key, name, yaml });
             }
+            Some(StatefulSetTableAction::Edit { key }) => {
+                let Some((target, yaml)) = self
+                    .row_by_key(&key)
+                    .map(|row| (row.target(), editable_resource_yaml(&row.raw)))
+                else {
+                    return;
+                };
+                self.edit_dialog = Some(GenericEditDialog {
+                    target,
+                    yaml,
+                    parse_error: None,
+                });
+                self.action_error = None;
+            }
             Some(StatefulSetTableAction::Delete { key }) => {
                 let Some(row) = self.row_by_key(&key) else {
                     return;
@@ -538,6 +559,50 @@ impl StatefulSetResourcePanel {
                     cluster_id.clone(),
                     stateful_set_metadata(),
                     parsed,
+                );
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+        }
+    }
+
+    fn show_edit_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<super::ResourceActionRequest>,
+    ) {
+        let Some(target) = self
+            .edit_dialog
+            .as_ref()
+            .map(|dialog| dialog.target.clone())
+        else {
+            return;
+        };
+        let Some(dialog) = self.edit_dialog.as_mut() else {
+            return;
+        };
+        match show_resource_edit_dialog(
+            ctx,
+            ResourceEditDialogInput {
+                metadata: stateful_set_metadata(),
+                dialog,
+                action_error: self.action_error.as_deref(),
+                action_in_flight: self.action_request_id.is_some(),
+            },
+        ) {
+            ResourceEditDialogResponse::None => {}
+            ResourceEditDialogResponse::Cancel => {
+                self.edit_dialog = None;
+                self.action_error = None;
+            }
+            ResourceEditDialogResponse::Apply(manifest) => {
+                let request = edit_resource_request(
+                    self.allocate_request_id(),
+                    cluster_id.clone(),
+                    stateful_set_metadata(),
+                    target,
+                    manifest,
                 );
                 self.action_request_id = Some(request.request_id);
                 requests.push(request);
@@ -909,6 +974,15 @@ fn show_stateful_set_table(
                                 ui.close();
                             }
                             if ui
+                                .button(format!("{} Edit", egui_phosphor::regular::PENCIL_SIMPLE))
+                                .clicked()
+                            {
+                                action = Some(StatefulSetTableAction::Edit {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
+                            if ui
                                 .button(format!("{} Scale", egui_phosphor::regular::ARROWS_OUT))
                                 .clicked()
                             {
@@ -1096,6 +1170,7 @@ impl StatefulSetRow {
 enum StatefulSetTableAction {
     Describe { key: String },
     View { key: String },
+    Edit { key: String },
     Delete { key: String },
     Scale { key: String },
     Restart { key: String },
@@ -1832,6 +1907,110 @@ mod tests {
 
         assert_eq!(panel.rows.len(), 1);
         assert_eq!(panel.rows[0].replicas, "3/5");
+    }
+
+    #[test]
+    fn edit_action_opens_edit_dialog_with_editable_yaml() {
+        let mut panel = StatefulSetResourcePanel::default();
+        let row = StatefulSetRow::from_summary(&stateful_set_summary());
+        let key = row.key.clone();
+        panel.rows = vec![row];
+        let mut actions = Vec::new();
+
+        panel.apply_table_action(
+            Some(StatefulSetTableAction::Edit { key }),
+            &ClusterId::new("local"),
+            &mut actions,
+        );
+
+        assert!(actions.is_empty());
+        let dialog = panel.edit_dialog.as_ref().unwrap();
+        assert_eq!(dialog.target.namespace.as_deref(), Some("default"));
+        assert_eq!(dialog.target.name, "api");
+        let manifest = serde_yaml::from_str::<serde_json::Value>(&dialog.yaml).unwrap();
+        assert!(manifest.pointer("/metadata/creationTimestamp").is_none());
+        assert!(manifest.pointer("/status").is_none());
+    }
+
+    #[test]
+    fn apply_completion_closes_edit_dialog_and_updates_existing_row() {
+        let mut panel = StatefulSetResourcePanel::default();
+        let row = StatefulSetRow::from_summary(&stateful_set_summary());
+        panel.rows = vec![row.clone()];
+        panel.edit_dialog = Some(GenericEditDialog {
+            target: row.target(),
+            yaml: "kind: StatefulSet".to_owned(),
+            parse_error: None,
+        });
+        panel.action_request_id = Some(7);
+
+        panel.apply_event(ResourceUiEvent::ResourceActionCompleted {
+            request: super::super::ResourceActionRequest {
+                request_id: 7,
+                cluster_id: ClusterId::new("local"),
+                kind: ResourceActionKind::ApplyResource {
+                    resource: stateful_set_metadata().resource,
+                    namespace: Some("default".to_owned()),
+                    name: "api".to_owned(),
+                    manifest: serde_json::json!({}),
+                },
+            },
+            result: Ok(ResourceActionOutcome::Applied(
+                stateful_set_summary_with_replicas(5),
+            )),
+        });
+
+        assert!(panel.edit_dialog.is_none());
+        assert_eq!(panel.action_error, None);
+        assert_eq!(panel.rows.len(), 1);
+        assert_eq!(panel.rows[0].replicas, "3/5");
+    }
+
+    #[test]
+    fn apply_error_keeps_edit_dialog() {
+        let mut panel = StatefulSetResourcePanel::default();
+        let row = StatefulSetRow::from_summary(&stateful_set_summary());
+        panel.edit_dialog = Some(GenericEditDialog {
+            target: row.target(),
+            yaml: "kind: StatefulSet".to_owned(),
+            parse_error: None,
+        });
+        panel.action_request_id = Some(7);
+
+        panel.apply_event(ResourceUiEvent::ResourceActionCompleted {
+            request: super::super::ResourceActionRequest {
+                request_id: 7,
+                cluster_id: ClusterId::new("local"),
+                kind: ResourceActionKind::ApplyResource {
+                    resource: stateful_set_metadata().resource,
+                    namespace: Some("default".to_owned()),
+                    name: "api".to_owned(),
+                    manifest: serde_json::json!({}),
+                },
+            },
+            result: Err("field is immutable".to_owned()),
+        });
+
+        assert!(panel.edit_dialog.is_some());
+        assert_eq!(panel.action_error.as_deref(), Some("field is immutable"));
+    }
+
+    #[test]
+    fn cluster_change_clears_edit_dialog() {
+        let mut panel = StatefulSetResourcePanel::default();
+        let row = StatefulSetRow::from_summary(&stateful_set_summary());
+        panel.last_cluster_id = Some(ClusterId::new("old"));
+        panel.edit_dialog = Some(GenericEditDialog {
+            target: row.target(),
+            yaml: "kind: StatefulSet".to_owned(),
+            parse_error: None,
+        });
+        panel.action_request_id = Some(7);
+
+        panel.reset_for_cluster_change(&ClusterId::new("new"));
+
+        assert!(panel.edit_dialog.is_none());
+        assert_eq!(panel.action_request_id, None);
     }
 
     fn stateful_set_summary() -> ResourceSummary {

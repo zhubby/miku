@@ -6,13 +6,15 @@ mod yaml_dialog;
 #[cfg(test)]
 pub(super) use actions::parse_resource_apply_yaml;
 pub(super) use actions::{
-    GenericBatchDeleteDialog, GenericCreateDialog, GenericDeleteDialog,
+    GenericBatchDeleteDialog, GenericCreateDialog, GenericDeleteDialog, GenericEditDialog,
     ResourceBatchDeleteDialogInput, ResourceCreateDialogInput, ResourceCreateDialogResponse,
-    ResourceDeleteDialogInput, ResourceDeleteDialogResponse, ResourceMetadata, ResourceRowTarget,
-    SELECT_COLUMN_WIDTH, apply_resource_request, batch_delete_resource_request,
-    default_resource_yaml, delete_resource_request, patch_resource_request,
+    ResourceDeleteDialogInput, ResourceDeleteDialogResponse, ResourceEditDialogInput,
+    ResourceEditDialogResponse, ResourceMetadata, ResourceRowTarget, SELECT_COLUMN_WIDTH,
+    apply_resource_request, batch_delete_resource_request, default_resource_yaml,
+    delete_resource_request, edit_resource_request, editable_resource_yaml, patch_resource_request,
     selected_delete_targets, show_resource_batch_delete_dialog, show_resource_create_dialog,
-    show_resource_delete_dialog, show_row_selection_checkbox, visible_keys,
+    show_resource_delete_dialog, show_resource_edit_dialog, show_row_selection_checkbox,
+    visible_keys,
 };
 pub(super) use map_view::{ResourceMapEntry, ResourceMapView};
 pub(super) use toolbar::ResourceToolbar;

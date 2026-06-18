@@ -35,6 +35,13 @@ pub(in crate::resource_panel) struct GenericDeleteDialog {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub(in crate::resource_panel) struct GenericEditDialog {
+    pub(in crate::resource_panel) target: ResourceRowTarget,
+    pub(in crate::resource_panel) yaml: String,
+    pub(in crate::resource_panel) parse_error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub(in crate::resource_panel) struct ResourceRowTarget {
     pub(in crate::resource_panel) key: String,
     pub(in crate::resource_panel) namespace: Option<String>,
@@ -420,7 +427,7 @@ spec:
       schema:
         openAPIV3Schema:
           type: object
-"#
+"#,
         ),
         _ => return None,
     };
@@ -553,6 +560,57 @@ pub(in crate::resource_panel) fn show_resource_create_dialog(
             ResourceCreateDialogResponse::None
         }
     }
+}
+
+pub(in crate::resource_panel) struct ResourceEditDialogInput<'a> {
+    pub(in crate::resource_panel) metadata: ResourceMetadata,
+    pub(in crate::resource_panel) dialog: &'a mut GenericEditDialog,
+    pub(in crate::resource_panel) action_error: Option<&'a str>,
+    pub(in crate::resource_panel) action_in_flight: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(in crate::resource_panel) enum ResourceEditDialogResponse {
+    None,
+    Cancel,
+    Apply(serde_json::Value),
+}
+
+pub(in crate::resource_panel) fn show_resource_edit_dialog(
+    ctx: &egui::Context,
+    input: ResourceEditDialogInput<'_>,
+) -> ResourceEditDialogResponse {
+    let response = ResourceYamlEditDialog {
+        id: egui::Id::new((&input.metadata.id, "edit-dialog", &input.dialog.target.key)),
+        title: format!("Edit {}", input.dialog.target.name),
+        yaml: &mut input.dialog.yaml,
+        error: input.action_error.or(input.dialog.parse_error.as_deref()),
+        save_enabled: !input.action_in_flight,
+        save_label: "Save",
+    }
+    .show(ctx);
+
+    if response.cancel_clicked {
+        return ResourceEditDialogResponse::Cancel;
+    }
+    if !response.save_clicked {
+        return ResourceEditDialogResponse::None;
+    }
+
+    match parse_resource_edit_yaml(&input.dialog.yaml) {
+        Ok(manifest) => {
+            input.dialog.parse_error = None;
+            ResourceEditDialogResponse::Apply(manifest)
+        }
+        Err(error) => {
+            input.dialog.parse_error = Some(error.to_string());
+            ResourceEditDialogResponse::None
+        }
+    }
+}
+
+fn parse_resource_edit_yaml(yaml: &str) -> Result<serde_json::Value, String> {
+    serde_yaml::from_str::<serde_json::Value>(yaml).map_err(|error| error.to_string())
 }
 
 pub(in crate::resource_panel) struct ResourceBatchDeleteDialogInput<'a> {
@@ -712,6 +770,25 @@ pub(in crate::resource_panel) fn apply_resource_request(
     }
 }
 
+pub(in crate::resource_panel) fn edit_resource_request(
+    request_id: u64,
+    cluster_id: miku_core::ClusterId,
+    metadata: ResourceMetadata,
+    target: ResourceRowTarget,
+    manifest: serde_json::Value,
+) -> ResourceActionRequest {
+    ResourceActionRequest {
+        request_id,
+        cluster_id,
+        kind: ResourceActionKind::ApplyResource {
+            resource: metadata.resource,
+            namespace: target.namespace,
+            name: target.name,
+            manifest,
+        },
+    }
+}
+
 pub(in crate::resource_panel) fn patch_resource_request(
     request_id: u64,
     cluster_id: miku_core::ClusterId,
@@ -745,6 +822,35 @@ pub(in crate::resource_panel) fn batch_delete_resource_request(
             targets,
         },
     }
+}
+
+pub(in crate::resource_panel) fn editable_resource_yaml(raw: &serde_json::Value) -> String {
+    serde_yaml::to_string(&editable_resource_manifest(raw))
+        .or_else(|_| serde_json::to_string_pretty(raw))
+        .unwrap_or_default()
+}
+
+fn editable_resource_manifest(raw: &serde_json::Value) -> serde_json::Value {
+    let mut manifest = raw.clone();
+    if let Some(metadata) = manifest
+        .get_mut("metadata")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for key in [
+            "creationTimestamp",
+            "generation",
+            "managedFields",
+            "resourceVersion",
+            "selfLink",
+            "uid",
+        ] {
+            metadata.remove(key);
+        }
+    }
+    if let Some(object) = manifest.as_object_mut() {
+        object.remove("status");
+    }
+    manifest
 }
 
 fn resource_target_label(target: &ResourceDeleteTarget) -> String {
@@ -952,5 +1058,80 @@ mod tests {
             }
             other => panic!("missing required field assertions for {other}"),
         }
+    }
+
+    #[test]
+    fn editable_resource_yaml_strips_server_managed_fields() {
+        let yaml = editable_resource_yaml(&serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {
+                "name": "api",
+                "namespace": "default",
+                "creationTimestamp": "2026-05-25T10:00:00Z",
+                "generation": 3,
+                "managedFields": [],
+                "resourceVersion": "42",
+                "selfLink": "/legacy",
+                "uid": "abc",
+                "labels": {"app": "api"}
+            },
+            "spec": {"replicas": 2},
+            "status": {"availableReplicas": 1}
+        }));
+        let manifest = serde_yaml::from_str::<serde_json::Value>(&yaml).unwrap();
+
+        assert_eq!(
+            manifest
+                .pointer("/metadata/name")
+                .and_then(serde_json::Value::as_str),
+            Some("api")
+        );
+        assert!(manifest.pointer("/metadata/labels/app").is_some());
+        assert!(manifest.pointer("/metadata/creationTimestamp").is_none());
+        assert!(manifest.pointer("/metadata/generation").is_none());
+        assert!(manifest.pointer("/metadata/managedFields").is_none());
+        assert!(manifest.pointer("/metadata/resourceVersion").is_none());
+        assert!(manifest.pointer("/metadata/selfLink").is_none());
+        assert!(manifest.pointer("/metadata/uid").is_none());
+        assert!(manifest.pointer("/status").is_none());
+    }
+
+    #[test]
+    fn edit_resource_request_uses_original_target() {
+        let request = edit_resource_request(
+            7,
+            miku_core::ClusterId::new("local"),
+            metadata("deployment", "apps/v1", "Deployment", true),
+            ResourceRowTarget {
+                key: "default/api".to_owned(),
+                namespace: Some("default".to_owned()),
+                name: "api".to_owned(),
+            },
+            serde_json::json!({
+                "metadata": {
+                    "name": "renamed",
+                    "namespace": "other"
+                }
+            }),
+        );
+
+        let apply = request.apply_request().unwrap();
+        assert_eq!(apply.namespace.as_deref(), Some("default"));
+        assert_eq!(apply.name, "api");
+        assert_eq!(
+            apply
+                .manifest
+                .pointer("/metadata/name")
+                .and_then(serde_json::Value::as_str),
+            Some("renamed")
+        );
+    }
+
+    #[test]
+    fn invalid_edit_yaml_returns_parse_error() {
+        let error = parse_resource_edit_yaml("metadata: [").unwrap_err();
+
+        assert!(!error.is_empty());
     }
 }
