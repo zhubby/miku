@@ -9,12 +9,15 @@ use miku_core::{ClusterId, ResourceRef};
 use super::ResourceLoadRequest;
 use super::components::ResourceYamlViewDialog;
 use super::components::{
-    GenericBatchDeleteDialog, GenericCreateDialog, ResourceBatchDeleteDialogInput,
-    ResourceCreateDialogInput, ResourceCreateDialogResponse, ResourceDeleteDialogResponse,
-    ResourceMetadata, ResourceRowTarget, ResourceToolbar, SELECT_COLUMN_WIDTH,
-    apply_resource_request, batch_delete_resource_request, default_resource_yaml,
+    GenericBatchDeleteDialog, GenericCreateDialog, GenericDeleteDialog, GenericEditDialog,
+    ResourceBatchDeleteDialogInput, ResourceCreateDialogInput, ResourceCreateDialogResponse,
+    ResourceDeleteDialogInput, ResourceDeleteDialogResponse, ResourceEditDialogInput,
+    ResourceEditDialogResponse, ResourceMetadata, ResourceRowTarget, ResourceToolbar,
+    SELECT_COLUMN_WIDTH, apply_resource_request, batch_delete_resource_request,
+    default_resource_yaml, delete_resource_request, edit_resource_request, editable_resource_yaml,
     selected_delete_targets, show_resource_batch_delete_dialog, show_resource_create_dialog,
-    show_row_selection_checkbox, visible_keys,
+    show_resource_delete_dialog, show_resource_edit_dialog, show_row_selection_checkbox,
+    visible_keys,
 };
 use super::{
     LoadStatus, ResourceActionKind, ResourceActionOutcome, ResourceLoadKind, ResourcePanelRequests,
@@ -50,8 +53,10 @@ pub(crate) struct NetworkResourcePanel {
     last_cluster_id: Option<ClusterId>,
     describe_dialog: Option<NetworkDescribeDialog>,
     view_dialog: Option<NetworkViewDialog>,
+    edit_dialog: Option<GenericEditDialog>,
     create_dialog: Option<GenericCreateDialog>,
     batch_delete_dialog: Option<GenericBatchDeleteDialog>,
+    delete_dialog: Option<GenericDeleteDialog>,
     action_request_id: Option<u64>,
     action_error: Option<String>,
 }
@@ -75,8 +80,10 @@ impl NetworkResourcePanel {
             last_cluster_id: None,
             describe_dialog: None,
             view_dialog: None,
+            edit_dialog: None,
             create_dialog: None,
             batch_delete_dialog: None,
+            delete_dialog: None,
             action_request_id: None,
             action_error: None,
         }
@@ -112,8 +119,10 @@ impl NetworkResourcePanel {
         self.show_body(ui);
         self.show_describe_dialog(ui.ctx());
         self.show_view_dialog(ui.ctx());
+        self.show_edit_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_create_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_batch_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
+        self.show_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         requests
     }
 
@@ -139,8 +148,10 @@ impl NetworkResourcePanel {
                 }
                 self.action_request_id = None;
                 match result {
-                    Ok(ResourceActionOutcome::Applied(_)) => {
+                    Ok(ResourceActionOutcome::Applied(summary)) => {
+                        self.upsert_row(row_from_summary(self.kind, &summary));
                         self.create_dialog = None;
+                        self.edit_dialog = None;
                         self.action_error = None;
                     }
                     Ok(ResourceActionOutcome::Deleted) => {
@@ -155,6 +166,7 @@ impl NetworkResourcePanel {
                             self.rows.retain(|row| row.key != key);
                             self.selected_rows.remove(&key);
                         }
+                        self.delete_dialog = None;
                         self.action_error = None;
                     }
                     Ok(ResourceActionOutcome::BatchDeleted(targets)) => {
@@ -265,8 +277,10 @@ impl NetworkResourcePanel {
         self.row_watch_request_id = None;
         self.describe_dialog = None;
         self.view_dialog = None;
+        self.edit_dialog = None;
         self.create_dialog = None;
         self.batch_delete_dialog = None;
+        self.delete_dialog = None;
         self.action_request_id = None;
         self.action_error = None;
     }
@@ -386,6 +400,29 @@ impl NetworkResourcePanel {
                 };
                 self.view_dialog = Some(NetworkViewDialog { key, name, yaml });
             }
+            Some(NetworkTableAction::Edit { key }) => {
+                let Some((target, yaml)) = self
+                    .row_by_key(&key)
+                    .map(|row| (row.target(), editable_resource_yaml(&row.raw)))
+                else {
+                    return;
+                };
+                self.edit_dialog = Some(GenericEditDialog {
+                    target,
+                    yaml,
+                    parse_error: None,
+                });
+                self.action_error = None;
+            }
+            Some(NetworkTableAction::Delete { key }) => {
+                let Some(row) = self.row_by_key(&key) else {
+                    return;
+                };
+                self.delete_dialog = Some(GenericDeleteDialog {
+                    target: row.delete_target(),
+                });
+                self.action_error = None;
+            }
             None => {}
         }
     }
@@ -470,6 +507,50 @@ impl NetworkResourcePanel {
         }
     }
 
+    fn show_edit_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<super::ResourceActionRequest>,
+    ) {
+        let Some(target) = self
+            .edit_dialog
+            .as_ref()
+            .map(|dialog| dialog.target.clone())
+        else {
+            return;
+        };
+        let Some(dialog) = self.edit_dialog.as_mut() else {
+            return;
+        };
+        match show_resource_edit_dialog(
+            ctx,
+            ResourceEditDialogInput {
+                metadata: self.kind.metadata(),
+                dialog,
+                action_error: self.action_error.as_deref(),
+                action_in_flight: self.action_request_id.is_some(),
+            },
+        ) {
+            ResourceEditDialogResponse::None => {}
+            ResourceEditDialogResponse::Cancel => {
+                self.edit_dialog = None;
+                self.action_error = None;
+            }
+            ResourceEditDialogResponse::Apply(manifest) => {
+                let request = edit_resource_request(
+                    self.allocate_request_id(),
+                    cluster_id.clone(),
+                    self.kind.metadata(),
+                    target,
+                    manifest,
+                );
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+        }
+    }
+
     fn show_batch_delete_dialog(
         &mut self,
         ctx: &egui::Context,
@@ -499,6 +580,42 @@ impl NetworkResourcePanel {
                     cluster_id.clone(),
                     self.kind.metadata(),
                     dialog.targets,
+                );
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+        }
+    }
+
+    fn show_delete_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<super::ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.delete_dialog.clone() else {
+            return;
+        };
+        match show_resource_delete_dialog(
+            ctx,
+            ResourceDeleteDialogInput {
+                metadata: self.kind.metadata(),
+                target: &dialog.target,
+                action_error: self.action_error.as_deref(),
+                action_in_flight: self.action_request_id.is_some(),
+            },
+        ) {
+            ResourceDeleteDialogResponse::None => {}
+            ResourceDeleteDialogResponse::Cancel => {
+                self.delete_dialog = None;
+                self.action_error = None;
+            }
+            ResourceDeleteDialogResponse::Delete => {
+                let request = delete_resource_request(
+                    self.allocate_request_id(),
+                    cluster_id.clone(),
+                    self.kind.metadata(),
+                    dialog.target,
                 );
                 self.action_request_id = Some(request.request_id);
                 requests.push(request);
@@ -569,6 +686,27 @@ impl NetworkResourcePanel {
         let visible_keys = visible_keys(&targets);
         self.selected_rows.retain(|key| visible_keys.contains(key));
         self.rows = rows;
+    }
+
+    fn upsert_row(&mut self, row: NetworkRow) {
+        if let Some(existing) = self
+            .rows
+            .iter_mut()
+            .find(|existing| existing.key == row.key)
+        {
+            *existing = row;
+        } else {
+            self.rows.push(row);
+        }
+        if self.kind.is_namespaced() {
+            self.rows.sort_by(|left, right| {
+                left.namespace
+                    .cmp(&right.namespace)
+                    .then(left.name.cmp(&right.name))
+            });
+        } else {
+            self.rows.sort_by(|left, right| left.name.cmp(&right.name));
+        }
     }
 
     fn prune_selection_to_visible(&mut self) {
@@ -851,6 +989,26 @@ fn show_network_table(
                                 });
                                 ui.close();
                             }
+                            if ui
+                                .button(format!("{} Edit", egui_phosphor::regular::PENCIL_SIMPLE))
+                                .clicked()
+                            {
+                                action = Some(NetworkTableAction::Edit {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
+                            let delete_text = egui::RichText::new(format!(
+                                "{} Delete",
+                                egui_phosphor::regular::TRASH
+                            ))
+                            .color(ui.visuals().error_fg_color);
+                            if ui.button(delete_text).clicked() {
+                                action = Some(NetworkTableAction::Delete {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
                         });
                     });
                 });
@@ -898,12 +1056,21 @@ impl NetworkRow {
             name: self.name.clone(),
         }
     }
+
+    fn delete_target(&self) -> super::ResourceDeleteTarget {
+        super::ResourceDeleteTarget {
+            namespace: namespace_value(&self.namespace),
+            name: self.name.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum NetworkTableAction {
     Describe { key: String },
     View { key: String },
+    Edit { key: String },
+    Delete { key: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1496,6 +1663,212 @@ mod tests {
         assert_eq!(panel.namespaces, vec!["production".to_owned()]);
     }
 
+    #[test]
+    fn edit_action_opens_edit_dialog_with_editable_yaml() {
+        let mut panel = NetworkResourcePanel::new(NetworkResourceKind::Service);
+        let row = row_from_summary(
+            NetworkResourceKind::Service,
+            &with_server_fields(service_summary()),
+        );
+        let key = row.key.clone();
+        panel.rows = vec![row];
+
+        panel.apply_table_action(Some(NetworkTableAction::Edit { key }));
+
+        let dialog = panel.edit_dialog.as_ref().unwrap();
+        assert_eq!(dialog.target.namespace.as_deref(), Some("default"));
+        assert_eq!(dialog.target.name, "api");
+        let manifest = serde_yaml::from_str::<serde_json::Value>(&dialog.yaml).unwrap();
+        assert!(manifest.pointer("/metadata/creationTimestamp").is_none());
+        assert!(manifest.pointer("/metadata/resourceVersion").is_none());
+        assert!(manifest.pointer("/metadata/managedFields").is_none());
+        assert!(manifest.pointer("/status").is_none());
+    }
+
+    #[test]
+    fn delete_action_opens_delete_dialog_for_namespaced_and_cluster_resources() {
+        let mut namespaced_panel = NetworkResourcePanel::new(NetworkResourceKind::Service);
+        let namespaced_row = row_from_summary(NetworkResourceKind::Service, &service_summary());
+        let namespaced_key = namespaced_row.key.clone();
+        namespaced_panel.rows = vec![namespaced_row];
+
+        namespaced_panel.apply_table_action(Some(NetworkTableAction::Delete {
+            key: namespaced_key,
+        }));
+
+        let dialog = namespaced_panel.delete_dialog.as_ref().unwrap();
+        assert_eq!(dialog.target.namespace.as_deref(), Some("default"));
+        assert_eq!(dialog.target.name, "api");
+
+        let mut cluster_panel = NetworkResourcePanel::new(NetworkResourceKind::IngressClass);
+        let cluster_row =
+            row_from_summary(NetworkResourceKind::IngressClass, &ingress_class_summary());
+        let cluster_key = cluster_row.key.clone();
+        cluster_panel.rows = vec![cluster_row];
+
+        cluster_panel.apply_table_action(Some(NetworkTableAction::Delete { key: cluster_key }));
+
+        let dialog = cluster_panel.delete_dialog.as_ref().unwrap();
+        assert_eq!(dialog.target.namespace, None);
+        assert_eq!(dialog.target.name, "nginx");
+    }
+
+    #[test]
+    fn apply_completion_closes_edit_dialog_and_upserts_sorted_row() {
+        let mut panel = NetworkResourcePanel::new(NetworkResourceKind::Service);
+        let row = row_from_summary(NetworkResourceKind::Service, &service_summary());
+        panel.rows = NetworkResourceKind::Service.rows_from_list(&[
+            service_summary_with_name("zeta", "worker"),
+            service_summary_with_name("default", "api-b"),
+        ]);
+        panel.edit_dialog = Some(GenericEditDialog {
+            target: row.target(),
+            yaml: "kind: Service".to_owned(),
+            parse_error: None,
+        });
+        panel.action_request_id = Some(7);
+        panel.action_error = Some("old error".to_owned());
+
+        panel.apply_event(ResourceUiEvent::ResourceActionCompleted {
+            request: super::super::ResourceActionRequest {
+                request_id: 7,
+                cluster_id: ClusterId::new("local"),
+                kind: ResourceActionKind::ApplyResource {
+                    resource: NetworkResourceKind::Service.metadata().resource,
+                    namespace: Some("default".to_owned()),
+                    name: "api-a".to_owned(),
+                    manifest: serde_json::json!({}),
+                },
+            },
+            result: Ok(ResourceActionOutcome::Applied(service_summary_with_name(
+                "default", "api-a",
+            ))),
+        });
+
+        assert!(panel.edit_dialog.is_none());
+        assert_eq!(panel.action_error, None);
+        let keys = panel
+            .rows
+            .iter()
+            .map(|row| row.key.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(keys, vec!["default/api-a", "default/api-b", "zeta/worker"]);
+    }
+
+    #[test]
+    fn delete_completion_closes_delete_dialog_and_removes_row_selection() {
+        let mut panel = NetworkResourcePanel::new(NetworkResourceKind::Service);
+        let row = row_from_summary(NetworkResourceKind::Service, &service_summary());
+        let key = row.key.clone();
+        panel.rows = vec![row.clone()];
+        panel.selected_rows.insert(key.clone());
+        panel.delete_dialog = Some(GenericDeleteDialog {
+            target: row.delete_target(),
+        });
+        panel.action_request_id = Some(7);
+        panel.action_error = Some("old error".to_owned());
+
+        panel.apply_event(ResourceUiEvent::ResourceActionCompleted {
+            request: super::super::ResourceActionRequest {
+                request_id: 7,
+                cluster_id: ClusterId::new("local"),
+                kind: ResourceActionKind::DeleteResource {
+                    resource: NetworkResourceKind::Service.metadata().resource,
+                    namespace: Some("default".to_owned()),
+                    name: "api".to_owned(),
+                },
+            },
+            result: Ok(ResourceActionOutcome::Deleted),
+        });
+
+        assert!(panel.rows.is_empty());
+        assert!(!panel.selected_rows.contains(&key));
+        assert!(panel.delete_dialog.is_none());
+        assert_eq!(panel.action_error, None);
+    }
+
+    #[test]
+    fn action_errors_keep_current_dialogs() {
+        let row = row_from_summary(NetworkResourceKind::Service, &service_summary());
+        let mut edit_panel = NetworkResourcePanel::new(NetworkResourceKind::Service);
+        edit_panel.edit_dialog = Some(GenericEditDialog {
+            target: row.target(),
+            yaml: "kind: Service".to_owned(),
+            parse_error: None,
+        });
+        edit_panel.action_request_id = Some(7);
+
+        edit_panel.apply_event(ResourceUiEvent::ResourceActionCompleted {
+            request: super::super::ResourceActionRequest {
+                request_id: 7,
+                cluster_id: ClusterId::new("local"),
+                kind: ResourceActionKind::ApplyResource {
+                    resource: NetworkResourceKind::Service.metadata().resource,
+                    namespace: Some("default".to_owned()),
+                    name: "api".to_owned(),
+                    manifest: serde_json::json!({}),
+                },
+            },
+            result: Err("field is immutable".to_owned()),
+        });
+
+        assert!(edit_panel.edit_dialog.is_some());
+        assert_eq!(
+            edit_panel.action_error.as_deref(),
+            Some("field is immutable")
+        );
+
+        let mut delete_panel = NetworkResourcePanel::new(NetworkResourceKind::Service);
+        delete_panel.delete_dialog = Some(GenericDeleteDialog {
+            target: row.delete_target(),
+        });
+        delete_panel.action_request_id = Some(9);
+
+        delete_panel.apply_event(ResourceUiEvent::ResourceActionCompleted {
+            request: super::super::ResourceActionRequest {
+                request_id: 9,
+                cluster_id: ClusterId::new("local"),
+                kind: ResourceActionKind::DeleteResource {
+                    resource: NetworkResourceKind::Service.metadata().resource,
+                    namespace: Some("default".to_owned()),
+                    name: "api".to_owned(),
+                },
+            },
+            result: Err("delete denied".to_owned()),
+        });
+
+        assert!(delete_panel.delete_dialog.is_some());
+        assert_eq!(delete_panel.action_error.as_deref(), Some("delete denied"));
+    }
+
+    #[test]
+    fn cluster_change_clears_edit_delete_batch_and_pending_action() {
+        let row = row_from_summary(NetworkResourceKind::Service, &service_summary());
+        let mut panel = NetworkResourcePanel::new(NetworkResourceKind::Service);
+        panel.last_cluster_id = Some(ClusterId::new("old"));
+        panel.edit_dialog = Some(GenericEditDialog {
+            target: row.target(),
+            yaml: "kind: Service".to_owned(),
+            parse_error: None,
+        });
+        panel.delete_dialog = Some(GenericDeleteDialog {
+            target: row.delete_target(),
+        });
+        panel.batch_delete_dialog = Some(GenericBatchDeleteDialog {
+            targets: vec![row.delete_target()],
+        });
+        panel.action_request_id = Some(7);
+        panel.action_error = Some("old error".to_owned());
+
+        panel.reset_for_cluster_change(&ClusterId::new("new"));
+
+        assert!(panel.edit_dialog.is_none());
+        assert!(panel.delete_dialog.is_none());
+        assert!(panel.batch_delete_dialog.is_none());
+        assert_eq!(panel.action_request_id, None);
+        assert_eq!(panel.action_error, None);
+    }
+
     fn service_summary() -> ResourceSummary {
         service_summary_with_name("default", "api")
     }
@@ -1630,5 +2003,24 @@ mod tests {
             status: Some("Active".to_owned()),
             raw: serde_json::json!({"metadata": {"name": name}}),
         }
+    }
+
+    fn with_server_fields(mut summary: ResourceSummary) -> ResourceSummary {
+        if let Some(metadata) = summary
+            .raw
+            .get_mut("metadata")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            metadata.insert(
+                "managedFields".to_owned(),
+                serde_json::json!([{"manager": "kube-controller-manager"}]),
+            );
+            metadata.insert("resourceVersion".to_owned(), serde_json::json!("42"));
+            metadata.insert("uid".to_owned(), serde_json::json!("uid"));
+        }
+        if let Some(object) = summary.raw.as_object_mut() {
+            object.insert("status".to_owned(), serde_json::json!({"phase": "Active"}));
+        }
+        summary
     }
 }

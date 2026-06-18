@@ -8,12 +8,15 @@ use miku_core::{ClusterId, ResourceRef};
 #[cfg(test)]
 use super::ResourceLoadRequest;
 use super::components::{
-    GenericBatchDeleteDialog, GenericCreateDialog, ResourceBatchDeleteDialogInput,
-    ResourceCreateDialogInput, ResourceCreateDialogResponse, ResourceDeleteDialogResponse,
-    ResourceMetadata, ResourceRowTarget, ResourceToolbar, ResourceYamlViewDialog,
-    SELECT_COLUMN_WIDTH, apply_resource_request, batch_delete_resource_request,
-    default_resource_yaml, selected_delete_targets, show_resource_batch_delete_dialog,
-    show_resource_create_dialog, show_row_selection_checkbox, visible_keys,
+    GenericBatchDeleteDialog, GenericCreateDialog, GenericDeleteDialog, GenericEditDialog,
+    ResourceBatchDeleteDialogInput, ResourceCreateDialogInput, ResourceCreateDialogResponse,
+    ResourceDeleteDialogInput, ResourceDeleteDialogResponse, ResourceEditDialogInput,
+    ResourceEditDialogResponse, ResourceMetadata, ResourceRowTarget, ResourceToolbar,
+    ResourceYamlViewDialog, SELECT_COLUMN_WIDTH, apply_resource_request,
+    batch_delete_resource_request, default_resource_yaml, delete_resource_request,
+    edit_resource_request, editable_resource_yaml, selected_delete_targets,
+    show_resource_batch_delete_dialog, show_resource_create_dialog, show_resource_delete_dialog,
+    show_resource_edit_dialog, show_row_selection_checkbox, visible_keys,
 };
 use super::{
     LoadStatus, ResourceActionKind, ResourceActionOutcome, ResourceLoadKind, ResourcePanelRequests,
@@ -38,8 +41,10 @@ pub(crate) struct ResourceQuotaResourcePanel {
     last_cluster_id: Option<ClusterId>,
     describe_dialog: Option<ResourceQuotaDescribeDialog>,
     view_dialog: Option<ResourceQuotaViewDialog>,
+    edit_dialog: Option<GenericEditDialog>,
     create_dialog: Option<GenericCreateDialog>,
     batch_delete_dialog: Option<GenericBatchDeleteDialog>,
+    delete_dialog: Option<GenericDeleteDialog>,
     action_request_id: Option<u64>,
     action_error: Option<String>,
 }
@@ -75,8 +80,10 @@ impl ResourceQuotaResourcePanel {
         self.show_body(ui);
         self.show_describe_dialog(ui.ctx());
         self.show_view_dialog(ui.ctx());
+        self.show_edit_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_create_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_batch_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
+        self.show_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         requests
     }
 
@@ -213,8 +220,10 @@ impl ResourceQuotaResourcePanel {
                 }
                 self.action_request_id = None;
                 match result {
-                    Ok(ResourceActionOutcome::Applied(_)) => {
+                    Ok(ResourceActionOutcome::Applied(summary)) => {
+                        self.upsert_row(ResourceQuotaRow::from_summary(&summary));
                         self.create_dialog = None;
+                        self.edit_dialog = None;
                         self.action_error = None;
                     }
                     Ok(ResourceActionOutcome::Deleted) => {
@@ -229,6 +238,7 @@ impl ResourceQuotaResourcePanel {
                             self.rows.retain(|row| row.key != key);
                             self.selected_rows.remove(&key);
                         }
+                        self.delete_dialog = None;
                         self.action_error = None;
                     }
                     Ok(ResourceActionOutcome::BatchDeleted(targets)) => {
@@ -272,8 +282,10 @@ impl ResourceQuotaResourcePanel {
         self.row_watch_request_id = None;
         self.describe_dialog = None;
         self.view_dialog = None;
+        self.edit_dialog = None;
         self.create_dialog = None;
         self.batch_delete_dialog = None;
+        self.delete_dialog = None;
         self.action_request_id = None;
         self.action_error = None;
     }
@@ -386,6 +398,29 @@ impl ResourceQuotaResourcePanel {
                 };
                 self.view_dialog = Some(ResourceQuotaViewDialog { key, name, yaml });
             }
+            Some(ResourceQuotaTableAction::Edit { key }) => {
+                let Some((target, yaml)) = self
+                    .row_by_key(&key)
+                    .map(|row| (row.target(), editable_resource_yaml(&row.raw)))
+                else {
+                    return;
+                };
+                self.edit_dialog = Some(GenericEditDialog {
+                    target,
+                    yaml,
+                    parse_error: None,
+                });
+                self.action_error = None;
+            }
+            Some(ResourceQuotaTableAction::Delete { key }) => {
+                let Some(row) = self.row_by_key(&key) else {
+                    return;
+                };
+                self.delete_dialog = Some(GenericDeleteDialog {
+                    target: row.delete_target(),
+                });
+                self.action_error = None;
+            }
             None => {}
         }
     }
@@ -470,6 +505,50 @@ impl ResourceQuotaResourcePanel {
         }
     }
 
+    fn show_edit_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<super::ResourceActionRequest>,
+    ) {
+        let Some(target) = self
+            .edit_dialog
+            .as_ref()
+            .map(|dialog| dialog.target.clone())
+        else {
+            return;
+        };
+        let Some(dialog) = self.edit_dialog.as_mut() else {
+            return;
+        };
+        match show_resource_edit_dialog(
+            ctx,
+            ResourceEditDialogInput {
+                metadata: resource_quota_metadata(),
+                dialog,
+                action_error: self.action_error.as_deref(),
+                action_in_flight: self.action_request_id.is_some(),
+            },
+        ) {
+            ResourceEditDialogResponse::None => {}
+            ResourceEditDialogResponse::Cancel => {
+                self.edit_dialog = None;
+                self.action_error = None;
+            }
+            ResourceEditDialogResponse::Apply(manifest) => {
+                let request = edit_resource_request(
+                    self.allocate_request_id(),
+                    cluster_id.clone(),
+                    resource_quota_metadata(),
+                    target,
+                    manifest,
+                );
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+        }
+    }
+
     fn show_batch_delete_dialog(
         &mut self,
         ctx: &egui::Context,
@@ -499,6 +578,42 @@ impl ResourceQuotaResourcePanel {
                     cluster_id.clone(),
                     resource_quota_metadata(),
                     dialog.targets,
+                );
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+        }
+    }
+
+    fn show_delete_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<super::ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.delete_dialog.clone() else {
+            return;
+        };
+        match show_resource_delete_dialog(
+            ctx,
+            ResourceDeleteDialogInput {
+                metadata: resource_quota_metadata(),
+                target: &dialog.target,
+                action_error: self.action_error.as_deref(),
+                action_in_flight: self.action_request_id.is_some(),
+            },
+        ) {
+            ResourceDeleteDialogResponse::None => {}
+            ResourceDeleteDialogResponse::Cancel => {
+                self.delete_dialog = None;
+                self.action_error = None;
+            }
+            ResourceDeleteDialogResponse::Delete => {
+                let request = delete_resource_request(
+                    self.allocate_request_id(),
+                    cluster_id.clone(),
+                    resource_quota_metadata(),
+                    dialog.target,
                 );
                 self.action_request_id = Some(request.request_id);
                 requests.push(request);
@@ -576,6 +691,23 @@ impl ResourceQuotaResourcePanel {
         let visible_keys = visible_keys(&targets);
         self.selected_rows.retain(|key| visible_keys.contains(key));
         self.rows = rows;
+    }
+
+    fn upsert_row(&mut self, row: ResourceQuotaRow) {
+        if let Some(existing) = self
+            .rows
+            .iter_mut()
+            .find(|existing| existing.key == row.key)
+        {
+            *existing = row;
+        } else {
+            self.rows.push(row);
+        }
+        self.rows.sort_by(|left, right| {
+            left.namespace
+                .cmp(&right.namespace)
+                .then(left.name.cmp(&right.name))
+        });
     }
 
     fn prune_selection_to_visible(&mut self) {
@@ -693,6 +825,26 @@ fn show_resource_quota_table(
                                 });
                                 ui.close();
                             }
+                            if ui
+                                .button(format!("{} Edit", egui_phosphor::regular::PENCIL_SIMPLE))
+                                .clicked()
+                            {
+                                action = Some(ResourceQuotaTableAction::Edit {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
+                            let delete_text = egui::RichText::new(format!(
+                                "{} Delete",
+                                egui_phosphor::regular::TRASH
+                            ))
+                            .color(ui.visuals().error_fg_color);
+                            if ui.button(delete_text).clicked() {
+                                action = Some(ResourceQuotaTableAction::Delete {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
                         });
                     });
                 });
@@ -800,12 +952,21 @@ impl ResourceQuotaRow {
             name: self.name.clone(),
         }
     }
+
+    fn delete_target(&self) -> super::ResourceDeleteTarget {
+        super::ResourceDeleteTarget {
+            namespace: namespace_value(&self.namespace),
+            name: self.name.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ResourceQuotaTableAction {
     Describe { key: String },
     View { key: String },
+    Edit { key: String },
+    Delete { key: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1028,6 +1189,202 @@ mod tests {
         assert_eq!(panel.namespaces, vec!["production".to_owned()]);
     }
 
+    #[test]
+    fn edit_action_opens_edit_dialog_with_editable_yaml() {
+        let mut panel = ResourceQuotaResourcePanel::default();
+        let row = ResourceQuotaRow::from_summary(&with_server_fields(quota_summary()));
+        let key = row.key.clone();
+        panel.rows = vec![row];
+
+        panel.apply_table_action(Some(ResourceQuotaTableAction::Edit { key }));
+
+        let dialog = panel.edit_dialog.as_ref().unwrap();
+        assert_eq!(dialog.target.namespace.as_deref(), Some("default"));
+        assert_eq!(dialog.target.name, "compute");
+        let manifest = serde_yaml::from_str::<serde_json::Value>(&dialog.yaml).unwrap();
+        assert!(manifest.pointer("/metadata/creationTimestamp").is_none());
+        assert!(manifest.pointer("/metadata/resourceVersion").is_none());
+        assert!(manifest.pointer("/metadata/managedFields").is_none());
+        assert!(manifest.pointer("/status").is_none());
+    }
+
+    #[test]
+    fn delete_action_opens_delete_dialog() {
+        let mut panel = ResourceQuotaResourcePanel::default();
+        let row = ResourceQuotaRow::from_summary(&quota_summary());
+        let key = row.key.clone();
+        panel.rows = vec![row];
+
+        panel.apply_table_action(Some(ResourceQuotaTableAction::Delete { key }));
+
+        let dialog = panel.delete_dialog.as_ref().unwrap();
+        assert_eq!(dialog.target.namespace.as_deref(), Some("default"));
+        assert_eq!(dialog.target.name, "compute");
+        assert_eq!(panel.action_error, None);
+    }
+
+    #[test]
+    fn apply_completion_closes_edit_dialog_and_upserts_sorted_row() {
+        let mut panel = ResourceQuotaResourcePanel::default();
+        let row = ResourceQuotaRow::from_summary(&quota_summary());
+        panel.rows = resource_quota_rows_from_list(&[
+            quota_summary_with_name("zeta", "worker"),
+            quota_summary_with_name("default", "api-b"),
+        ]);
+        panel.edit_dialog = Some(GenericEditDialog {
+            target: row.target(),
+            yaml: "kind: ResourceQuota".to_owned(),
+            parse_error: None,
+        });
+        panel.action_request_id = Some(7);
+        panel.action_error = Some("old error".to_owned());
+
+        panel.apply_event(ResourceUiEvent::ResourceActionCompleted {
+            request: super::super::ResourceActionRequest {
+                request_id: 7,
+                cluster_id: ClusterId::new("local"),
+                kind: ResourceActionKind::ApplyResource {
+                    resource: resource_quota_metadata().resource,
+                    namespace: Some("default".to_owned()),
+                    name: "api-a".to_owned(),
+                    manifest: serde_json::json!({}),
+                },
+            },
+            result: Ok(ResourceActionOutcome::Applied(quota_summary_with_name(
+                "default", "api-a",
+            ))),
+        });
+
+        assert!(panel.edit_dialog.is_none());
+        assert_eq!(panel.action_error, None);
+        let keys = panel
+            .rows
+            .iter()
+            .map(|row| row.key.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(keys, vec!["default/api-a", "default/api-b", "zeta/worker"]);
+    }
+
+    #[test]
+    fn delete_completion_closes_delete_dialog_and_removes_row_selection() {
+        let mut panel = ResourceQuotaResourcePanel::default();
+        let row = ResourceQuotaRow::from_summary(&quota_summary());
+        let key = row.key.clone();
+        panel.rows = vec![row.clone()];
+        panel.selected_rows.insert(key.clone());
+        panel.delete_dialog = Some(GenericDeleteDialog {
+            target: row.delete_target(),
+        });
+        panel.action_request_id = Some(7);
+        panel.action_error = Some("old error".to_owned());
+
+        panel.apply_event(ResourceUiEvent::ResourceActionCompleted {
+            request: super::super::ResourceActionRequest {
+                request_id: 7,
+                cluster_id: ClusterId::new("local"),
+                kind: ResourceActionKind::DeleteResource {
+                    resource: resource_quota_metadata().resource,
+                    namespace: Some("default".to_owned()),
+                    name: "compute".to_owned(),
+                },
+            },
+            result: Ok(ResourceActionOutcome::Deleted),
+        });
+
+        assert!(panel.rows.is_empty());
+        assert!(!panel.selected_rows.contains(&key));
+        assert!(panel.delete_dialog.is_none());
+        assert_eq!(panel.action_error, None);
+    }
+
+    #[test]
+    fn action_errors_keep_current_dialogs() {
+        let row = ResourceQuotaRow::from_summary(&quota_summary());
+        let mut edit_panel = ResourceQuotaResourcePanel {
+            edit_dialog: Some(GenericEditDialog {
+                target: row.target(),
+                yaml: "kind: ResourceQuota".to_owned(),
+                parse_error: None,
+            }),
+            action_request_id: Some(7),
+            ..ResourceQuotaResourcePanel::default()
+        };
+
+        edit_panel.apply_event(ResourceUiEvent::ResourceActionCompleted {
+            request: super::super::ResourceActionRequest {
+                request_id: 7,
+                cluster_id: ClusterId::new("local"),
+                kind: ResourceActionKind::ApplyResource {
+                    resource: resource_quota_metadata().resource,
+                    namespace: Some("default".to_owned()),
+                    name: "compute".to_owned(),
+                    manifest: serde_json::json!({}),
+                },
+            },
+            result: Err("field is immutable".to_owned()),
+        });
+
+        assert!(edit_panel.edit_dialog.is_some());
+        assert_eq!(
+            edit_panel.action_error.as_deref(),
+            Some("field is immutable")
+        );
+
+        let mut delete_panel = ResourceQuotaResourcePanel {
+            delete_dialog: Some(GenericDeleteDialog {
+                target: row.delete_target(),
+            }),
+            action_request_id: Some(9),
+            ..ResourceQuotaResourcePanel::default()
+        };
+
+        delete_panel.apply_event(ResourceUiEvent::ResourceActionCompleted {
+            request: super::super::ResourceActionRequest {
+                request_id: 9,
+                cluster_id: ClusterId::new("local"),
+                kind: ResourceActionKind::DeleteResource {
+                    resource: resource_quota_metadata().resource,
+                    namespace: Some("default".to_owned()),
+                    name: "compute".to_owned(),
+                },
+            },
+            result: Err("delete denied".to_owned()),
+        });
+
+        assert!(delete_panel.delete_dialog.is_some());
+        assert_eq!(delete_panel.action_error.as_deref(), Some("delete denied"));
+    }
+
+    #[test]
+    fn cluster_change_clears_edit_delete_batch_and_pending_action() {
+        let row = ResourceQuotaRow::from_summary(&quota_summary());
+        let mut panel = ResourceQuotaResourcePanel {
+            last_cluster_id: Some(ClusterId::new("old")),
+            edit_dialog: Some(GenericEditDialog {
+                target: row.target(),
+                yaml: "kind: ResourceQuota".to_owned(),
+                parse_error: None,
+            }),
+            delete_dialog: Some(GenericDeleteDialog {
+                target: row.delete_target(),
+            }),
+            batch_delete_dialog: Some(GenericBatchDeleteDialog {
+                targets: vec![row.delete_target()],
+            }),
+            action_request_id: Some(7),
+            action_error: Some("old error".to_owned()),
+            ..ResourceQuotaResourcePanel::default()
+        };
+
+        panel.reset_for_cluster_change(&ClusterId::new("new"));
+
+        assert!(panel.edit_dialog.is_none());
+        assert!(panel.delete_dialog.is_none());
+        assert!(panel.batch_delete_dialog.is_none());
+        assert_eq!(panel.action_request_id, None);
+        assert_eq!(panel.action_error, None);
+    }
+
     fn quota_summary() -> ResourceSummary {
         quota_summary_with_name("default", "compute")
     }
@@ -1064,5 +1421,21 @@ mod tests {
             status: Some("Active".to_owned()),
             raw: serde_json::json!({"metadata": {"name": name}}),
         }
+    }
+
+    fn with_server_fields(mut summary: ResourceSummary) -> ResourceSummary {
+        if let Some(metadata) = summary
+            .raw
+            .get_mut("metadata")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            metadata.insert(
+                "managedFields".to_owned(),
+                serde_json::json!([{"manager": "kube-controller-manager"}]),
+            );
+            metadata.insert("resourceVersion".to_owned(), serde_json::json!("42"));
+            metadata.insert("uid".to_owned(), serde_json::json!("uid"));
+        }
+        summary
     }
 }
