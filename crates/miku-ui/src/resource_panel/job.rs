@@ -8,14 +8,15 @@ use miku_core::{ClusterId, ResourceRef};
 #[cfg(test)]
 use super::ResourceLoadRequest;
 use super::components::{
-    GenericBatchDeleteDialog, GenericCreateDialog, GenericEditDialog,
+    GenericBatchDeleteDialog, GenericCreateDialog, GenericDeleteDialog, GenericEditDialog,
     ResourceBatchDeleteDialogInput, ResourceCreateDialogInput, ResourceCreateDialogResponse,
-    ResourceDeleteDialogResponse, ResourceEditDialogInput, ResourceEditDialogResponse,
-    ResourceMapEntry, ResourceMapView, ResourceMetadata, ResourceRowTarget, ResourceToolbar,
-    ResourceYamlViewDialog, SELECT_COLUMN_WIDTH, apply_resource_request,
-    batch_delete_resource_request, default_resource_yaml, edit_resource_request,
-    editable_resource_yaml, selected_delete_targets, show_resource_batch_delete_dialog,
-    show_resource_create_dialog, show_resource_edit_dialog, show_row_selection_checkbox,
+    ResourceDeleteDialogInput, ResourceDeleteDialogResponse, ResourceEditDialogInput,
+    ResourceEditDialogResponse, ResourceMapEntry, ResourceMapView, ResourceMetadata,
+    ResourceRowTarget, ResourceToolbar, ResourceYamlViewDialog, SELECT_COLUMN_WIDTH,
+    apply_resource_request, batch_delete_resource_request, default_resource_yaml,
+    delete_resource_request, edit_resource_request, editable_resource_yaml,
+    selected_delete_targets, show_resource_batch_delete_dialog, show_resource_create_dialog,
+    show_resource_delete_dialog, show_resource_edit_dialog, show_row_selection_checkbox,
     visible_keys,
 };
 use super::{
@@ -44,6 +45,7 @@ pub(crate) struct JobResourcePanel {
     edit_dialog: Option<GenericEditDialog>,
     create_dialog: Option<GenericCreateDialog>,
     batch_delete_dialog: Option<GenericBatchDeleteDialog>,
+    delete_dialog: Option<GenericDeleteDialog>,
     action_request_id: Option<u64>,
     action_error: Option<String>,
 }
@@ -82,6 +84,7 @@ impl JobResourcePanel {
         self.show_edit_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_create_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_batch_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
+        self.show_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
 
         requests
     }
@@ -237,6 +240,7 @@ impl JobResourcePanel {
                             self.rows.retain(|row| row.key != key);
                             self.selected_rows.remove(&key);
                         }
+                        self.delete_dialog = None;
                         self.action_error = None;
                     }
                     Ok(ResourceActionOutcome::BatchDeleted(targets)) => {
@@ -282,6 +286,7 @@ impl JobResourcePanel {
         self.edit_dialog = None;
         self.create_dialog = None;
         self.batch_delete_dialog = None;
+        self.delete_dialog = None;
         self.action_request_id = None;
         self.action_error = None;
     }
@@ -402,6 +407,15 @@ impl JobResourcePanel {
                     target,
                     yaml,
                     parse_error: None,
+                });
+                self.action_error = None;
+            }
+            Some(JobTableAction::Delete { key }) => {
+                let Some(row) = self.row_by_key(&key) else {
+                    return;
+                };
+                self.delete_dialog = Some(GenericDeleteDialog {
+                    target: row.delete_target(),
                 });
                 self.action_error = None;
             }
@@ -570,6 +584,42 @@ impl JobResourcePanel {
                     cluster_id.clone(),
                     job_metadata(),
                     dialog.targets,
+                );
+                self.action_request_id = Some(request.request_id);
+                requests.push(request);
+            }
+        }
+    }
+
+    fn show_delete_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        cluster_id: &ClusterId,
+        requests: &mut Vec<super::ResourceActionRequest>,
+    ) {
+        let Some(dialog) = self.delete_dialog.clone() else {
+            return;
+        };
+        match show_resource_delete_dialog(
+            ctx,
+            ResourceDeleteDialogInput {
+                metadata: job_metadata(),
+                target: &dialog.target,
+                action_error: self.action_error.as_deref(),
+                action_in_flight: self.action_request_id.is_some(),
+            },
+        ) {
+            ResourceDeleteDialogResponse::None => {}
+            ResourceDeleteDialogResponse::Cancel => {
+                self.delete_dialog = None;
+                self.action_error = None;
+            }
+            ResourceDeleteDialogResponse::Delete => {
+                let request = delete_resource_request(
+                    self.allocate_request_id(),
+                    cluster_id.clone(),
+                    job_metadata(),
+                    dialog.target,
                 );
                 self.action_request_id = Some(request.request_id);
                 requests.push(request);
@@ -798,6 +848,17 @@ fn show_job_table(
                                 });
                                 ui.close();
                             }
+                            let delete_text = egui::RichText::new(format!(
+                                "{} Delete",
+                                egui_phosphor::regular::TRASH
+                            ))
+                            .color(ui.visuals().error_fg_color);
+                            if ui.button(delete_text).clicked() {
+                                action = Some(JobTableAction::Delete {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
                         });
                     });
                 });
@@ -925,6 +986,13 @@ impl JobRow {
             name: self.name.clone(),
         }
     }
+
+    fn delete_target(&self) -> super::ResourceDeleteTarget {
+        super::ResourceDeleteTarget {
+            namespace: namespace_value(&self.namespace),
+            name: self.name.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -932,6 +1000,7 @@ enum JobTableAction {
     Describe { key: String },
     View { key: String },
     Edit { key: String },
+    Delete { key: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1618,6 +1687,15 @@ mod tests {
     }
 
     #[test]
+    fn job_delete_target_uses_namespace_and_name() {
+        let row = JobRow::from_summary(&job_summary());
+        let target = row.delete_target();
+
+        assert_eq!(target.namespace.as_deref(), Some("default"));
+        assert_eq!(target.name, "backup");
+    }
+
+    #[test]
     fn edit_action_opens_edit_dialog_with_editable_yaml() {
         let mut panel = JobResourcePanel::default();
         let row = JobRow::from_summary(&job_summary());
@@ -1632,6 +1710,21 @@ mod tests {
         let manifest = serde_yaml::from_str::<serde_json::Value>(&dialog.yaml).unwrap();
         assert!(manifest.pointer("/metadata/creationTimestamp").is_none());
         assert!(manifest.pointer("/status").is_none());
+    }
+
+    #[test]
+    fn delete_action_opens_delete_dialog() {
+        let mut panel = JobResourcePanel::default();
+        let row = JobRow::from_summary(&job_summary());
+        let key = row.key.clone();
+        panel.rows = vec![row];
+
+        panel.apply_table_action(Some(JobTableAction::Delete { key }));
+
+        let dialog = panel.delete_dialog.as_ref().unwrap();
+        assert_eq!(dialog.target.namespace.as_deref(), Some("default"));
+        assert_eq!(dialog.target.name, "backup");
+        assert_eq!(panel.action_error, None);
     }
 
     #[test]
@@ -1669,6 +1762,37 @@ mod tests {
     }
 
     #[test]
+    fn delete_completion_closes_delete_dialog_and_removes_row() {
+        let mut panel = JobResourcePanel::default();
+        let row = JobRow::from_summary(&job_summary());
+        let key = row.key.clone();
+        panel.rows = vec![row.clone()];
+        panel.selected_rows.insert(key.clone());
+        panel.delete_dialog = Some(GenericDeleteDialog {
+            target: row.delete_target(),
+        });
+        panel.action_request_id = Some(7);
+
+        panel.apply_event(ResourceUiEvent::ResourceActionCompleted {
+            request: super::super::ResourceActionRequest {
+                request_id: 7,
+                cluster_id: ClusterId::new("local"),
+                kind: ResourceActionKind::DeleteResource {
+                    resource: job_metadata().resource,
+                    namespace: Some("default".to_owned()),
+                    name: "backup".to_owned(),
+                },
+            },
+            result: Ok(ResourceActionOutcome::Deleted),
+        });
+
+        assert!(panel.rows.is_empty());
+        assert!(!panel.selected_rows.contains(&key));
+        assert!(panel.delete_dialog.is_none());
+        assert_eq!(panel.action_error, None);
+    }
+
+    #[test]
     fn apply_error_keeps_edit_dialog() {
         let mut panel = JobResourcePanel::default();
         let row = JobRow::from_summary(&job_summary());
@@ -1698,6 +1822,32 @@ mod tests {
     }
 
     #[test]
+    fn delete_error_keeps_delete_dialog() {
+        let mut panel = JobResourcePanel::default();
+        let row = JobRow::from_summary(&job_summary());
+        panel.delete_dialog = Some(GenericDeleteDialog {
+            target: row.delete_target(),
+        });
+        panel.action_request_id = Some(7);
+
+        panel.apply_event(ResourceUiEvent::ResourceActionCompleted {
+            request: super::super::ResourceActionRequest {
+                request_id: 7,
+                cluster_id: ClusterId::new("local"),
+                kind: ResourceActionKind::DeleteResource {
+                    resource: job_metadata().resource,
+                    namespace: Some("default".to_owned()),
+                    name: "backup".to_owned(),
+                },
+            },
+            result: Err("delete denied".to_owned()),
+        });
+
+        assert!(panel.delete_dialog.is_some());
+        assert_eq!(panel.action_error.as_deref(), Some("delete denied"));
+    }
+
+    #[test]
     fn cluster_change_clears_edit_dialog() {
         let mut panel = JobResourcePanel::default();
         let row = JobRow::from_summary(&job_summary());
@@ -1707,11 +1857,15 @@ mod tests {
             yaml: "kind: Job".to_owned(),
             parse_error: None,
         });
+        panel.delete_dialog = Some(GenericDeleteDialog {
+            target: row.delete_target(),
+        });
         panel.action_request_id = Some(7);
 
         panel.reset_for_cluster_change(&ClusterId::new("new"));
 
         assert!(panel.edit_dialog.is_none());
+        assert!(panel.delete_dialog.is_none());
         assert_eq!(panel.action_request_id, None);
     }
 
