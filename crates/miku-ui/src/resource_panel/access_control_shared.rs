@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use eframe::egui::{self, TextWrapMode};
+use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use miku_api::ResourceSummary;
 use miku_core::{ClusterId, ResourceRef};
@@ -9,14 +9,16 @@ use miku_core::{ClusterId, ResourceRef};
 use super::ResourceLoadRequest;
 use super::components::ResourceYamlViewDialog;
 use super::components::{
-    GenericBatchDeleteDialog, GenericCreateDialog, GenericDeleteDialog, GenericEditDialog,
-    ResourceBatchDeleteDialogInput, ResourceCreateDialogInput, ResourceCreateDialogResponse,
-    ResourceDeleteDialogInput, ResourceDeleteDialogResponse, ResourceEditDialogInput,
-    ResourceEditDialogResponse, ResourceMetadata, ResourceRowTarget, ResourceToolbar,
-    SELECT_COLUMN_WIDTH, apply_resource_request, batch_delete_resource_request,
-    default_resource_yaml, delete_resource_request, edit_resource_request, editable_resource_yaml,
-    selected_delete_targets, show_resource_batch_delete_dialog, show_resource_create_dialog,
-    show_resource_delete_dialog, show_resource_edit_dialog, show_row_selection_checkbox,
+    DescribeField, GenericBatchDeleteDialog, GenericCreateDialog, GenericDeleteDialog,
+    GenericEditDialog, ResourceBatchDeleteDialogInput, ResourceCreateDialogInput,
+    ResourceCreateDialogResponse, ResourceDeleteDialogInput, ResourceDeleteDialogResponse,
+    ResourceEditDialogInput, ResourceEditDialogResponse, ResourceMapEntry, ResourceMetadata,
+    ResourceRowTarget, ResourceToolbar, SELECT_COLUMN_WIDTH, apply_resource_request,
+    batch_delete_resource_request, default_resource_yaml, delete_resource_request, describe_fields,
+    describe_group, describe_metadata_maps, describe_raw_manifest, edit_resource_request,
+    editable_resource_yaml, resource_map_entries, selected_delete_targets,
+    show_resource_batch_delete_dialog, show_resource_create_dialog, show_resource_delete_dialog,
+    show_resource_describe_window, show_resource_edit_dialog, show_row_selection_checkbox,
     visible_keys,
 };
 use super::{
@@ -436,22 +438,15 @@ impl AccessControlResourcePanel {
             return;
         };
         let mut open = true;
-        egui::Window::new(format!("Describe {}", dialog.name))
-            .id(egui::Id::new((self.kind.id(), "describe", &dialog.key)))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .open(&mut open)
-            .collapsible(false)
-            .fixed_size([860.0, 580.0])
-            .show(ctx, |ui| {
-                egui::ScrollArea::both()
-                    .id_salt((self.kind.id(), "describe_content", &dialog.key))
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.set_min_width(1120.0);
-                        ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-                        show_access_control_describe(ui, &dialog.describe);
-                    });
-            });
+        show_resource_describe_window(
+            ctx,
+            egui::Id::new((self.kind.id(), "describe", &dialog.key)),
+            format!("Describe {}", dialog.name),
+            &mut open,
+            |ui| {
+                show_access_control_describe(ui, &dialog.describe);
+            },
+        );
         if !open {
             self.describe_dialog = None;
         }
@@ -1066,9 +1061,9 @@ struct AccessControlViewDialog {
 #[derive(Clone, Debug, PartialEq)]
 struct AccessControlDescribe {
     title: &'static str,
-    summary: Vec<(String, String)>,
-    labels: String,
-    annotations: String,
+    summary: Vec<DescribeField>,
+    labels: Vec<ResourceMapEntry>,
+    annotations: Vec<ResourceMapEntry>,
     raw_yaml: String,
 }
 
@@ -1280,11 +1275,12 @@ fn describe_from_row(
     }
     AccessControlDescribe {
         title: kind.title(),
-        summary,
-        labels: resource_map(row.raw.pointer("/metadata/labels"))
-            .unwrap_or_else(|| "N/A".to_owned()),
-        annotations: resource_map(row.raw.pointer("/metadata/annotations"))
-            .unwrap_or_else(|| "N/A".to_owned()),
+        summary: summary
+            .into_iter()
+            .map(|(label, value)| DescribeField::new(label, value))
+            .collect(),
+        labels: resource_map_entries(row.raw.pointer("/metadata/labels")),
+        annotations: resource_map_entries(row.raw.pointer("/metadata/annotations")),
         raw_yaml: full_manifest_yaml(&row.raw),
     }
 }
@@ -1335,32 +1331,33 @@ fn rules_summary(raw: &serde_json::Value) -> String {
 }
 
 fn show_access_control_describe(ui: &mut egui::Ui, describe: &AccessControlDescribe) {
-    ui.heading(describe.title);
-    ui.separator();
-    egui::Grid::new("access_control_describe_summary")
-        .num_columns(2)
-        .spacing([16.0, 4.0])
-        .show(ui, |ui| {
-            for (label, value) in &describe.summary {
-                ui.weak(label);
-                ui.label(value);
-                ui.end_row();
-            }
-        });
-    ui.add_space(10.0);
-    describe_block(ui, "Labels", &describe.labels);
-    describe_block(ui, "Annotations", &describe.annotations);
-    describe_block(ui, "Raw manifest", &describe.raw_yaml);
-}
-
-fn describe_block(ui: &mut egui::Ui, title: &str, value: &str) {
-    ui.strong(title);
-    ui.add(
-        egui::Label::new(egui::RichText::new(value).monospace())
-            .wrap_mode(TextWrapMode::Extend)
-            .selectable(true),
+    describe_group(
+        ui,
+        egui_phosphor::regular::SHIELD_CHECK,
+        describe.title,
+        |ui| {
+            describe_fields(ui, &describe.summary);
+        },
     );
-    ui.add_space(8.0);
+
+    ui.add_space(10.0);
+    describe_group(ui, egui_phosphor::regular::TAG, "Metadata", |ui| {
+        describe_metadata_maps(
+            ui,
+            "access-control-describe-metadata",
+            &describe.labels,
+            &describe.annotations,
+        );
+    });
+
+    ui.add_space(10.0);
+    describe_group(ui, egui_phosphor::regular::CODE, "Raw manifest", |ui| {
+        describe_raw_manifest(
+            ui,
+            "access-control-describe-raw-manifest",
+            &describe.raw_yaml,
+        );
+    });
 }
 
 fn resource_map(value: Option<&serde_json::Value>) -> Option<String> {
@@ -1511,6 +1508,36 @@ mod tests {
         );
         assert_eq!(cluster_role_binding.cells[1], "ClusterRole/cluster-admin");
         assert_eq!(cluster_role_binding.cells[2], "Group/system:masters");
+    }
+
+    #[test]
+    fn access_control_describe_keeps_rules_and_subjects() {
+        let role_row = row_from_summary(AccessControlResourceKind::Role, &role_summary());
+        let role_describe = describe_from_row(AccessControlResourceKind::Role, &role_row);
+        let rules = role_describe
+            .summary
+            .iter()
+            .rev()
+            .find(|field| field.label == "Rules")
+            .map(|field| field.value.as_str())
+            .unwrap();
+        assert!(rules.contains("verbs=[get, list]"));
+        assert!(rules.contains("resources=[pods, services]"));
+        assert!(role_describe.labels.is_empty());
+
+        let binding_row = row_from_summary(
+            AccessControlResourceKind::RoleBinding,
+            &role_binding_summary(),
+        );
+        let binding_describe =
+            describe_from_row(AccessControlResourceKind::RoleBinding, &binding_row);
+        let subjects = binding_describe
+            .summary
+            .iter()
+            .find(|field| field.label == "Subjects")
+            .map(|field| field.value.as_str())
+            .unwrap();
+        assert_eq!(subjects, "ServiceAccount/default/builder, User/alice");
     }
 
     #[test]

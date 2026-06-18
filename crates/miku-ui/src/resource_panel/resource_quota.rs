@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use eframe::egui::{self, TextWrapMode};
+use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use miku_api::ResourceSummary;
 use miku_core::{ClusterId, ResourceRef};
@@ -8,14 +8,16 @@ use miku_core::{ClusterId, ResourceRef};
 #[cfg(test)]
 use super::ResourceLoadRequest;
 use super::components::{
-    GenericBatchDeleteDialog, GenericCreateDialog, GenericDeleteDialog, GenericEditDialog,
-    ResourceBatchDeleteDialogInput, ResourceCreateDialogInput, ResourceCreateDialogResponse,
-    ResourceDeleteDialogInput, ResourceDeleteDialogResponse, ResourceEditDialogInput,
-    ResourceEditDialogResponse, ResourceMetadata, ResourceRowTarget, ResourceToolbar,
-    ResourceYamlViewDialog, SELECT_COLUMN_WIDTH, apply_resource_request,
-    batch_delete_resource_request, default_resource_yaml, delete_resource_request,
-    edit_resource_request, editable_resource_yaml, selected_delete_targets,
-    show_resource_batch_delete_dialog, show_resource_create_dialog, show_resource_delete_dialog,
+    DescribeField, GenericBatchDeleteDialog, GenericCreateDialog, GenericDeleteDialog,
+    GenericEditDialog, ResourceBatchDeleteDialogInput, ResourceCreateDialogInput,
+    ResourceCreateDialogResponse, ResourceDeleteDialogInput, ResourceDeleteDialogResponse,
+    ResourceEditDialogInput, ResourceEditDialogResponse, ResourceMapEntry, ResourceMapView,
+    ResourceMetadata, ResourceRowTarget, ResourceToolbar, ResourceYamlViewDialog,
+    SELECT_COLUMN_WIDTH, apply_resource_request, batch_delete_resource_request,
+    default_resource_yaml, delete_resource_request, describe_fields, describe_group,
+    describe_metadata_maps, describe_raw_manifest, edit_resource_request, editable_resource_yaml,
+    resource_map_entries, selected_delete_targets, show_resource_batch_delete_dialog,
+    show_resource_create_dialog, show_resource_delete_dialog, show_resource_describe_window,
     show_resource_edit_dialog, show_row_selection_checkbox, visible_keys,
 };
 use super::{
@@ -430,22 +432,15 @@ impl ResourceQuotaResourcePanel {
             return;
         };
         let mut open = true;
-        egui::Window::new(format!("Describe {}", dialog.name))
-            .id(egui::Id::new(("resource_quota-describe", &dialog.key)))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .open(&mut open)
-            .collapsible(false)
-            .fixed_size([820.0, 560.0])
-            .show(ctx, |ui| {
-                egui::ScrollArea::both()
-                    .id_salt(("resource_quota-describe-content", &dialog.key))
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.set_min_width(980.0);
-                        ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-                        show_resource_quota_describe(ui, &dialog.describe);
-                    });
-            });
+        show_resource_describe_window(
+            ctx,
+            egui::Id::new(("resource_quota-describe", &dialog.key)),
+            format!("Describe {}", dialog.name),
+            &mut open,
+            |ui| {
+                show_resource_quota_describe(ui, &dialog.describe);
+            },
+        );
         if !open {
             self.describe_dialog = None;
         }
@@ -985,11 +980,11 @@ struct ResourceQuotaViewDialog {
 
 #[derive(Clone, Debug, PartialEq)]
 struct ResourceQuotaDescribe {
-    summary: Vec<(String, String)>,
-    hard: String,
-    used: String,
-    labels: String,
-    annotations: String,
+    summary: Vec<DescribeField>,
+    hard: Vec<ResourceMapEntry>,
+    used: Vec<ResourceMapEntry>,
+    labels: Vec<ResourceMapEntry>,
+    annotations: Vec<ResourceMapEntry>,
     raw_yaml: String,
 }
 
@@ -997,51 +992,72 @@ fn resource_quota_describe_from_row(row: &ResourceQuotaRow) -> ResourceQuotaDesc
     let raw = &row.raw;
     ResourceQuotaDescribe {
         summary: vec![
-            ("Name".to_owned(), row.name.clone()),
-            ("Namespace".to_owned(), row.namespace.clone()),
-            ("Scopes".to_owned(), row.scopes.clone()),
-            ("Age".to_owned(), row.age.clone()),
+            DescribeField::new("Name", row.name.clone()),
+            DescribeField::new("Namespace", row.namespace.clone()),
+            DescribeField::new("Scopes", row.scopes.clone()),
+            DescribeField::new("Age", row.age.clone()),
         ],
-        hard: resource_map(raw.pointer("/status/hard"))
-            .or_else(|| resource_map(raw.pointer("/spec/hard")))
-            .unwrap_or_else(|| "N/A".to_owned()),
-        used: resource_map(raw.pointer("/status/used")).unwrap_or_else(|| "N/A".to_owned()),
-        labels: resource_map(raw.pointer("/metadata/labels")).unwrap_or_else(|| "N/A".to_owned()),
-        annotations: resource_map(raw.pointer("/metadata/annotations"))
-            .unwrap_or_else(|| "N/A".to_owned()),
+        hard: resource_quota_hard_entries(raw),
+        used: resource_map_entries(raw.pointer("/status/used")),
+        labels: resource_map_entries(raw.pointer("/metadata/labels")),
+        annotations: resource_map_entries(raw.pointer("/metadata/annotations")),
         raw_yaml: full_manifest_yaml(raw),
     }
 }
 
 fn show_resource_quota_describe(ui: &mut egui::Ui, describe: &ResourceQuotaDescribe) {
-    ui.heading("ResourceQuota");
-    ui.separator();
-    egui::Grid::new("resource_quota_summary")
-        .num_columns(2)
-        .spacing([16.0, 4.0])
-        .show(ui, |ui| {
-            for (label, value) in &describe.summary {
-                ui.weak(label);
-                ui.label(value);
-                ui.end_row();
-            }
-        });
+    describe_group(ui, egui_phosphor::regular::GAUGE, "ResourceQuota", |ui| {
+        describe_fields(ui, &describe.summary);
+    });
+
     ui.add_space(10.0);
-    describe_block(ui, "Hard", &describe.hard);
-    describe_block(ui, "Used", &describe.used);
-    describe_block(ui, "Labels", &describe.labels);
-    describe_block(ui, "Annotations", &describe.annotations);
-    describe_block(ui, "Raw manifest", &describe.raw_yaml);
+    describe_group(ui, egui_phosphor::regular::GAUGE, "Usage", |ui| {
+        ResourceMapView {
+            id_salt: "resource-quota-describe-hard",
+            icon: egui_phosphor::regular::GAUGE,
+            title: "Hard",
+            entries: &describe.hard,
+            empty_label: "No hard quota values.",
+        }
+        .show(ui);
+        ui.add_space(8.0);
+        ResourceMapView {
+            id_salt: "resource-quota-describe-used",
+            icon: egui_phosphor::regular::GAUGE,
+            title: "Used",
+            entries: &describe.used,
+            empty_label: "No used quota values.",
+        }
+        .show(ui);
+    });
+
+    ui.add_space(10.0);
+    describe_group(ui, egui_phosphor::regular::TAG, "Metadata", |ui| {
+        describe_metadata_maps(
+            ui,
+            "resource-quota-describe-metadata",
+            &describe.labels,
+            &describe.annotations,
+        );
+    });
+
+    ui.add_space(10.0);
+    describe_group(ui, egui_phosphor::regular::CODE, "Raw manifest", |ui| {
+        describe_raw_manifest(
+            ui,
+            "resource-quota-describe-raw-manifest",
+            &describe.raw_yaml,
+        );
+    });
 }
 
-fn describe_block(ui: &mut egui::Ui, title: &str, value: &str) {
-    ui.strong(title);
-    ui.add(
-        egui::Label::new(egui::RichText::new(value).monospace())
-            .wrap_mode(TextWrapMode::Extend)
-            .selectable(true),
-    );
-    ui.add_space(8.0);
+fn resource_quota_hard_entries(raw: &serde_json::Value) -> Vec<ResourceMapEntry> {
+    let status_hard = resource_map_entries(raw.pointer("/status/hard"));
+    if status_hard.is_empty() {
+        resource_map_entries(raw.pointer("/spec/hard"))
+    } else {
+        status_hard
+    }
 }
 
 fn string_array(value: Option<&serde_json::Value>) -> String {
@@ -1115,6 +1131,56 @@ mod tests {
         assert_eq!(row.hard, "limits.cpu=4, pods=10, requests.memory=8Gi");
         assert_eq!(row.used, "limits.cpu=2, pods=4, requests.memory=2Gi");
         assert!(row.age.ends_with(" ago"));
+    }
+
+    #[test]
+    fn resource_quota_describe_extracts_hard_and_used_entries() {
+        let row = ResourceQuotaRow::from_summary(&quota_summary());
+        let describe = resource_quota_describe_from_row(&row);
+
+        assert!(
+            describe
+                .hard
+                .iter()
+                .any(|entry| { entry.key == "limits.cpu" && entry.value == "4" })
+        );
+        assert!(
+            describe
+                .hard
+                .iter()
+                .any(|entry| { entry.key == "requests.memory" && entry.value == "8Gi" })
+        );
+        assert!(
+            describe
+                .used
+                .iter()
+                .any(|entry| { entry.key == "limits.cpu" && entry.value == "2" })
+        );
+        assert!(
+            describe
+                .used
+                .iter()
+                .any(|entry| { entry.key == "requests.memory" && entry.value == "2Gi" })
+        );
+    }
+
+    #[test]
+    fn resource_quota_describe_hard_entries_fall_back_to_spec() {
+        let row = ResourceQuotaRow::from_summary(&ResourceSummary {
+            name: "spec-only".to_owned(),
+            namespace: Some("default".to_owned()),
+            kind: "ResourceQuota".to_owned(),
+            status: None,
+            raw: serde_json::json!({
+                "metadata": {"name": "spec-only", "namespace": "default"},
+                "spec": {"hard": {"pods": "5"}}
+            }),
+        });
+
+        let describe = resource_quota_describe_from_row(&row);
+
+        assert_eq!(describe.hard, vec![ResourceMapEntry::new("pods", "5")]);
+        assert!(describe.used.is_empty());
     }
 
     #[test]

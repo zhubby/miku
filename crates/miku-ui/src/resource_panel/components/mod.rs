@@ -18,9 +18,11 @@ pub(super) use actions::{
     visible_keys,
 };
 pub(super) use describe::{
-    ContainerTemplateDescribe, DescribeCondition, DescribeField, condition_describes,
-    container_template_describes, describe_conditions, describe_container_templates,
-    describe_fields, describe_group, describe_raw_manifest, show_resource_describe_window,
+    ContainerTemplateDescribe, DescribeCondition, DescribeField, condition_color,
+    condition_describes, container_template_describes, describe_conditions,
+    describe_container_templates, describe_fields, describe_group, describe_lines,
+    describe_metadata_maps, describe_raw_manifest, describe_subsection, non_wrapping_value,
+    resource_map_entries, show_resource_describe_window,
 };
 pub(super) use map_view::{ResourceMapEntry, ResourceMapView};
 pub(super) use toolbar::ResourceToolbar;

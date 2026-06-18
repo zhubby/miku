@@ -1,5 +1,7 @@
 use eframe::egui::{self, TextWrapMode};
 
+use super::map_view::{ResourceMapEntry, ResourceMapView};
+
 pub(crate) const RESOURCE_DESCRIBE_LINE_WIDTH: f32 = 1080.0;
 
 const RESOURCE_DESCRIBE_DIALOG_WIDTH: f32 = 860.0;
@@ -138,6 +140,58 @@ pub(crate) fn non_wrapping_value(ui: &mut egui::Ui, value: &str, width: f32) {
     );
 }
 
+pub(crate) fn describe_lines(ui: &mut egui::Ui, lines: &[String]) {
+    if lines.is_empty() {
+        non_wrapping_value(ui, "N/A", RESOURCE_DESCRIBE_LINE_WIDTH);
+        return;
+    }
+
+    for line in lines {
+        non_wrapping_value(ui, line, RESOURCE_DESCRIBE_LINE_WIDTH);
+    }
+}
+
+pub(crate) fn describe_text_block(ui: &mut egui::Ui, id_salt: impl std::hash::Hash, value: &str) {
+    egui::ScrollArea::both()
+        .id_salt(id_salt)
+        .max_height(180.0)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.add(
+                egui::Label::new(egui::RichText::new(value).monospace())
+                    .wrap_mode(TextWrapMode::Extend)
+                    .selectable(true),
+            );
+        });
+}
+
+pub(crate) fn describe_metadata_maps(
+    ui: &mut egui::Ui,
+    id_prefix: &'static str,
+    labels: &[ResourceMapEntry],
+    annotations: &[ResourceMapEntry],
+) {
+    let labels_id = format!("{id_prefix}-labels");
+    ResourceMapView {
+        id_salt: &labels_id,
+        icon: egui_phosphor::regular::TAG,
+        title: "Labels",
+        entries: labels,
+        empty_label: "No labels.",
+    }
+    .show(ui);
+    ui.add_space(8.0);
+    let annotations_id = format!("{id_prefix}-annotations");
+    ResourceMapView {
+        id_salt: &annotations_id,
+        icon: egui_phosphor::regular::NOTE,
+        title: "Annotations",
+        entries: annotations,
+        empty_label: "No annotations.",
+    }
+    .show(ui);
+}
+
 pub(crate) fn describe_conditions(
     ui: &mut egui::Ui,
     id_salt: &'static str,
@@ -186,17 +240,7 @@ pub(crate) fn describe_container_templates(
 }
 
 pub(crate) fn describe_raw_manifest(ui: &mut egui::Ui, id_salt: &'static str, raw_yaml: &str) {
-    egui::ScrollArea::both()
-        .id_salt(id_salt)
-        .max_height(180.0)
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.add(
-                egui::Label::new(egui::RichText::new(raw_yaml).monospace())
-                    .wrap_mode(TextWrapMode::Extend)
-                    .selectable(true),
-            );
-        });
+    describe_text_block(ui, id_salt, raw_yaml);
 }
 
 pub(crate) fn container_template_describes(
@@ -229,6 +273,23 @@ pub(crate) fn condition_describes(value: Option<&serde_json::Value>) -> Vec<Desc
                 .to_owned(),
         })
         .collect()
+}
+
+pub(crate) fn resource_map_entries(value: Option<&serde_json::Value>) -> Vec<ResourceMapEntry> {
+    let mut entries = value
+        .and_then(serde_json::Value::as_object)
+        .into_iter()
+        .flat_map(|object| {
+            object.iter().map(|(key, value)| {
+                let value = value
+                    .as_str()
+                    .map_or_else(|| value.to_string(), ToOwned::to_owned);
+                ResourceMapEntry::new(key, value)
+            })
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.key.cmp(&right.key));
+    entries
 }
 
 fn show_container_template_describe(ui: &mut egui::Ui, container: &ContainerTemplateDescribe) {
@@ -295,7 +356,7 @@ fn container_template_describe(container: &serde_json::Value) -> ContainerTempla
     }
 }
 
-fn condition_color(ui: &egui::Ui, status: &str) -> egui::Color32 {
+pub(crate) fn condition_color(ui: &egui::Ui, status: &str) -> egui::Color32 {
     match status {
         "True" | "Available" | "Ready" | "Running" | "Complete" => {
             egui::Color32::from_rgb(46, 160, 67)
@@ -475,5 +536,25 @@ mod tests {
                 .iter()
                 .all(|field| field.value == "N/A")
         );
+    }
+
+    #[test]
+    fn resource_map_entries_sort_keys_and_stringify_values() {
+        let raw = serde_json::json!({
+            "metadata": {
+                "labels": {
+                    "tier": "api",
+                    "enabled": true,
+                    "replicas": 2
+                }
+            }
+        });
+
+        let entries = resource_map_entries(raw.pointer("/metadata/labels"));
+
+        assert_eq!(entries[0], ResourceMapEntry::new("enabled", "true"));
+        assert_eq!(entries[1], ResourceMapEntry::new("replicas", "2"));
+        assert_eq!(entries[2], ResourceMapEntry::new("tier", "api"));
+        assert!(resource_map_entries(raw.pointer("/metadata/annotations")).is_empty());
     }
 }

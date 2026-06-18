@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use eframe::egui::{self, TextWrapMode};
+use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use miku_api::ResourceSummary;
 use miku_core::ClusterId;
@@ -8,16 +8,17 @@ use miku_core::ClusterId;
 #[cfg(test)]
 use super::ResourceLoadRequest;
 use super::components::{
-    GenericBatchDeleteDialog, GenericCreateDialog, GenericDeleteDialog, GenericEditDialog,
-    ResourceBatchDeleteDialogInput, ResourceCreateDialogInput, ResourceCreateDialogResponse,
-    ResourceDeleteDialogInput, ResourceDeleteDialogResponse, ResourceEditDialogInput,
-    ResourceEditDialogResponse, ResourceMapEntry, ResourceMapView, ResourceMetadata,
-    ResourceRowTarget, ResourceToolbar, ResourceYamlViewDialog, SELECT_COLUMN_WIDTH,
-    apply_resource_request, batch_delete_resource_request, default_resource_yaml,
-    delete_resource_request, edit_resource_request, editable_resource_yaml,
-    selected_delete_targets, show_resource_batch_delete_dialog, show_resource_create_dialog,
-    show_resource_delete_dialog, show_resource_edit_dialog, show_row_selection_checkbox,
-    visible_keys,
+    DescribeField, GenericBatchDeleteDialog, GenericCreateDialog, GenericDeleteDialog,
+    GenericEditDialog, ResourceBatchDeleteDialogInput, ResourceCreateDialogInput,
+    ResourceCreateDialogResponse, ResourceDeleteDialogInput, ResourceDeleteDialogResponse,
+    ResourceEditDialogInput, ResourceEditDialogResponse, ResourceMapEntry, ResourceMapView,
+    ResourceMetadata, ResourceRowTarget, ResourceToolbar, ResourceYamlViewDialog,
+    SELECT_COLUMN_WIDTH, apply_resource_request, batch_delete_resource_request,
+    default_resource_yaml, delete_resource_request, describe_fields, describe_group,
+    describe_metadata_maps, describe_raw_manifest, edit_resource_request, editable_resource_yaml,
+    resource_map_entries, selected_delete_targets, show_resource_batch_delete_dialog,
+    show_resource_create_dialog, show_resource_delete_dialog, show_resource_describe_window,
+    show_resource_edit_dialog, show_row_selection_checkbox, visible_keys,
 };
 use super::{
     LoadStatus, ResourceActionKind, ResourceActionOutcome, ResourceLoadKind, ResourcePanelRequests,
@@ -435,26 +436,15 @@ impl ConfigMapResourcePanel {
         };
 
         let mut open = true;
-        egui::Window::new(format!("Describe {}", dialog.name))
-            .id(egui::Id::new(("config_map-describe-dialog", &dialog.key)))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .open(&mut open)
-            .collapsible(false)
-            .fixed_size([DESCRIBE_DIALOG_WIDTH, DESCRIBE_DIALOG_HEIGHT])
-            .show(ctx, |ui| {
-                ui.set_width(DESCRIBE_DIALOG_WIDTH);
-                ui.set_height(DESCRIBE_CONTENT_HEIGHT);
-                egui::ScrollArea::both()
-                    .id_salt(("config_map-describe-content", &dialog.key))
-                    .max_width(DESCRIBE_DIALOG_WIDTH)
-                    .max_height(DESCRIBE_CONTENT_HEIGHT)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.set_min_width(DESCRIBE_CONTENT_WIDTH);
-                        ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-                        show_config_map_describe(ui, &dialog.describe);
-                    });
-            });
+        show_resource_describe_window(
+            ctx,
+            egui::Id::new(("config_map-describe-dialog", &dialog.key)),
+            format!("Describe {}", dialog.name),
+            &mut open,
+            |ui| {
+                show_config_map_describe(ui, &dialog.describe);
+            },
+        );
 
         if !open {
             self.describe_dialog = None;
@@ -877,13 +867,6 @@ const COLUMNS: [&str; 7] = [
     "Age",
 ];
 const COLUMN_WIDTHS: [f32; 7] = [240.0, 160.0, 80.0, 110.0, 100.0, 360.0, 90.0];
-const DESCRIBE_DIALOG_WIDTH: f32 = 820.0;
-const DESCRIBE_DIALOG_HEIGHT: f32 = 560.0;
-const DESCRIBE_CONTENT_HEIGHT: f32 = 500.0;
-const DESCRIBE_CONTENT_WIDTH: f32 = 1080.0;
-const DESCRIBE_SECTION_WIDTH: f32 = 1048.0;
-const DESCRIBE_FIELD_LABEL_WIDTH: f32 = 130.0;
-const DESCRIBE_FIELD_VALUE_WIDTH: f32 = 360.0;
 
 #[cfg(test)]
 fn filter_config_map_rows<'a>(
@@ -1028,21 +1011,6 @@ struct ConfigMapDescribe {
     raw_yaml: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-struct DescribeField {
-    label: String,
-    value: String,
-}
-
-impl DescribeField {
-    fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
-        Self {
-            label: label.into(),
-            value: value.into(),
-        }
-    }
-}
-
 fn show_config_map_describe(ui: &mut egui::Ui, describe: &ConfigMapDescribe) {
     describe_group(ui, egui_phosphor::regular::GEAR, "ConfigMap", |ui| {
         describe_fields(ui, &describe.summary);
@@ -1071,92 +1039,22 @@ fn show_config_map_describe(ui: &mut egui::Ui, describe: &ConfigMapDescribe) {
 
     ui.add_space(10.0);
     describe_group(ui, egui_phosphor::regular::TAG, "Metadata", |ui| {
-        ResourceMapView {
-            id_salt: "config_map-describe-labels",
-            icon: egui_phosphor::regular::TAG,
-            title: "Labels",
-            entries: &describe.labels,
-            empty_label: "No labels.",
-        }
-        .show(ui);
-        ui.add_space(8.0);
-        ResourceMapView {
-            id_salt: "config_map-describe-annotations",
-            icon: egui_phosphor::regular::NOTE,
-            title: "Annotations",
-            entries: &describe.annotations,
-            empty_label: "No annotations.",
-        }
-        .show(ui);
+        describe_metadata_maps(
+            ui,
+            "config-map-describe-metadata",
+            &describe.labels,
+            &describe.annotations,
+        );
     });
 
     ui.add_space(10.0);
     describe_group(ui, egui_phosphor::regular::CODE, "Raw manifest", |ui| {
-        egui::ScrollArea::both()
-            .id_salt("config_map-describe-raw-manifest-content")
-            .max_height(180.0)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(&describe.raw_yaml).monospace())
-                        .wrap_mode(TextWrapMode::Extend)
-                        .selectable(true),
-                );
-            });
+        describe_raw_manifest(
+            ui,
+            "config_map-describe-raw-manifest-content",
+            &describe.raw_yaml,
+        );
     });
-}
-
-fn describe_group(
-    ui: &mut egui::Ui,
-    icon: &str,
-    title: &str,
-    contents: impl FnOnce(&mut egui::Ui),
-) {
-    egui::Frame::new()
-        .fill(ui.visuals().extreme_bg_color)
-        .stroke(egui::Stroke::new(
-            1.0,
-            ui.visuals().widgets.noninteractive.bg_stroke.color,
-        ))
-        .corner_radius(egui::CornerRadius::same(4))
-        .inner_margin(egui::Margin::symmetric(10, 8))
-        .show(ui, |ui| {
-            ui.set_min_width(DESCRIBE_SECTION_WIDTH);
-            ui.horizontal(|ui| {
-                ui.label(icon);
-                ui.strong(title);
-            });
-            ui.separator();
-            contents(ui);
-        });
-}
-
-fn describe_fields(ui: &mut egui::Ui, fields: &[DescribeField]) {
-    egui::Grid::new(ui.next_auto_id())
-        .num_columns(4)
-        .spacing([16.0, 4.0])
-        .show(ui, |ui| {
-            for chunk in fields.chunks(2) {
-                for field in chunk {
-                    ui.add_sized(
-                        [DESCRIBE_FIELD_LABEL_WIDTH, 0.0],
-                        egui::Label::new(egui::RichText::new(&field.label).weak())
-                            .wrap_mode(TextWrapMode::Extend),
-                    );
-                    ui.add_sized(
-                        [DESCRIBE_FIELD_VALUE_WIDTH, 0.0],
-                        egui::Label::new(&field.value)
-                            .wrap_mode(TextWrapMode::Extend)
-                            .selectable(true),
-                    );
-                }
-                if chunk.len() == 1 {
-                    ui.label("");
-                    ui.label("");
-                }
-                ui.end_row();
-            }
-        });
 }
 
 fn config_map_describe_from_row(row: &ConfigMapRow) -> ConfigMapDescribe {
@@ -1173,8 +1071,8 @@ fn config_map_describe_from_row(row: &ConfigMapRow) -> ConfigMapDescribe {
         ],
         data_keys: key_entries(raw.pointer("/data")),
         binary_data_keys: key_entries(raw.pointer("/binaryData")),
-        labels: string_map_entries(raw.pointer("/metadata/labels")),
-        annotations: string_map_entries(raw.pointer("/metadata/annotations")),
+        labels: resource_map_entries(raw.pointer("/metadata/labels")),
+        annotations: resource_map_entries(raw.pointer("/metadata/annotations")),
         raw_yaml: full_manifest_yaml(raw),
     }
 }
@@ -1212,23 +1110,6 @@ fn key_entries(value: Option<&serde_json::Value>) -> Vec<ResourceMapEntry> {
         .into_iter()
         .map(|key| ResourceMapEntry::new(key, "present"))
         .collect()
-}
-
-fn string_map_entries(value: Option<&serde_json::Value>) -> Vec<ResourceMapEntry> {
-    let mut entries = value
-        .and_then(serde_json::Value::as_object)
-        .into_iter()
-        .flat_map(|object| {
-            object.iter().map(|(key, value)| {
-                let value = value
-                    .as_str()
-                    .map_or_else(|| value.to_string(), ToOwned::to_owned);
-                ResourceMapEntry::new(key, value)
-            })
-        })
-        .collect::<Vec<_>>();
-    entries.sort_by(|left, right| left.key.cmp(&right.key));
-    entries
 }
 
 fn full_manifest_yaml(raw: &serde_json::Value) -> String {

@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use eframe::egui::{self, TextWrapMode};
+use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use miku_api::{LogLine, PodAttachInput, PodAttachOutput, ResourceSummary};
 use miku_core::{ClusterId, ResourceRef};
@@ -8,8 +8,10 @@ use miku_core::{ClusterId, ResourceRef};
 #[cfg(test)]
 use super::ResourceLoadRequest;
 use super::components::{
-    ResourceMapEntry, ResourceMapView, ResourceToolbar, ResourceYamlEditDialog,
-    ResourceYamlViewDialog,
+    DescribeCondition, DescribeField, ResourceMapEntry, ResourceToolbar, ResourceYamlEditDialog,
+    ResourceYamlViewDialog, condition_color, condition_describes, describe_conditions,
+    describe_fields, describe_group, describe_lines, describe_metadata_maps, describe_raw_manifest,
+    describe_subsection, non_wrapping_value, resource_map_entries, show_resource_describe_window,
 };
 use super::{
     LoadStatus, PodAttachInputRequest, PodAttachRequest, PodLogRequest, ResourceActionKind,
@@ -598,26 +600,15 @@ impl PodResourcePanel {
         };
 
         let mut open = true;
-        egui::Window::new(format!("Describe {}", dialog.name))
-            .id(egui::Id::new(("pod-describe-dialog", &dialog.key)))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .open(&mut open)
-            .collapsible(false)
-            .fixed_size([POD_DESCRIBE_DIALOG_WIDTH, POD_DESCRIBE_DIALOG_HEIGHT])
-            .show(ctx, |ui| {
-                ui.set_width(POD_DESCRIBE_DIALOG_WIDTH);
-                ui.set_height(POD_DESCRIBE_CONTENT_HEIGHT);
-                egui::ScrollArea::both()
-                    .id_salt(("pod-describe-content", &dialog.key))
-                    .max_width(POD_DESCRIBE_DIALOG_WIDTH)
-                    .max_height(POD_DESCRIBE_CONTENT_HEIGHT)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.set_min_width(POD_DESCRIBE_CONTENT_WIDTH);
-                        ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-                        show_pod_describe(ui, &dialog.describe);
-                    });
-            });
+        show_resource_describe_window(
+            ctx,
+            egui::Id::new(("pod-describe-dialog", &dialog.key)),
+            format!("Describe {}", dialog.name),
+            &mut open,
+            |ui| {
+                show_pod_describe(ui, &dialog.describe);
+            },
+        );
 
         if !open {
             self.describe_dialog = None;
@@ -1569,14 +1560,6 @@ const POD_ATTACH_DIALOG_HEIGHT: f32 = 520.0;
 const POD_ATTACH_OUTPUT_WIDTH: f32 = 780.0;
 const POD_ATTACH_OUTPUT_HEIGHT: f32 = 360.0;
 const POD_ATTACH_INPUT_WIDTH: f32 = 720.0;
-const POD_DESCRIBE_DIALOG_WIDTH: f32 = 860.0;
-const POD_DESCRIBE_DIALOG_HEIGHT: f32 = 580.0;
-const POD_DESCRIBE_CONTENT_HEIGHT: f32 = 520.0;
-const POD_DESCRIBE_CONTENT_WIDTH: f32 = 1160.0;
-const POD_DESCRIBE_SECTION_WIDTH: f32 = 1128.0;
-const POD_DESCRIBE_FIELD_LABEL_WIDTH: f32 = 120.0;
-const POD_DESCRIBE_FIELD_VALUE_WIDTH: f32 = 390.0;
-const POD_DESCRIBE_LINE_WIDTH: f32 = 1080.0;
 
 fn status_color(ui: &egui::Ui, status: &str) -> egui::Color32 {
     match status {
@@ -1786,7 +1769,7 @@ struct PodDescribe {
     labels: Vec<ResourceMapEntry>,
     annotations: Vec<ResourceMapEntry>,
     containers: Vec<ContainerDescribe>,
-    conditions: Vec<ConditionDescribe>,
+    conditions: Vec<DescribeCondition>,
     volumes: Vec<String>,
     node_selectors: Vec<String>,
     tolerations: Vec<String>,
@@ -1806,20 +1789,6 @@ struct ContainerDescribe {
     env_count: String,
     volume_mounts: String,
     probes: Vec<DescribeField>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct ConditionDescribe {
-    condition_type: String,
-    status: String,
-    reason: String,
-    message: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct DescribeField {
-    label: String,
-    value: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1923,7 +1892,7 @@ fn show_pod_describe(ui: &mut egui::Ui, describe: &PodDescribe) {
         "Containers",
         |ui| {
             if describe.containers.is_empty() {
-                non_wrapping_value(ui, "N/A", POD_DESCRIBE_LINE_WIDTH);
+                describe_lines(ui, &[]);
             } else {
                 for (index, container) in describe.containers.iter().enumerate() {
                     if index > 0 {
@@ -1941,31 +1910,7 @@ fn show_pod_describe(ui: &mut egui::Ui, describe: &PodDescribe) {
         egui_phosphor::regular::CHECK_CIRCLE,
         "Conditions",
         |ui| {
-            if describe.conditions.is_empty() {
-                non_wrapping_value(ui, "N/A", POD_DESCRIBE_LINE_WIDTH);
-            } else {
-                egui::Grid::new("pod-describe-conditions")
-                    .num_columns(4)
-                    .spacing([18.0, 4.0])
-                    .striped(true)
-                    .show(ui, |ui| {
-                        ui.strong("Type");
-                        ui.strong("Status");
-                        ui.strong("Reason");
-                        ui.strong("Message");
-                        ui.end_row();
-                        for condition in &describe.conditions {
-                            non_wrapping_value(ui, &condition.condition_type, 160.0);
-                            ui.colored_label(
-                                condition_color(ui, &condition.status),
-                                &condition.status,
-                            );
-                            non_wrapping_value(ui, &condition.reason, 200.0);
-                            non_wrapping_value(ui, &condition.message, 560.0);
-                            ui.end_row();
-                        }
-                    });
-            }
+            describe_conditions(ui, "pod-describe-conditions", &describe.conditions);
         },
     );
 
@@ -1978,23 +1923,12 @@ fn show_pod_describe(ui: &mut egui::Ui, describe: &PodDescribe) {
     describe_group(ui, egui_phosphor::regular::TAG, "Metadata", |ui| {
         describe_fields(ui, &describe.metadata);
         ui.add_space(8.0);
-        ResourceMapView {
-            id_salt: "pod-describe-labels",
-            icon: egui_phosphor::regular::TAG,
-            title: "Labels",
-            entries: &describe.labels,
-            empty_label: "No labels.",
-        }
-        .show(ui);
-        ui.add_space(8.0);
-        ResourceMapView {
-            id_salt: "pod-describe-annotations",
-            icon: egui_phosphor::regular::NOTE,
-            title: "Annotations",
-            entries: &describe.annotations,
-            empty_label: "No annotations.",
-        }
-        .show(ui);
+        describe_metadata_maps(
+            ui,
+            "pod-describe-metadata",
+            &describe.labels,
+            &describe.annotations,
+        );
     });
 
     ui.add_space(10.0);
@@ -2013,17 +1947,7 @@ fn show_pod_describe(ui: &mut egui::Ui, describe: &PodDescribe) {
 
     ui.add_space(10.0);
     describe_group(ui, egui_phosphor::regular::CODE, "Raw manifest", |ui| {
-        egui::ScrollArea::both()
-            .id_salt("pod-describe-raw-manifest-content")
-            .max_height(180.0)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(&describe.raw_yaml).monospace())
-                        .wrap_mode(TextWrapMode::Extend)
-                        .selectable(true),
-                );
-            });
+        describe_raw_manifest(ui, "pod-describe-raw-manifest-content", &describe.raw_yaml);
     });
 }
 
@@ -2072,96 +1996,6 @@ fn show_container_describe(ui: &mut egui::Ui, container: &ContainerDescribe) {
     describe_fields(ui, &container.probes);
 }
 
-fn describe_group(
-    ui: &mut egui::Ui,
-    icon: &str,
-    title: &str,
-    contents: impl FnOnce(&mut egui::Ui),
-) {
-    egui::Frame::new()
-        .fill(ui.visuals().extreme_bg_color)
-        .stroke(egui::Stroke::new(
-            1.0,
-            ui.visuals().widgets.noninteractive.bg_stroke.color,
-        ))
-        .corner_radius(egui::CornerRadius::same(4))
-        .inner_margin(egui::Margin::symmetric(10, 8))
-        .show(ui, |ui| {
-            ui.set_min_width(POD_DESCRIBE_SECTION_WIDTH);
-            describe_subsection(ui, icon, title);
-            ui.separator();
-            contents(ui);
-        });
-}
-
-fn describe_subsection(ui: &mut egui::Ui, icon: &str, title: &str) {
-    ui.horizontal(|ui| {
-        ui.label(icon);
-        ui.strong(title);
-    });
-}
-
-fn describe_fields(ui: &mut egui::Ui, fields: &[DescribeField]) {
-    egui::Grid::new(ui.next_auto_id())
-        .num_columns(4)
-        .spacing([16.0, 4.0])
-        .show(ui, |ui| {
-            for chunk in fields.chunks(2) {
-                for field in chunk {
-                    ui.add_sized(
-                        [POD_DESCRIBE_FIELD_LABEL_WIDTH, 0.0],
-                        egui::Label::new(egui::RichText::new(&field.label).weak())
-                            .wrap_mode(TextWrapMode::Extend),
-                    );
-                    non_wrapping_value(ui, &field.value, POD_DESCRIBE_FIELD_VALUE_WIDTH);
-                }
-                if chunk.len() == 1 {
-                    ui.label("");
-                    ui.label("");
-                }
-                ui.end_row();
-            }
-        });
-}
-
-fn describe_lines(ui: &mut egui::Ui, lines: &[String]) {
-    if lines.is_empty() {
-        non_wrapping_value(ui, "N/A", POD_DESCRIBE_LINE_WIDTH);
-        return;
-    }
-
-    for line in lines {
-        non_wrapping_value(ui, line, POD_DESCRIBE_LINE_WIDTH);
-    }
-}
-
-fn non_wrapping_value(ui: &mut egui::Ui, value: &str, width: f32) {
-    ui.add_sized(
-        [width, 0.0],
-        egui::Label::new(value)
-            .wrap_mode(TextWrapMode::Extend)
-            .selectable(true),
-    );
-}
-
-fn condition_color(ui: &egui::Ui, status: &str) -> egui::Color32 {
-    match status {
-        "True" | "Ready" | "Running" => egui::Color32::from_rgb(46, 160, 67),
-        "False" | "Not ready" | "Waiting" | "Pending" => egui::Color32::from_rgb(191, 135, 0),
-        "Unknown" | "Terminated" | "Failed" | "Error" => ui.visuals().error_fg_color,
-        _ => ui.visuals().text_color(),
-    }
-}
-
-impl DescribeField {
-    fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
-        Self {
-            label: label.into(),
-            value: value.into(),
-        }
-    }
-}
-
 fn pod_describe_from_row(row: &PodRow) -> PodDescribe {
     let raw = &row.raw;
     PodDescribe {
@@ -2176,10 +2010,10 @@ fn pod_describe_from_row(row: &PodRow) -> PodDescribe {
             DescribeField::new("Restarts", row.restarts.clone()),
         ],
         metadata: pod_metadata_fields(raw),
-        labels: string_map_entries(raw.pointer("/metadata/labels")),
-        annotations: string_map_entries(raw.pointer("/metadata/annotations")),
+        labels: resource_map_entries(raw.pointer("/metadata/labels")),
+        annotations: resource_map_entries(raw.pointer("/metadata/annotations")),
         containers: pod_container_describes(raw),
-        conditions: pod_condition_describes(raw),
+        conditions: condition_describes(raw.pointer("/status/conditions")),
         volumes: pod_volume_describes(raw),
         node_selectors: string_map_lines(raw.pointer("/spec/nodeSelector")),
         tolerations: pod_toleration_describes(raw),
@@ -2360,26 +2194,6 @@ fn probe_label(container: &serde_json::Value, name: &str) -> String {
     }
 }
 
-fn pod_condition_describes(raw: &serde_json::Value) -> Vec<ConditionDescribe> {
-    raw.pointer("/status/conditions")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .map(|condition| ConditionDescribe {
-            condition_type: value_str(condition, &["type"]).unwrap_or("N/A").to_owned(),
-            status: value_str(condition, &["status"])
-                .unwrap_or("N/A")
-                .to_owned(),
-            reason: value_str(condition, &["reason"])
-                .unwrap_or("N/A")
-                .to_owned(),
-            message: value_str(condition, &["message"])
-                .unwrap_or("N/A")
-                .to_owned(),
-        })
-        .collect()
-}
-
 fn pod_volume_describes(raw: &serde_json::Value) -> Vec<String> {
     raw.pointer("/spec/volumes")
         .and_then(serde_json::Value::as_array)
@@ -2410,25 +2224,8 @@ fn pod_toleration_describes(raw: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-fn string_map_entries(value: Option<&serde_json::Value>) -> Vec<ResourceMapEntry> {
-    let mut entries = value
-        .and_then(serde_json::Value::as_object)
-        .into_iter()
-        .flat_map(|object| {
-            object.iter().map(|(key, value)| {
-                let value = value
-                    .as_str()
-                    .map_or_else(|| value.to_string(), ToOwned::to_owned);
-                ResourceMapEntry::new(key, value)
-            })
-        })
-        .collect::<Vec<_>>();
-    entries.sort_by(|left, right| left.key.cmp(&right.key));
-    entries
-}
-
 fn string_map_lines(value: Option<&serde_json::Value>) -> Vec<String> {
-    string_map_entries(value)
+    resource_map_entries(value)
         .into_iter()
         .map(|entry| format!("{}={}", entry.key, entry.value))
         .collect()

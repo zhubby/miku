@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use eframe::egui::{self, TextWrapMode};
+use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use miku_api::ResourceSummary;
 use miku_core::{ClusterId, ResourceRef};
@@ -8,15 +8,18 @@ use miku_core::{ClusterId, ResourceRef};
 #[cfg(test)]
 use super::ResourceLoadRequest;
 use super::components::{
-    GenericBatchDeleteDialog, GenericCreateDialog, GenericDeleteDialog, GenericEditDialog,
-    ResourceBatchDeleteDialogInput, ResourceCreateDialogInput, ResourceCreateDialogResponse,
-    ResourceDeleteDialogInput, ResourceDeleteDialogResponse, ResourceEditDialogInput,
-    ResourceEditDialogResponse, ResourceMetadata, ResourceRowTarget, ResourceToolbar,
-    ResourceYamlViewDialog, SELECT_COLUMN_WIDTH, apply_resource_request,
-    batch_delete_resource_request, default_resource_yaml, delete_resource_request,
-    edit_resource_request, editable_resource_yaml, selected_delete_targets,
+    DescribeField, GenericBatchDeleteDialog, GenericCreateDialog, GenericDeleteDialog,
+    GenericEditDialog, ResourceBatchDeleteDialogInput, ResourceCreateDialogInput,
+    ResourceCreateDialogResponse, ResourceDeleteDialogInput, ResourceDeleteDialogResponse,
+    ResourceEditDialogInput, ResourceEditDialogResponse, ResourceMapEntry, ResourceMapView,
+    ResourceMetadata, ResourceRowTarget, ResourceToolbar, ResourceYamlViewDialog,
+    SELECT_COLUMN_WIDTH, apply_resource_request, batch_delete_resource_request,
+    default_resource_yaml, delete_resource_request, describe_fields, describe_group,
+    describe_lines, describe_metadata_maps, describe_raw_manifest, edit_resource_request,
+    editable_resource_yaml, resource_map_entries, selected_delete_targets,
     show_resource_batch_delete_dialog, show_resource_create_dialog, show_resource_delete_dialog,
-    show_resource_edit_dialog, show_row_selection_checkbox, visible_keys,
+    show_resource_describe_window, show_resource_edit_dialog, show_row_selection_checkbox,
+    visible_keys,
 };
 use super::{
     LoadStatus, ResourceActionKind, ResourceActionOutcome, ResourceLoadKind, ResourcePanelRequests,
@@ -430,22 +433,15 @@ impl LimitRangeResourcePanel {
             return;
         };
         let mut open = true;
-        egui::Window::new(format!("Describe {}", dialog.name))
-            .id(egui::Id::new(("limit_range-describe", &dialog.key)))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .open(&mut open)
-            .collapsible(false)
-            .fixed_size([820.0, 560.0])
-            .show(ctx, |ui| {
-                egui::ScrollArea::both()
-                    .id_salt(("limit_range-describe-content", &dialog.key))
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.set_min_width(980.0);
-                        ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-                        show_limit_range_describe(ui, &dialog.describe);
-                    });
-            });
+        show_resource_describe_window(
+            ctx,
+            egui::Id::new(("limit_range-describe", &dialog.key)),
+            format!("Describe {}", dialog.name),
+            &mut open,
+            |ui| {
+                show_limit_range_describe(ui, &dialog.describe);
+            },
+        );
         if !open {
             self.describe_dialog = None;
         }
@@ -975,58 +971,154 @@ struct LimitRangeViewDialog {
 
 #[derive(Clone, Debug, PartialEq)]
 struct LimitRangeDescribe {
-    summary: Vec<(String, String)>,
-    limits: String,
-    labels: String,
-    annotations: String,
+    summary: Vec<DescribeField>,
+    limits: Vec<LimitItemDescribe>,
+    labels: Vec<ResourceMapEntry>,
+    annotations: Vec<ResourceMapEntry>,
     raw_yaml: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct LimitItemDescribe {
+    item_type: String,
+    min: Vec<ResourceMapEntry>,
+    max: Vec<ResourceMapEntry>,
+    default: Vec<ResourceMapEntry>,
+    default_request: Vec<ResourceMapEntry>,
+    max_limit_request_ratio: Vec<ResourceMapEntry>,
 }
 
 fn limit_range_describe_from_row(row: &LimitRangeRow) -> LimitRangeDescribe {
     let raw = &row.raw;
+    let limits = limit_items(raw);
     LimitRangeDescribe {
         summary: vec![
-            ("Name".to_owned(), row.name.clone()),
-            ("Namespace".to_owned(), row.namespace.clone()),
-            ("Types".to_owned(), row.types.clone()),
-            ("Age".to_owned(), row.age.clone()),
+            DescribeField::new("Name", row.name.clone()),
+            DescribeField::new("Namespace", row.namespace.clone()),
+            DescribeField::new("Types", row.types.clone()),
+            DescribeField::new("Age", row.age.clone()),
         ],
-        limits: detailed_item_summaries(&limit_items(raw)),
-        labels: resource_map(raw.pointer("/metadata/labels")).unwrap_or_else(|| "N/A".to_owned()),
-        annotations: resource_map(raw.pointer("/metadata/annotations"))
-            .unwrap_or_else(|| "N/A".to_owned()),
+        limits: limit_item_describes(&limits),
+        labels: resource_map_entries(raw.pointer("/metadata/labels")),
+        annotations: resource_map_entries(raw.pointer("/metadata/annotations")),
         raw_yaml: full_manifest_yaml(raw),
     }
 }
 
 fn show_limit_range_describe(ui: &mut egui::Ui, describe: &LimitRangeDescribe) {
-    ui.heading("LimitRange");
-    ui.separator();
-    egui::Grid::new("limit_range_summary")
-        .num_columns(2)
-        .spacing([16.0, 4.0])
-        .show(ui, |ui| {
-            for (label, value) in &describe.summary {
-                ui.weak(label);
-                ui.label(value);
-                ui.end_row();
-            }
-        });
+    describe_group(ui, egui_phosphor::regular::GAUGE, "LimitRange", |ui| {
+        describe_fields(ui, &describe.summary);
+    });
+
     ui.add_space(10.0);
-    describe_block(ui, "Limits", &describe.limits);
-    describe_block(ui, "Labels", &describe.labels);
-    describe_block(ui, "Annotations", &describe.annotations);
-    describe_block(ui, "Raw manifest", &describe.raw_yaml);
+    describe_group(ui, egui_phosphor::regular::GAUGE, "Limits", |ui| {
+        show_limit_items(ui, &describe.limits);
+    });
+
+    ui.add_space(10.0);
+    describe_group(ui, egui_phosphor::regular::TAG, "Metadata", |ui| {
+        describe_metadata_maps(
+            ui,
+            "limit-range-describe-metadata",
+            &describe.labels,
+            &describe.annotations,
+        );
+    });
+
+    ui.add_space(10.0);
+    describe_group(ui, egui_phosphor::regular::CODE, "Raw manifest", |ui| {
+        describe_raw_manifest(ui, "limit-range-describe-raw-manifest", &describe.raw_yaml);
+    });
 }
 
-fn describe_block(ui: &mut egui::Ui, title: &str, value: &str) {
-    ui.strong(title);
-    ui.add(
-        egui::Label::new(egui::RichText::new(value).monospace())
-            .wrap_mode(TextWrapMode::Extend)
-            .selectable(true),
-    );
-    ui.add_space(8.0);
+fn show_limit_items(ui: &mut egui::Ui, items: &[LimitItemDescribe]) {
+    if items.is_empty() {
+        describe_lines(ui, &[]);
+        return;
+    }
+
+    for (index, item) in items.iter().enumerate() {
+        if index > 0 {
+            ui.separator();
+        }
+        show_limit_item(ui, index, item);
+    }
+}
+
+fn show_limit_item(ui: &mut egui::Ui, index: usize, item: &LimitItemDescribe) {
+    ui.horizontal(|ui| {
+        ui.label(egui_phosphor::regular::PACKAGE);
+        ui.strong(&item.item_type);
+    });
+    ui.add_space(6.0);
+
+    let min_id = format!("limit-range-describe-limit-{index}-min");
+    ResourceMapView {
+        id_salt: &min_id,
+        icon: egui_phosphor::regular::GAUGE,
+        title: "Min",
+        entries: &item.min,
+        empty_label: "No min values.",
+    }
+    .show(ui);
+    ui.add_space(6.0);
+
+    let max_id = format!("limit-range-describe-limit-{index}-max");
+    ResourceMapView {
+        id_salt: &max_id,
+        icon: egui_phosphor::regular::GAUGE,
+        title: "Max",
+        entries: &item.max,
+        empty_label: "No max values.",
+    }
+    .show(ui);
+    ui.add_space(6.0);
+
+    let default_id = format!("limit-range-describe-limit-{index}-default");
+    ResourceMapView {
+        id_salt: &default_id,
+        icon: egui_phosphor::regular::GEAR,
+        title: "Default",
+        entries: &item.default,
+        empty_label: "No default values.",
+    }
+    .show(ui);
+    ui.add_space(6.0);
+
+    let default_request_id = format!("limit-range-describe-limit-{index}-default-request");
+    ResourceMapView {
+        id_salt: &default_request_id,
+        icon: egui_phosphor::regular::GEAR,
+        title: "Default request",
+        entries: &item.default_request,
+        empty_label: "No default request values.",
+    }
+    .show(ui);
+    ui.add_space(6.0);
+
+    let ratio_id = format!("limit-range-describe-limit-{index}-ratio");
+    ResourceMapView {
+        id_salt: &ratio_id,
+        icon: egui_phosphor::regular::GAUGE,
+        title: "Max limit/request ratio",
+        entries: &item.max_limit_request_ratio,
+        empty_label: "No ratio values.",
+    }
+    .show(ui);
+}
+
+fn limit_item_describes(items: &[&serde_json::Value]) -> Vec<LimitItemDescribe> {
+    items
+        .iter()
+        .map(|item| LimitItemDescribe {
+            item_type: value_str(item, &["type"]).unwrap_or("N/A").to_owned(),
+            min: resource_map_entries(item.get("min")),
+            max: resource_map_entries(item.get("max")),
+            default: resource_map_entries(item.get("default")),
+            default_request: resource_map_entries(item.get("defaultRequest")),
+            max_limit_request_ratio: resource_map_entries(item.get("maxLimitRequestRatio")),
+        })
+        .collect()
 }
 
 fn limit_items(raw: &serde_json::Value) -> Vec<&serde_json::Value> {
@@ -1067,30 +1159,6 @@ fn item_summaries(items: &[&serde_json::Value]) -> String {
         "N/A".to_owned()
     } else {
         summaries.join("; ")
-    }
-}
-
-fn detailed_item_summaries(items: &[&serde_json::Value]) -> String {
-    let summaries = items
-        .iter()
-        .map(|item| {
-            let item_type = value_str(item, &["type"]).unwrap_or("N/A");
-            let min = resource_map(item.get("min")).unwrap_or_else(|| "N/A".to_owned());
-            let max = resource_map(item.get("max")).unwrap_or_else(|| "N/A".to_owned());
-            let default = resource_map(item.get("default")).unwrap_or_else(|| "N/A".to_owned());
-            let default_request =
-                resource_map(item.get("defaultRequest")).unwrap_or_else(|| "N/A".to_owned());
-            let ratio = resource_map(item.get("maxLimitRequestRatio"))
-                .unwrap_or_else(|| "N/A".to_owned());
-            format!(
-                "{item_type}\n  min: {min}\n  max: {max}\n  default: {default}\n  defaultRequest: {default_request}\n  maxLimitRequestRatio: {ratio}"
-            )
-        })
-        .collect::<Vec<_>>();
-    if summaries.is_empty() {
-        "N/A".to_owned()
-    } else {
-        summaries.join("\n\n")
     }
 }
 
@@ -1149,6 +1217,53 @@ mod tests {
         assert!(row.limits.contains("cpu=100m"));
         assert!(row.limits.contains("memory=512Mi"));
         assert!(row.age.ends_with(" ago"));
+    }
+
+    #[test]
+    fn limit_range_describe_extracts_limit_items_as_maps() {
+        let row = LimitRangeRow::from_summary(&limit_range_summary());
+        let describe = limit_range_describe_from_row(&row);
+
+        assert_eq!(describe.limits.len(), 2);
+        let container = &describe.limits[0];
+        assert_eq!(container.item_type, "Container");
+        assert!(
+            container
+                .min
+                .iter()
+                .any(|entry| { entry.key == "cpu" && entry.value == "100m" })
+        );
+        assert!(
+            container
+                .max
+                .iter()
+                .any(|entry| { entry.key == "memory" && entry.value == "512Mi" })
+        );
+        assert!(
+            container
+                .default
+                .iter()
+                .any(|entry| { entry.key == "cpu" && entry.value == "500m" })
+        );
+        assert!(
+            container
+                .default_request
+                .iter()
+                .any(|entry| { entry.key == "memory" && entry.value == "128Mi" })
+        );
+        assert_eq!(
+            container.max_limit_request_ratio,
+            vec![ResourceMapEntry::new("cpu", "10")]
+        );
+
+        let pod = &describe.limits[1];
+        assert_eq!(pod.item_type, "Pod");
+        assert!(pod.min.is_empty());
+        assert!(
+            pod.max
+                .iter()
+                .any(|entry| { entry.key == "memory" && entry.value == "1Gi" })
+        );
     }
 
     #[test]

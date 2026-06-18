@@ -1,11 +1,16 @@
-use eframe::egui::{self, TextWrapMode};
+use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use miku_api::ResourceSummary;
 use miku_core::ClusterId;
 
 #[cfg(test)]
 use super::ResourceLoadRequest;
-use super::components::{ResourceMapEntry, ResourceMapView, ResourceYamlViewDialog};
+use super::components::{
+    DescribeCondition, DescribeField, ResourceMapEntry, ResourceYamlViewDialog,
+    condition_describes, describe_conditions, describe_fields, describe_group, describe_lines,
+    describe_metadata_maps, describe_raw_manifest, resource_map_entries,
+    show_resource_describe_window,
+};
 use super::{
     LoadStatus, ResourceActionKind, ResourceActionOutcome, ResourceActionRequest, ResourceLoadKind,
     ResourcePanelRequests, ResourceUiEvent, ResourceWatchRequest,
@@ -472,26 +477,15 @@ impl NodeResourcePanel {
         };
 
         let mut open = true;
-        egui::Window::new(format!("Describe {}", dialog.name))
-            .id(egui::Id::new(("node-describe-dialog", &dialog.key)))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .open(&mut open)
-            .collapsible(false)
-            .fixed_size([NODE_DESCRIBE_DIALOG_WIDTH, NODE_DESCRIBE_DIALOG_HEIGHT])
-            .show(ctx, |ui| {
-                ui.set_width(NODE_DESCRIBE_DIALOG_WIDTH);
-                ui.set_height(NODE_DESCRIBE_CONTENT_HEIGHT);
-                egui::ScrollArea::both()
-                    .id_salt(("node-describe-content", &dialog.key))
-                    .max_width(NODE_DESCRIBE_DIALOG_WIDTH)
-                    .max_height(NODE_DESCRIBE_CONTENT_HEIGHT)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.set_min_width(NODE_DESCRIBE_CONTENT_WIDTH);
-                        ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-                        show_node_describe(ui, &dialog.describe);
-                    });
-            });
+        show_resource_describe_window(
+            ctx,
+            egui::Id::new(("node-describe-dialog", &dialog.key)),
+            format!("Describe {}", dialog.name),
+            &mut open,
+            |ui| {
+                show_node_describe(ui, &dialog.describe);
+            },
+        );
 
         if !open {
             self.describe_dialog = None;
@@ -726,15 +720,6 @@ const NODE_COLUMN_WIDTHS: [f32; 12] = [
     240.0, 100.0, 140.0, 130.0, 240.0, 150.0, 190.0, 140.0, 150.0, 120.0, 150.0, 90.0,
 ];
 
-const NODE_DESCRIBE_DIALOG_WIDTH: f32 = 860.0;
-const NODE_DESCRIBE_DIALOG_HEIGHT: f32 = 580.0;
-const NODE_DESCRIBE_CONTENT_HEIGHT: f32 = 520.0;
-const NODE_DESCRIBE_CONTENT_WIDTH: f32 = 1160.0;
-const NODE_DESCRIBE_SECTION_WIDTH: f32 = 1128.0;
-const NODE_DESCRIBE_FIELD_LABEL_WIDTH: f32 = 130.0;
-const NODE_DESCRIBE_FIELD_VALUE_WIDTH: f32 = 380.0;
-const NODE_DESCRIBE_LINE_WIDTH: f32 = 1080.0;
-
 fn ready_color(ui: &egui::Ui, ready: &str) -> egui::Color32 {
     match ready {
         "Ready" => egui::Color32::from_rgb(46, 160, 67),
@@ -921,25 +906,11 @@ struct NodeDescribe {
     resources: Vec<DescribeField>,
     system: Vec<DescribeField>,
     addresses: Vec<DescribeField>,
-    conditions: Vec<NodeConditionDescribe>,
+    conditions: Vec<DescribeCondition>,
     taints: Vec<String>,
     labels: Vec<ResourceMapEntry>,
     annotations: Vec<ResourceMapEntry>,
     raw_yaml: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct NodeConditionDescribe {
-    condition_type: String,
-    status: String,
-    reason: String,
-    message: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct DescribeField {
-    label: String,
-    value: String,
 }
 
 fn show_node_describe(ui: &mut egui::Ui, describe: &NodeDescribe) {
@@ -973,31 +944,7 @@ fn show_node_describe(ui: &mut egui::Ui, describe: &NodeDescribe) {
         egui_phosphor::regular::CHECK_CIRCLE,
         "Conditions",
         |ui| {
-            if describe.conditions.is_empty() {
-                non_wrapping_value(ui, "N/A", NODE_DESCRIBE_LINE_WIDTH);
-            } else {
-                egui::Grid::new("node-describe-conditions")
-                    .num_columns(4)
-                    .spacing([18.0, 4.0])
-                    .striped(true)
-                    .show(ui, |ui| {
-                        ui.strong("Type");
-                        ui.strong("Status");
-                        ui.strong("Reason");
-                        ui.strong("Message");
-                        ui.end_row();
-                        for condition in &describe.conditions {
-                            non_wrapping_value(ui, &condition.condition_type, 180.0);
-                            ui.colored_label(
-                                condition_color(ui, &condition.status),
-                                &condition.status,
-                            );
-                            non_wrapping_value(ui, &condition.reason, 220.0);
-                            non_wrapping_value(ui, &condition.message, 520.0);
-                            ui.end_row();
-                        }
-                    });
-            }
+            describe_conditions(ui, "node-describe-conditions", &describe.conditions);
         },
     );
 
@@ -1008,125 +955,18 @@ fn show_node_describe(ui: &mut egui::Ui, describe: &NodeDescribe) {
 
     ui.add_space(10.0);
     describe_group(ui, egui_phosphor::regular::TAG, "Metadata", |ui| {
-        ResourceMapView {
-            id_salt: "node-describe-labels",
-            icon: egui_phosphor::regular::TAG,
-            title: "Labels",
-            entries: &describe.labels,
-            empty_label: "No labels.",
-        }
-        .show(ui);
-        ui.add_space(8.0);
-        ResourceMapView {
-            id_salt: "node-describe-annotations",
-            icon: egui_phosphor::regular::NOTE,
-            title: "Annotations",
-            entries: &describe.annotations,
-            empty_label: "No annotations.",
-        }
-        .show(ui);
+        describe_metadata_maps(
+            ui,
+            "node-describe-metadata",
+            &describe.labels,
+            &describe.annotations,
+        );
     });
 
     ui.add_space(10.0);
     describe_group(ui, egui_phosphor::regular::CODE, "Raw manifest", |ui| {
-        egui::ScrollArea::both()
-            .id_salt("node-describe-raw-manifest-content")
-            .max_height(180.0)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(&describe.raw_yaml).monospace())
-                        .wrap_mode(TextWrapMode::Extend)
-                        .selectable(true),
-                );
-            });
+        describe_raw_manifest(ui, "node-describe-raw-manifest-content", &describe.raw_yaml);
     });
-}
-
-fn describe_group(
-    ui: &mut egui::Ui,
-    icon: &str,
-    title: &str,
-    contents: impl FnOnce(&mut egui::Ui),
-) {
-    egui::Frame::new()
-        .fill(ui.visuals().extreme_bg_color)
-        .stroke(egui::Stroke::new(
-            1.0,
-            ui.visuals().widgets.noninteractive.bg_stroke.color,
-        ))
-        .corner_radius(egui::CornerRadius::same(4))
-        .inner_margin(egui::Margin::symmetric(10, 8))
-        .show(ui, |ui| {
-            ui.set_min_width(NODE_DESCRIBE_SECTION_WIDTH);
-            ui.horizontal(|ui| {
-                ui.label(icon);
-                ui.strong(title);
-            });
-            ui.separator();
-            contents(ui);
-        });
-}
-
-fn describe_fields(ui: &mut egui::Ui, fields: &[DescribeField]) {
-    egui::Grid::new(ui.next_auto_id())
-        .num_columns(4)
-        .spacing([16.0, 4.0])
-        .show(ui, |ui| {
-            for chunk in fields.chunks(2) {
-                for field in chunk {
-                    ui.add_sized(
-                        [NODE_DESCRIBE_FIELD_LABEL_WIDTH, 0.0],
-                        egui::Label::new(egui::RichText::new(&field.label).weak())
-                            .wrap_mode(TextWrapMode::Extend),
-                    );
-                    non_wrapping_value(ui, &field.value, NODE_DESCRIBE_FIELD_VALUE_WIDTH);
-                }
-                if chunk.len() == 1 {
-                    ui.label("");
-                    ui.label("");
-                }
-                ui.end_row();
-            }
-        });
-}
-
-fn describe_lines(ui: &mut egui::Ui, lines: &[String]) {
-    if lines.is_empty() {
-        non_wrapping_value(ui, "N/A", NODE_DESCRIBE_LINE_WIDTH);
-        return;
-    }
-
-    for line in lines {
-        non_wrapping_value(ui, line, NODE_DESCRIBE_LINE_WIDTH);
-    }
-}
-
-fn non_wrapping_value(ui: &mut egui::Ui, value: &str, width: f32) {
-    ui.add_sized(
-        [width, 0.0],
-        egui::Label::new(value)
-            .wrap_mode(TextWrapMode::Extend)
-            .selectable(true),
-    );
-}
-
-fn condition_color(ui: &egui::Ui, status: &str) -> egui::Color32 {
-    match status {
-        "True" | "Ready" => egui::Color32::from_rgb(46, 160, 67),
-        "False" => egui::Color32::from_rgb(191, 135, 0),
-        "Unknown" => ui.visuals().error_fg_color,
-        _ => ui.visuals().text_color(),
-    }
-}
-
-impl DescribeField {
-    fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
-        Self {
-            label: label.into(),
-            value: value.into(),
-        }
-    }
 }
 
 fn node_describe_from_row(row: &NodeRow) -> NodeDescribe {
@@ -1164,10 +1004,10 @@ fn node_describe_from_row(row: &NodeRow) -> NodeDescribe {
             ),
         ],
         addresses: node_address_fields(raw),
-        conditions: node_condition_describes(raw),
+        conditions: condition_describes(raw.pointer("/status/conditions")),
         taints: node_taint_describes(raw),
-        labels: string_map_entries(raw.pointer("/metadata/labels")),
-        annotations: string_map_entries(raw.pointer("/metadata/annotations")),
+        labels: resource_map_entries(raw.pointer("/metadata/labels")),
+        annotations: resource_map_entries(raw.pointer("/metadata/annotations")),
         raw_yaml: full_manifest_yaml(raw),
     }
 }
@@ -1280,26 +1120,6 @@ fn allocatable_capacity(raw: &serde_json::Value, name: &str) -> String {
     }
 }
 
-fn node_condition_describes(raw: &serde_json::Value) -> Vec<NodeConditionDescribe> {
-    raw.pointer("/status/conditions")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .map(|condition| NodeConditionDescribe {
-            condition_type: value_str(condition, &["type"]).unwrap_or("N/A").to_owned(),
-            status: value_str(condition, &["status"])
-                .unwrap_or("N/A")
-                .to_owned(),
-            reason: value_str(condition, &["reason"])
-                .unwrap_or("N/A")
-                .to_owned(),
-            message: value_str(condition, &["message"])
-                .unwrap_or("N/A")
-                .to_owned(),
-        })
-        .collect()
-}
-
 fn node_taint_describes(raw: &serde_json::Value) -> Vec<String> {
     raw.pointer("/spec/taints")
         .and_then(serde_json::Value::as_array)
@@ -1315,23 +1135,6 @@ fn node_taint_describes(raw: &serde_json::Value) -> Vec<String> {
             }
         })
         .collect()
-}
-
-fn string_map_entries(value: Option<&serde_json::Value>) -> Vec<ResourceMapEntry> {
-    let mut entries = value
-        .and_then(serde_json::Value::as_object)
-        .into_iter()
-        .flat_map(|object| {
-            object.iter().map(|(key, value)| {
-                let value = value
-                    .as_str()
-                    .map_or_else(|| value.to_string(), ToOwned::to_owned);
-                ResourceMapEntry::new(key, value)
-            })
-        })
-        .collect::<Vec<_>>();
-    entries.sort_by(|left, right| left.key.cmp(&right.key));
-    entries
 }
 
 fn full_manifest_yaml(raw: &serde_json::Value) -> String {

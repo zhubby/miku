@@ -1,11 +1,15 @@
-use eframe::egui::{self, TextWrapMode};
+use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use miku_api::ResourceSummary;
 use miku_core::{ClusterId, ResourceRef};
 
 #[cfg(test)]
 use super::ResourceLoadRequest;
-use super::components::{ResourceMapEntry, ResourceMapView, ResourceYamlViewDialog};
+use super::components::{
+    DescribeField, ResourceMapEntry, ResourceYamlViewDialog, describe_fields, describe_group,
+    describe_lines, describe_metadata_maps, describe_raw_manifest, resource_map_entries,
+    show_resource_describe_window,
+};
 use super::{
     LoadStatus, ResourceActionKind, ResourceActionOutcome, ResourceActionRequest, ResourceLoadKind,
     ResourcePanelRequests, ResourceUiEvent, ResourceWatchRequest, namespaces_from_list,
@@ -506,26 +510,15 @@ impl EventResourcePanel {
         };
 
         let mut open = true;
-        egui::Window::new(format!("Describe {}", dialog.name))
-            .id(egui::Id::new(("event-describe-dialog", &dialog.key)))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .open(&mut open)
-            .collapsible(false)
-            .fixed_size([EVENT_DESCRIBE_DIALOG_WIDTH, EVENT_DESCRIBE_DIALOG_HEIGHT])
-            .show(ctx, |ui| {
-                ui.set_width(EVENT_DESCRIBE_DIALOG_WIDTH);
-                ui.set_height(EVENT_DESCRIBE_CONTENT_HEIGHT);
-                egui::ScrollArea::both()
-                    .id_salt(("event-describe-content", &dialog.key))
-                    .max_width(EVENT_DESCRIBE_DIALOG_WIDTH)
-                    .max_height(EVENT_DESCRIBE_CONTENT_HEIGHT)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.set_min_width(EVENT_DESCRIBE_CONTENT_WIDTH);
-                        ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-                        show_event_describe(ui, &dialog.describe);
-                    });
-            });
+        show_resource_describe_window(
+            ctx,
+            egui::Id::new(("event-describe-dialog", &dialog.key)),
+            format!("Describe {}", dialog.name),
+            &mut open,
+            |ui| {
+                show_event_describe(ui, &dialog.describe);
+            },
+        );
 
         if !open {
             self.describe_dialog = None;
@@ -742,14 +735,6 @@ const EVENT_COLUMNS: [&str; 9] = [
     "Age",
 ];
 const EVENT_COLUMN_WIDTHS: [f32; 9] = [160.0, 100.0, 180.0, 220.0, 420.0, 80.0, 200.0, 110.0, 90.0];
-const EVENT_DESCRIBE_DIALOG_WIDTH: f32 = 860.0;
-const EVENT_DESCRIBE_DIALOG_HEIGHT: f32 = 580.0;
-const EVENT_DESCRIBE_CONTENT_HEIGHT: f32 = 520.0;
-const EVENT_DESCRIBE_CONTENT_WIDTH: f32 = 1160.0;
-const EVENT_DESCRIBE_SECTION_WIDTH: f32 = 1128.0;
-const EVENT_DESCRIBE_FIELD_LABEL_WIDTH: f32 = 140.0;
-const EVENT_DESCRIBE_FIELD_VALUE_WIDTH: f32 = 370.0;
-const EVENT_DESCRIBE_LINE_WIDTH: f32 = 1080.0;
 
 fn event_type_color(ui: &egui::Ui, event_type: &str) -> egui::Color32 {
     match event_type {
@@ -885,12 +870,6 @@ struct EventDescribe {
     raw_yaml: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-struct DescribeField {
-    label: String,
-    value: String,
-}
-
 fn show_event_describe(ui: &mut egui::Ui, describe: &EventDescribe) {
     describe_group(ui, egui_phosphor::regular::BELL, "Event", |ui| {
         describe_fields(ui, &describe.summary);
@@ -908,110 +887,27 @@ fn show_event_describe(ui: &mut egui::Ui, describe: &EventDescribe) {
 
     ui.add_space(10.0);
     describe_group(ui, egui_phosphor::regular::CHAT_TEXT, "Message", |ui| {
-        non_wrapping_value(ui, &describe.message, EVENT_DESCRIBE_LINE_WIDTH);
+        describe_lines(ui, std::slice::from_ref(&describe.message));
     });
 
     ui.add_space(10.0);
     describe_group(ui, egui_phosphor::regular::TAG, "Metadata", |ui| {
-        ResourceMapView {
-            id_salt: "event-describe-labels",
-            icon: egui_phosphor::regular::TAG,
-            title: "Labels",
-            entries: &describe.labels,
-            empty_label: "No labels.",
-        }
-        .show(ui);
-        ui.add_space(8.0);
-        ResourceMapView {
-            id_salt: "event-describe-annotations",
-            icon: egui_phosphor::regular::NOTE,
-            title: "Annotations",
-            entries: &describe.annotations,
-            empty_label: "No annotations.",
-        }
-        .show(ui);
+        describe_metadata_maps(
+            ui,
+            "event-describe-metadata",
+            &describe.labels,
+            &describe.annotations,
+        );
     });
 
     ui.add_space(10.0);
     describe_group(ui, egui_phosphor::regular::CODE, "Raw manifest", |ui| {
-        egui::ScrollArea::both()
-            .id_salt("event-describe-raw-manifest-content")
-            .max_height(180.0)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(&describe.raw_yaml).monospace())
-                        .wrap_mode(TextWrapMode::Extend)
-                        .selectable(true),
-                );
-            });
+        describe_raw_manifest(
+            ui,
+            "event-describe-raw-manifest-content",
+            &describe.raw_yaml,
+        );
     });
-}
-
-fn describe_group(
-    ui: &mut egui::Ui,
-    icon: &str,
-    title: &str,
-    contents: impl FnOnce(&mut egui::Ui),
-) {
-    egui::Frame::new()
-        .fill(ui.visuals().extreme_bg_color)
-        .stroke(egui::Stroke::new(
-            1.0,
-            ui.visuals().widgets.noninteractive.bg_stroke.color,
-        ))
-        .corner_radius(egui::CornerRadius::same(4))
-        .inner_margin(egui::Margin::symmetric(10, 8))
-        .show(ui, |ui| {
-            ui.set_min_width(EVENT_DESCRIBE_SECTION_WIDTH);
-            ui.horizontal(|ui| {
-                ui.label(icon);
-                ui.strong(title);
-            });
-            ui.separator();
-            contents(ui);
-        });
-}
-
-fn describe_fields(ui: &mut egui::Ui, fields: &[DescribeField]) {
-    egui::Grid::new(ui.next_auto_id())
-        .num_columns(4)
-        .spacing([16.0, 4.0])
-        .show(ui, |ui| {
-            for chunk in fields.chunks(2) {
-                for field in chunk {
-                    ui.add_sized(
-                        [EVENT_DESCRIBE_FIELD_LABEL_WIDTH, 0.0],
-                        egui::Label::new(egui::RichText::new(&field.label).weak())
-                            .wrap_mode(TextWrapMode::Extend),
-                    );
-                    non_wrapping_value(ui, &field.value, EVENT_DESCRIBE_FIELD_VALUE_WIDTH);
-                }
-                if chunk.len() == 1 {
-                    ui.label("");
-                    ui.label("");
-                }
-                ui.end_row();
-            }
-        });
-}
-
-fn non_wrapping_value(ui: &mut egui::Ui, value: &str, width: f32) {
-    ui.add_sized(
-        [width, 0.0],
-        egui::Label::new(value)
-            .wrap_mode(TextWrapMode::Extend)
-            .selectable(true),
-    );
-}
-
-impl DescribeField {
-    fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
-        Self {
-            label: label.into(),
-            value: value.into(),
-        }
-    }
 }
 
 fn event_describe_from_row(row: &EventRow) -> EventDescribe {
@@ -1061,8 +957,8 @@ fn event_describe_from_row(row: &EventRow) -> EventDescribe {
                 value_str(raw, &["reportingInstance"]).unwrap_or("N/A"),
             ),
         ],
-        labels: string_map_entries(raw.pointer("/metadata/labels")),
-        annotations: string_map_entries(raw.pointer("/metadata/annotations")),
+        labels: resource_map_entries(raw.pointer("/metadata/labels")),
+        annotations: resource_map_entries(raw.pointer("/metadata/annotations")),
         message: row.message.clone(),
         raw_yaml: full_manifest_yaml(raw),
     }
@@ -1109,23 +1005,6 @@ fn last_event_timestamp(raw: &serde_json::Value) -> Option<&str> {
 
 fn format_timestamp(timestamp: &str) -> String {
     human_age_from_rfc3339(timestamp).unwrap_or_else(|| timestamp.to_owned())
-}
-
-fn string_map_entries(value: Option<&serde_json::Value>) -> Vec<ResourceMapEntry> {
-    let mut entries = value
-        .and_then(serde_json::Value::as_object)
-        .into_iter()
-        .flat_map(|object| {
-            object.iter().map(|(key, value)| {
-                let value = value
-                    .as_str()
-                    .map_or_else(|| value.to_string(), ToOwned::to_owned);
-                ResourceMapEntry::new(key, value)
-            })
-        })
-        .collect::<Vec<_>>();
-    entries.sort_by(|left, right| left.key.cmp(&right.key));
-    entries
 }
 
 fn full_manifest_yaml(raw: &serde_json::Value) -> String {
