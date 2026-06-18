@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use eframe::egui::{self, TextWrapMode};
+use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use miku_api::ResourceSummary;
 use miku_core::{ClusterId, ResourceRef};
@@ -10,15 +10,18 @@ use super::ResourceLoadRequest;
 #[cfg(test)]
 use super::components::parse_resource_apply_yaml;
 use super::components::{
-    GenericBatchDeleteDialog, GenericCreateDialog, GenericDeleteDialog, GenericEditDialog,
-    ResourceBatchDeleteDialogInput, ResourceCreateDialogInput, ResourceCreateDialogResponse,
-    ResourceDeleteDialogInput, ResourceDeleteDialogResponse, ResourceEditDialogInput,
-    ResourceEditDialogResponse, ResourceMapEntry, ResourceMapView, ResourceMetadata,
-    ResourceRowTarget, ResourceToolbar, ResourceYamlViewDialog, SELECT_COLUMN_WIDTH,
-    apply_resource_request, batch_delete_resource_request, delete_resource_request,
-    edit_resource_request, editable_resource_yaml, selected_delete_targets,
-    show_resource_batch_delete_dialog, show_resource_create_dialog, show_resource_delete_dialog,
-    show_resource_edit_dialog, show_row_selection_checkbox, visible_keys,
+    ContainerTemplateDescribe, DescribeCondition, DescribeField, GenericBatchDeleteDialog,
+    GenericCreateDialog, GenericDeleteDialog, GenericEditDialog, ResourceBatchDeleteDialogInput,
+    ResourceCreateDialogInput, ResourceCreateDialogResponse, ResourceDeleteDialogInput,
+    ResourceDeleteDialogResponse, ResourceEditDialogInput, ResourceEditDialogResponse,
+    ResourceMapEntry, ResourceMapView, ResourceMetadata, ResourceRowTarget, ResourceToolbar,
+    ResourceYamlViewDialog, SELECT_COLUMN_WIDTH, apply_resource_request,
+    batch_delete_resource_request, condition_describes, container_template_describes,
+    delete_resource_request, describe_conditions, describe_container_templates, describe_fields,
+    describe_group, describe_raw_manifest, edit_resource_request, editable_resource_yaml,
+    selected_delete_targets, show_resource_batch_delete_dialog, show_resource_create_dialog,
+    show_resource_delete_dialog, show_resource_describe_window, show_resource_edit_dialog,
+    show_row_selection_checkbox, visible_keys,
 };
 use super::{
     LoadStatus, ResourceActionKind, ResourceActionOutcome, ResourceLoadKind, ResourcePanelRequests,
@@ -433,29 +436,15 @@ impl CronJobResourcePanel {
         };
 
         let mut open = true;
-        egui::Window::new(format!("Describe {}", dialog.name))
-            .id(egui::Id::new(("cron_job-describe-dialog", &dialog.key)))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .open(&mut open)
-            .collapsible(false)
-            .fixed_size([
-                CRON_JOB_DESCRIBE_DIALOG_WIDTH,
-                CRON_JOB_DESCRIBE_DIALOG_HEIGHT,
-            ])
-            .show(ctx, |ui| {
-                ui.set_width(CRON_JOB_DESCRIBE_DIALOG_WIDTH);
-                ui.set_height(CRON_JOB_DESCRIBE_CONTENT_HEIGHT);
-                egui::ScrollArea::both()
-                    .id_salt(("cron_job-describe-content", &dialog.key))
-                    .max_width(CRON_JOB_DESCRIBE_DIALOG_WIDTH)
-                    .max_height(CRON_JOB_DESCRIBE_CONTENT_HEIGHT)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.set_min_width(CRON_JOB_DESCRIBE_CONTENT_WIDTH);
-                        ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-                        show_cron_job_describe(ui, &dialog.describe);
-                    });
-            });
+        show_resource_describe_window(
+            ctx,
+            egui::Id::new(("cron_job-describe-dialog", &dialog.key)),
+            format!("Describe {}", dialog.name),
+            &mut open,
+            |ui| {
+                show_cron_job_describe(ui, &dialog.describe);
+            },
+        );
 
         if !open {
             self.describe_dialog = None;
@@ -887,14 +876,6 @@ const CRON_JOB_COLUMNS: [&str; 9] = [
 ];
 const CRON_JOB_COLUMN_WIDTHS: [f32; 9] =
     [240.0, 160.0, 180.0, 90.0, 90.0, 180.0, 180.0, 120.0, 90.0];
-const CRON_JOB_DESCRIBE_DIALOG_WIDTH: f32 = 860.0;
-const CRON_JOB_DESCRIBE_DIALOG_HEIGHT: f32 = 580.0;
-const CRON_JOB_DESCRIBE_CONTENT_HEIGHT: f32 = 520.0;
-const CRON_JOB_DESCRIBE_CONTENT_WIDTH: f32 = 1160.0;
-const CRON_JOB_DESCRIBE_SECTION_WIDTH: f32 = 1128.0;
-const CRON_JOB_DESCRIBE_FIELD_LABEL_WIDTH: f32 = 140.0;
-const CRON_JOB_DESCRIBE_FIELD_VALUE_WIDTH: f32 = 370.0;
-const CRON_JOB_DESCRIBE_LINE_WIDTH: f32 = 1080.0;
 
 #[cfg(test)]
 fn filter_cron_job_rows<'a>(rows: &'a [CronJobRow], search_text: &str) -> Vec<&'a CronJobRow> {
@@ -1066,31 +1047,11 @@ struct CronJobDescribe {
     rollout: Vec<DescribeField>,
     selector: Vec<ResourceMapEntry>,
     template_labels: Vec<ResourceMapEntry>,
-    containers: Vec<ContainerDescribe>,
-    conditions: Vec<CronJobConditionDescribe>,
+    containers: Vec<ContainerTemplateDescribe>,
+    conditions: Vec<DescribeCondition>,
     labels: Vec<ResourceMapEntry>,
     annotations: Vec<ResourceMapEntry>,
     raw_yaml: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct ContainerDescribe {
-    name: String,
-    image: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct CronJobConditionDescribe {
-    condition_type: String,
-    status: String,
-    reason: String,
-    message: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct DescribeField {
-    label: String,
-    value: String,
 }
 
 fn show_cron_job_describe(ui: &mut egui::Ui, describe: &CronJobDescribe) {
@@ -1136,17 +1097,7 @@ fn show_cron_job_describe(ui: &mut egui::Ui, describe: &CronJobDescribe) {
         }
         .show(ui);
         ui.add_space(8.0);
-        if describe.containers.is_empty() {
-            non_wrapping_value(ui, "N/A", CRON_JOB_DESCRIBE_LINE_WIDTH);
-        } else {
-            for container in &describe.containers {
-                non_wrapping_value(
-                    ui,
-                    &format!("{}: {}", container.name, container.image),
-                    CRON_JOB_DESCRIBE_LINE_WIDTH,
-                );
-            }
-        }
+        describe_container_templates(ui, &describe.containers);
     });
 
     ui.add_space(10.0);
@@ -1155,31 +1106,7 @@ fn show_cron_job_describe(ui: &mut egui::Ui, describe: &CronJobDescribe) {
         egui_phosphor::regular::CHECK_CIRCLE,
         "Conditions",
         |ui| {
-            if describe.conditions.is_empty() {
-                non_wrapping_value(ui, "N/A", CRON_JOB_DESCRIBE_LINE_WIDTH);
-            } else {
-                egui::Grid::new("cron_job-describe-conditions")
-                    .num_columns(4)
-                    .spacing([18.0, 4.0])
-                    .striped(true)
-                    .show(ui, |ui| {
-                        ui.strong("Type");
-                        ui.strong("Status");
-                        ui.strong("Reason");
-                        ui.strong("Message");
-                        ui.end_row();
-                        for condition in &describe.conditions {
-                            non_wrapping_value(ui, &condition.condition_type, 180.0);
-                            ui.colored_label(
-                                condition_color(ui, &condition.status),
-                                &condition.status,
-                            );
-                            non_wrapping_value(ui, &condition.reason, 220.0);
-                            non_wrapping_value(ui, &condition.message, 520.0);
-                            ui.end_row();
-                        }
-                    });
-            }
+            describe_conditions(ui, "cron_job-describe-conditions", &describe.conditions);
         },
     );
 
@@ -1206,93 +1133,12 @@ fn show_cron_job_describe(ui: &mut egui::Ui, describe: &CronJobDescribe) {
 
     ui.add_space(10.0);
     describe_group(ui, egui_phosphor::regular::CODE, "Raw manifest", |ui| {
-        egui::ScrollArea::both()
-            .id_salt("cron_job-describe-raw-manifest-content")
-            .max_height(180.0)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(&describe.raw_yaml).monospace())
-                        .wrap_mode(TextWrapMode::Extend)
-                        .selectable(true),
-                );
-            });
+        describe_raw_manifest(
+            ui,
+            "cron_job-describe-raw-manifest-content",
+            &describe.raw_yaml,
+        );
     });
-}
-
-fn describe_group(
-    ui: &mut egui::Ui,
-    icon: &str,
-    title: &str,
-    contents: impl FnOnce(&mut egui::Ui),
-) {
-    egui::Frame::new()
-        .fill(ui.visuals().extreme_bg_color)
-        .stroke(egui::Stroke::new(
-            1.0,
-            ui.visuals().widgets.noninteractive.bg_stroke.color,
-        ))
-        .corner_radius(egui::CornerRadius::same(4))
-        .inner_margin(egui::Margin::symmetric(10, 8))
-        .show(ui, |ui| {
-            ui.set_min_width(CRON_JOB_DESCRIBE_SECTION_WIDTH);
-            ui.horizontal(|ui| {
-                ui.label(icon);
-                ui.strong(title);
-            });
-            ui.separator();
-            contents(ui);
-        });
-}
-
-fn describe_fields(ui: &mut egui::Ui, fields: &[DescribeField]) {
-    egui::Grid::new(ui.next_auto_id())
-        .num_columns(4)
-        .spacing([16.0, 4.0])
-        .show(ui, |ui| {
-            for chunk in fields.chunks(2) {
-                for field in chunk {
-                    ui.add_sized(
-                        [CRON_JOB_DESCRIBE_FIELD_LABEL_WIDTH, 0.0],
-                        egui::Label::new(egui::RichText::new(&field.label).weak())
-                            .wrap_mode(TextWrapMode::Extend),
-                    );
-                    non_wrapping_value(ui, &field.value, CRON_JOB_DESCRIBE_FIELD_VALUE_WIDTH);
-                }
-                if chunk.len() == 1 {
-                    ui.label("");
-                    ui.label("");
-                }
-                ui.end_row();
-            }
-        });
-}
-
-fn non_wrapping_value(ui: &mut egui::Ui, value: &str, width: f32) {
-    ui.add_sized(
-        [width, 0.0],
-        egui::Label::new(value)
-            .wrap_mode(TextWrapMode::Extend)
-            .selectable(true),
-    );
-}
-
-fn condition_color(ui: &egui::Ui, status: &str) -> egui::Color32 {
-    match status {
-        "True" | "Available" => egui::Color32::from_rgb(46, 160, 67),
-        "False" | "Progressing" => egui::Color32::from_rgb(191, 135, 0),
-        "Unknown" => ui.visuals().error_fg_color,
-        _ => ui.visuals().text_color(),
-    }
-}
-
-impl DescribeField {
-    fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
-        Self {
-            label: label.into(),
-            value: value.into(),
-        }
-    }
 }
 
 fn cron_job_describe_from_row(row: &CronJobRow) -> CronJobDescribe {
@@ -1332,8 +1178,11 @@ fn cron_job_describe_from_row(row: &CronJobRow) -> CronJobDescribe {
         template_labels: string_map_entries(
             raw.pointer("/spec/jobTemplate/spec/template/metadata/labels"),
         ),
-        containers: cron_job_containers(raw),
-        conditions: cron_job_condition_describes(raw),
+        containers: container_template_describes(
+            raw,
+            "/spec/jobTemplate/spec/template/spec/containers",
+        ),
+        conditions: condition_describes(raw.pointer("/status/conditions")),
         labels: string_map_entries(raw.pointer("/metadata/labels")),
         annotations: string_map_entries(raw.pointer("/metadata/annotations")),
         raw_yaml: full_manifest_yaml(raw),
@@ -1354,38 +1203,6 @@ fn namespace_value(namespace: &str) -> Option<String> {
 
 fn cron_job_status_summary(schedule: &str, active: usize, concurrency: &str) -> String {
     format!("schedule={schedule}, active={active}, concurrency={concurrency}")
-}
-
-fn cron_job_containers(raw: &serde_json::Value) -> Vec<ContainerDescribe> {
-    raw.pointer("/spec/jobTemplate/spec/template/spec/containers")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .map(|container| ContainerDescribe {
-            name: value_str(container, &["name"]).unwrap_or("N/A").to_owned(),
-            image: value_str(container, &["image"]).unwrap_or("N/A").to_owned(),
-        })
-        .collect()
-}
-
-fn cron_job_condition_describes(raw: &serde_json::Value) -> Vec<CronJobConditionDescribe> {
-    raw.pointer("/status/conditions")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .map(|condition| CronJobConditionDescribe {
-            condition_type: value_str(condition, &["type"]).unwrap_or("N/A").to_owned(),
-            status: value_str(condition, &["status"])
-                .unwrap_or("N/A")
-                .to_owned(),
-            reason: value_str(condition, &["reason"])
-                .unwrap_or("N/A")
-                .to_owned(),
-            message: value_str(condition, &["message"])
-                .unwrap_or("N/A")
-                .to_owned(),
-        })
-        .collect()
 }
 
 fn string_map_entries(value: Option<&serde_json::Value>) -> Vec<ResourceMapEntry> {

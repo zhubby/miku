@@ -1,4 +1,5 @@
 mod actions;
+mod describe;
 mod map_view;
 mod toolbar;
 mod yaml_dialog;
@@ -15,6 +16,11 @@ pub(super) use actions::{
     selected_delete_targets, show_resource_batch_delete_dialog, show_resource_create_dialog,
     show_resource_delete_dialog, show_resource_edit_dialog, show_row_selection_checkbox,
     visible_keys,
+};
+pub(super) use describe::{
+    ContainerTemplateDescribe, DescribeCondition, DescribeField, condition_describes,
+    container_template_describes, describe_conditions, describe_container_templates,
+    describe_fields, describe_group, describe_raw_manifest, show_resource_describe_window,
 };
 pub(super) use map_view::{ResourceMapEntry, ResourceMapView};
 pub(super) use toolbar::ResourceToolbar;
