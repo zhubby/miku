@@ -5,6 +5,7 @@ use std::time::Duration;
 use eframe::egui;
 use egui_dock::{DockArea, DockState, NodePath, Style, SurfaceIndex, TabPath};
 use egui_notify::{Anchor, Toasts};
+#[cfg(not(target_arch = "wasm32"))]
 use futures::StreamExt;
 use miku_api::{ClusterSummary, MikuServices, PodAttachInput};
 
@@ -39,6 +40,7 @@ use crate::tabs::{
 const MAX_RESOURCE_EVENTS_PER_PASS: usize = 8;
 const MAX_RESOURCE_CHANNEL_DRAIN_PER_PASS: usize = 256;
 const MAX_PENDING_WATCH_EVENTS_PER_PASS: usize = 8;
+#[cfg(not(target_arch = "wasm32"))]
 const RESOURCE_ACTION_TIMEOUT: Duration = Duration::from_secs(30);
 const RESOURCE_ACTION_TOAST_DURATION: Duration = Duration::from_secs(5);
 
@@ -1786,26 +1788,17 @@ impl MikuApp {
         #[cfg(target_arch = "wasm32")]
         {
             wasm_bindgen_futures::spawn_local(async move {
-                let stream = services.watch_resources(query).await;
-                let mut stream = match stream {
-                    Ok(stream) => stream,
-                    Err(error) => {
-                        let _ = sender.send(ResourceUiEvent::ResourceWatchUpdated {
-                            request,
-                            result: Err(error.to_string()),
-                        });
-                        repaint.request_repaint();
-                        return;
-                    }
-                };
-
-                while let Some(result) = stream.next().await {
-                    let _ = sender.send(ResourceUiEvent::ResourceWatchUpdated {
-                        request: request.clone(),
-                        result: result.map_err(|error| error.to_string()),
-                    });
-                    repaint.request_repaint();
-                }
+                // Browsers cap concurrent HTTP/1.1 EventSource connections per origin. Each
+                // namespaced panel needs both namespace and resource data, so persistent watches
+                // can leave the fourth open panel waiting forever. Use one-shot snapshots in web
+                // mode until resource watches are multiplexed over a shared transport.
+                let result = services
+                    .list_resources(query)
+                    .await
+                    .map(miku_api::ResourceEvent::Snapshot)
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(ResourceUiEvent::ResourceWatchUpdated { request, result });
+                repaint.request_repaint();
             });
         }
     }
