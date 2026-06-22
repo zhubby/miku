@@ -2,8 +2,9 @@ use async_trait::async_trait;
 #[cfg(not(target_arch = "wasm32"))]
 use futures::SinkExt;
 use futures::StreamExt;
-#[cfg(not(target_arch = "wasm32"))]
 use futures::channel::mpsc;
+#[cfg(target_arch = "wasm32")]
+use futures::channel::oneshot;
 use miku_api::{
     AgentConversation, AgentConversationStore, AgentConversationSummary, AgentPersistedMessage,
     AgentService, AgentTurnRequest, AgentTurnResponse, AppendAgentMessageRequest,
@@ -12,12 +13,14 @@ use miku_api::{
     CreateAgentConversationRequest, CreateClusterRequest, KubernetesResourceReader,
     KubernetesResourceWriter, KubernetesWatchService, LlmProviderSettings, LlmSettingsStore,
     LocalPreferenceStore, LogLine, MikuServices, NodeCordonRequest, NodeDrainRequest,
-    PodAttachRequest, PodAttachService, PodAttachSession, PodEvictRequest, PodLogQuery,
-    PodLogService, ResourceApplyRequest, ResourceDeleteRequest, ResourceEvent, ResourceList,
-    ResourcePatchRequest, ResourceQuery, ResourceSummary,
+    PodAttachInput, PodAttachOutput, PodAttachRequest, PodAttachService, PodAttachSession,
+    PodEvictRequest, PodLogQuery, PodLogService, ResourceApplyRequest, ResourceDeleteRequest,
+    ResourceEvent, ResourceList, ResourcePatchRequest, ResourceQuery, ResourceSummary,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use miku_api::{PodAttachInput, PodAttachOutput};
+#[cfg(target_arch = "wasm32")]
+use std::cell::RefCell;
+#[cfg(target_arch = "wasm32")]
+use std::rc::Rc;
 use url::Url;
 
 #[cfg(target_arch = "wasm32")]
@@ -584,13 +587,189 @@ async fn attach_pod(
 
 #[cfg(target_arch = "wasm32")]
 async fn attach_pod(
-    _client: &HttpMikuClient,
+    client: &HttpMikuClient,
     request: PodAttachRequest,
 ) -> miku_core::Result<PodAttachSession> {
-    Err(miku_core::MikuError::UnsupportedRuntime(format!(
-        "pod attach is not supported in web mode for {}",
-        request.pod
-    )))
+    let endpoint = client.pod_attach_endpoint(&request)?;
+    let socket = web_sys::WebSocket::new(endpoint.as_str()).map_err(|error| {
+        miku_core::MikuError::Transport(format!(
+            "failed to open pod attach websocket: {}",
+            js_value_message(error)
+        ))
+    })?;
+    socket.set_binary_type(web_sys::BinaryType::Arraybuffer);
+
+    let (input_tx, mut input_rx) = mpsc::unbounded();
+    let (output_tx, output_rx) = mpsc::unbounded();
+    let (open_tx, open_rx) = oneshot::channel::<miku_core::Result<()>>();
+    let open_sender = Rc::new(RefCell::new(Some(open_tx)));
+
+    let open_sender_for_open = Rc::clone(&open_sender);
+    let onopen = Closure::<dyn FnMut(web_sys::Event)>::new(move |_event| {
+        if let Some(sender) = open_sender_for_open.borrow_mut().take() {
+            let _ = sender.send(Ok(()));
+        }
+    });
+    socket.set_onopen(Some(onopen.as_ref().unchecked_ref()));
+
+    let open_sender_for_error = Rc::clone(&open_sender);
+    let output_sender_for_error = output_tx.clone();
+    let onerror = Closure::<dyn FnMut(web_sys::Event)>::new(move |_event| {
+        let error = miku_core::MikuError::Transport("pod attach websocket failed".to_owned());
+        if let Some(sender) = open_sender_for_error.borrow_mut().take() {
+            let _ = sender.send(Err(error));
+        } else {
+            let _ = output_sender_for_error.unbounded_send(Err(error));
+        }
+    });
+    socket.set_onerror(Some(onerror.as_ref().unchecked_ref()));
+
+    let open_sender_for_close = Rc::clone(&open_sender);
+    let output_sender_for_close = output_tx.clone();
+    let onclose = Closure::<dyn FnMut(web_sys::Event)>::new(move |_event| {
+        if let Some(sender) = open_sender_for_close.borrow_mut().take() {
+            let _ = sender.send(Err(miku_core::MikuError::Transport(
+                "pod attach websocket closed before it opened".to_owned(),
+            )));
+        } else {
+            let _ = output_sender_for_close.unbounded_send(Ok(PodAttachOutput::Closed));
+        }
+    });
+    socket.set_onclose(Some(onclose.as_ref().unchecked_ref()));
+
+    let output_sender_for_message = output_tx.clone();
+    let onmessage =
+        Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| {
+            let output = pod_attach_output_from_message(event.data());
+            let _ = output_sender_for_message.unbounded_send(output);
+        });
+    socket.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+
+    match open_rx.await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            let _ = socket.close();
+            return Err(error);
+        }
+        Err(_) => {
+            let _ = socket.close();
+            return Err(miku_core::MikuError::Transport(
+                "pod attach websocket open callback was dropped".to_owned(),
+            ));
+        }
+    }
+    socket.set_onopen(None);
+
+    let socket_for_input = socket.clone();
+    let output_sender_for_input = output_tx.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        while let Some(input) = input_rx.next().await {
+            let close = matches!(input, PodAttachInput::Close);
+            if let Err(error) = send_pod_attach_input(&socket_for_input, input) {
+                let _ = output_sender_for_input.unbounded_send(Err(error));
+                break;
+            }
+            if close {
+                let _ = socket_for_input.close();
+                break;
+            }
+        }
+    });
+
+    Ok(PodAttachSession {
+        input: input_tx,
+        output: Box::pin(WebSocketAttachStream {
+            receiver: output_rx,
+            socket,
+            _onmessage: onmessage,
+            _onerror: onerror,
+            _onclose: onclose,
+        }),
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn send_pod_attach_input(
+    socket: &web_sys::WebSocket,
+    input: PodAttachInput,
+) -> miku_core::Result<()> {
+    match input {
+        PodAttachInput::Bytes(bytes) => socket.send_with_u8_array(&bytes).map_err(|error| {
+            miku_core::MikuError::Transport(format!(
+                "failed to send pod attach stdin: {}",
+                js_value_message(error)
+            ))
+        }),
+        PodAttachInput::Resize { .. } | PodAttachInput::Close => {
+            let text = serde_json::to_string(&input)
+                .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?;
+            socket.send_with_str(&text).map_err(|error| {
+                miku_core::MikuError::Transport(format!(
+                    "failed to send pod attach control message: {}",
+                    js_value_message(error)
+                ))
+            })
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn pod_attach_output_from_message(
+    data: wasm_bindgen::JsValue,
+) -> miku_core::Result<PodAttachOutput> {
+    if let Some(buffer) = data.dyn_ref::<js_sys::ArrayBuffer>() {
+        return Ok(PodAttachOutput::Stdout(
+            js_sys::Uint8Array::new(buffer).to_vec(),
+        ));
+    }
+
+    if let Some(text) = data.as_string() {
+        return serde_json::from_str::<PodAttachOutput>(&text)
+            .map_err(|error| miku_core::MikuError::Transport(error.to_string()));
+    }
+
+    Err(miku_core::MikuError::Transport(
+        "pod attach websocket message had unsupported payload type".to_owned(),
+    ))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn js_value_message(value: wasm_bindgen::JsValue) -> String {
+    if let Some(text) = value.as_string() {
+        return text;
+    }
+    if let Some(error) = value.dyn_ref::<js_sys::Error>() {
+        return String::from(error.message());
+    }
+    format!("{value:?}")
+}
+
+#[cfg(target_arch = "wasm32")]
+struct WebSocketAttachStream {
+    receiver: mpsc::UnboundedReceiver<miku_core::Result<PodAttachOutput>>,
+    socket: web_sys::WebSocket,
+    _onmessage: Closure<dyn FnMut(web_sys::MessageEvent)>,
+    _onerror: Closure<dyn FnMut(web_sys::Event)>,
+    _onclose: Closure<dyn FnMut(web_sys::Event)>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl futures::Stream for WebSocketAttachStream {
+    type Item = miku_core::Result<PodAttachOutput>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.receiver.poll_next_unpin(context)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Drop for WebSocketAttachStream {
+    fn drop(&mut self) {
+        let _ = self.socket.close();
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -787,6 +966,32 @@ mod tests {
         assert_eq!(
             endpoint.as_str(),
             "http://127.0.0.1:5174/api/resources/watch?cluster_id=local&group=apps&version=v1&plural=deployments&namespace=production&label_selector=app%3Dapi&limit=50"
+        );
+    }
+
+    #[test]
+    fn pod_attach_endpoint_uses_websocket_scheme_and_query() {
+        let client = HttpMikuClient::new("http://127.0.0.1:5174").unwrap();
+        let request = PodAttachRequest {
+            cluster_id: miku_core::ClusterId::new("local"),
+            namespace: "default".to_owned(),
+            pod: "api-7f9c".to_owned(),
+            container: Some("server".to_owned()),
+            tty: true,
+        };
+
+        assert_eq!(
+            client.pod_attach_endpoint(&request).unwrap().as_str(),
+            "ws://127.0.0.1:5174/api/pods/attach?cluster_id=local&namespace=default&pod=api-7f9c&container=server&tty=true"
+        );
+
+        let secure_client = HttpMikuClient::new("https://miku.example").unwrap();
+        assert_eq!(
+            secure_client
+                .pod_attach_endpoint(&request)
+                .unwrap()
+                .scheme(),
+            "wss"
         );
     }
 
