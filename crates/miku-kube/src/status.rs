@@ -66,18 +66,28 @@ where
             ResourceQuery::new(cluster_id, ResourceRef::core("v1", "events")),
         );
 
-        let (version, namespaces, nodes, pods, deployments, services, config_maps, secrets, events) =
-            tokio::try_join!(
-                version,
-                namespaces,
-                nodes,
-                pods,
-                deployments,
-                services,
-                config_maps,
-                secrets,
-                events
-            )?;
+        let (version, namespaces, nodes, pods, deployments, services, config_maps, secrets, events) = tokio::join!(
+            version,
+            namespaces,
+            nodes,
+            pods,
+            deployments,
+            services,
+            config_maps,
+            secrets,
+            events
+        );
+
+        let version = version?;
+        let mut collection_errors = Vec::new();
+        let namespaces = snapshot_or_empty("namespaces", namespaces, &mut collection_errors);
+        let nodes = snapshot_or_empty("nodes", nodes, &mut collection_errors);
+        let pods = snapshot_or_empty("pods", pods, &mut collection_errors);
+        let deployments = snapshot_or_empty("deployments", deployments, &mut collection_errors);
+        let services = snapshot_or_empty("services", services, &mut collection_errors);
+        let config_maps = snapshot_or_empty("configmaps", config_maps, &mut collection_errors);
+        let secrets = snapshot_or_empty("secrets", secrets, &mut collection_errors);
+        let events = snapshot_or_empty("events", events, &mut collection_errors);
 
         Ok(build_cluster_status_report(
             version.git_version,
@@ -91,9 +101,16 @@ where
                 config_maps: &config_maps,
                 secrets: &secrets,
                 events: &events,
+                collection_errors: &collection_errors,
             },
         ))
     }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ClusterStatusCollectionError {
+    resource: &'static str,
+    message: String,
 }
 
 struct ClusterStatusSnapshots<'a> {
@@ -105,6 +122,25 @@ struct ClusterStatusSnapshots<'a> {
     config_maps: &'a [DynamicObject],
     secrets: &'a [DynamicObject],
     events: &'a [DynamicObject],
+    collection_errors: &'a [ClusterStatusCollectionError],
+}
+
+fn snapshot_or_empty(
+    resource: &'static str,
+    result: miku_core::Result<Vec<DynamicObject>>,
+    errors: &mut Vec<ClusterStatusCollectionError>,
+) -> Vec<DynamicObject> {
+    match result {
+        Ok(items) => items,
+        Err(error) => {
+            tracing::warn!(resource, %error, "cluster status resource snapshot failed");
+            errors.push(ClusterStatusCollectionError {
+                resource,
+                message: error.to_string(),
+            });
+            Vec::new()
+        }
+    }
 }
 
 fn build_cluster_status_report(
@@ -136,6 +172,7 @@ fn build_cluster_status_report(
             snapshots.pods.len(),
             unhealthy_pods,
             warning_events,
+            snapshots.collection_errors,
         ),
         workloads: ClusterStatusWorkloadSummary {
             pods: snapshots.pods.len(),
@@ -193,54 +230,137 @@ fn cluster_status_conditions(
     pods: usize,
     unhealthy_pods: usize,
     warning_events: usize,
+    collection_errors: &[ClusterStatusCollectionError],
 ) -> Vec<ClusterStatusCondition> {
-    vec![
-        ClusterStatusCondition {
+    let mut conditions = vec![
+        node_condition(nodes, ready_nodes, collection_errors),
+        pod_condition(pods, unhealthy_pods, collection_errors),
+        event_condition(warning_events, collection_errors),
+    ];
+
+    if !collection_errors.is_empty() {
+        conditions.push(collection_status_condition(collection_errors));
+    }
+
+    conditions
+}
+
+fn node_condition(
+    nodes: usize,
+    ready_nodes: usize,
+    collection_errors: &[ClusterStatusCollectionError],
+) -> ClusterStatusCondition {
+    if let Some(error) = collection_error(collection_errors, "nodes") {
+        return ClusterStatusCondition {
             name: "Nodes".to_owned(),
-            status: format!("{ready_nodes}/{nodes} ready"),
-            severity: if nodes == ready_nodes {
-                ClusterStatusSeverity::Ok
-            } else {
-                ClusterStatusSeverity::Critical
-            },
-            message: if nodes == ready_nodes {
-                "All nodes are ready".to_owned()
-            } else {
-                format!(
-                    "{} node(s) are not ready",
-                    nodes.saturating_sub(ready_nodes)
-                )
-            },
+            status: "unavailable".to_owned(),
+            severity: ClusterStatusSeverity::Critical,
+            message: format!("Could not read node status: {}", error.message),
+        };
+    }
+
+    ClusterStatusCondition {
+        name: "Nodes".to_owned(),
+        status: format!("{ready_nodes}/{nodes} ready"),
+        severity: if nodes == ready_nodes {
+            ClusterStatusSeverity::Ok
+        } else {
+            ClusterStatusSeverity::Critical
         },
-        ClusterStatusCondition {
+        message: if nodes == ready_nodes {
+            "All nodes are ready".to_owned()
+        } else {
+            format!(
+                "{} node(s) are not ready",
+                nodes.saturating_sub(ready_nodes)
+            )
+        },
+    }
+}
+
+fn pod_condition(
+    pods: usize,
+    unhealthy_pods: usize,
+    collection_errors: &[ClusterStatusCollectionError],
+) -> ClusterStatusCondition {
+    if let Some(error) = collection_error(collection_errors, "pods") {
+        return ClusterStatusCondition {
             name: "Pods".to_owned(),
-            status: format!("{} unhealthy / {pods} total", unhealthy_pods),
-            severity: if unhealthy_pods == 0 {
-                ClusterStatusSeverity::Ok
-            } else {
-                ClusterStatusSeverity::Warning
-            },
-            message: if unhealthy_pods == 0 {
-                "No unhealthy pods detected".to_owned()
-            } else {
-                format!("{unhealthy_pods} pod(s) need attention")
-            },
+            status: "unavailable".to_owned(),
+            severity: ClusterStatusSeverity::Warning,
+            message: format!("Could not read pod status: {}", error.message),
+        };
+    }
+
+    ClusterStatusCondition {
+        name: "Pods".to_owned(),
+        status: format!("{} unhealthy / {pods} total", unhealthy_pods),
+        severity: if unhealthy_pods == 0 {
+            ClusterStatusSeverity::Ok
+        } else {
+            ClusterStatusSeverity::Warning
         },
-        ClusterStatusCondition {
+        message: if unhealthy_pods == 0 {
+            "No unhealthy pods detected".to_owned()
+        } else {
+            format!("{unhealthy_pods} pod(s) need attention")
+        },
+    }
+}
+
+fn event_condition(
+    warning_events: usize,
+    collection_errors: &[ClusterStatusCollectionError],
+) -> ClusterStatusCondition {
+    if let Some(error) = collection_error(collection_errors, "events") {
+        return ClusterStatusCondition {
             name: "Events".to_owned(),
-            status: format!("{warning_events} warning"),
-            severity: if warning_events == 0 {
-                ClusterStatusSeverity::Ok
-            } else {
-                ClusterStatusSeverity::Warning
-            },
-            message: if warning_events == 0 {
-                "No warning events in the recent event cache".to_owned()
-            } else {
-                format!("{warning_events} warning event(s) were found")
-            },
+            status: "unavailable".to_owned(),
+            severity: ClusterStatusSeverity::Warning,
+            message: format!("Could not read recent events: {}", error.message),
+        };
+    }
+
+    ClusterStatusCondition {
+        name: "Events".to_owned(),
+        status: format!("{warning_events} warning"),
+        severity: if warning_events == 0 {
+            ClusterStatusSeverity::Ok
+        } else {
+            ClusterStatusSeverity::Warning
         },
-    ]
+        message: if warning_events == 0 {
+            "No warning events in the recent event cache".to_owned()
+        } else {
+            format!("{warning_events} warning event(s) were found")
+        },
+    }
+}
+
+fn collection_status_condition(
+    collection_errors: &[ClusterStatusCollectionError],
+) -> ClusterStatusCondition {
+    let resources = collection_errors
+        .iter()
+        .map(|error| error.resource)
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    ClusterStatusCondition {
+        name: "Data collection".to_owned(),
+        status: format!("{} unavailable", collection_errors.len()),
+        severity: ClusterStatusSeverity::Warning,
+        message: format!("Could not read: {resources}"),
+    }
+}
+
+fn collection_error<'a>(
+    collection_errors: &'a [ClusterStatusCollectionError],
+    resource: &str,
+) -> Option<&'a ClusterStatusCollectionError> {
+    collection_errors
+        .iter()
+        .find(|error| error.resource == resource)
 }
 
 fn recent_event_summaries(events: &[DynamicObject]) -> Vec<ClusterStatusEventSummary> {
@@ -393,6 +513,7 @@ mod tests {
                 config_maps: &config_maps,
                 secrets: &secrets,
                 events: &events,
+                collection_errors: &[],
             },
         );
 
@@ -401,6 +522,68 @@ mod tests {
         assert_eq!(report.overview.unhealthy_pods, 0);
         assert_eq!(report.workloads.deployments, 1);
         assert_eq!(report.conditions[0].severity, ClusterStatusSeverity::Ok);
+    }
+
+    #[test]
+    fn status_report_marks_unavailable_snapshots_without_failing_report() {
+        let pod = dynamic_object(
+            "api",
+            "pods",
+            serde_json::json!({
+                "status": {"phase": "Running", "containerStatuses": [{"ready": true}]}
+            }),
+        );
+        let pods = vec![pod];
+        let empty = Vec::<DynamicObject>::new();
+        let collection_errors = vec![
+            ClusterStatusCollectionError {
+                resource: "nodes",
+                message: "forbidden".to_owned(),
+            },
+            ClusterStatusCollectionError {
+                resource: "events",
+                message: "timeout".to_owned(),
+            },
+            ClusterStatusCollectionError {
+                resource: "secrets",
+                message: "forbidden".to_owned(),
+            },
+        ];
+
+        let report = build_cluster_status_report(
+            "v1.35.0".to_owned(),
+            Some("darwin/arm64".to_owned()),
+            ClusterStatusSnapshots {
+                namespaces: &empty,
+                nodes: &empty,
+                pods: &pods,
+                deployments: &empty,
+                services: &empty,
+                config_maps: &empty,
+                secrets: &empty,
+                events: &empty,
+                collection_errors: &collection_errors,
+            },
+        );
+
+        assert_eq!(report.overview.nodes, 0);
+        assert_eq!(report.workloads.pods, 1);
+        assert_eq!(report.conditions[0].name, "Nodes");
+        assert_eq!(report.conditions[0].status, "unavailable");
+        assert_eq!(
+            report.conditions[0].severity,
+            ClusterStatusSeverity::Critical
+        );
+        assert_eq!(report.conditions[2].name, "Events");
+        assert_eq!(report.conditions[2].status, "unavailable");
+        assert!(
+            report
+                .conditions
+                .iter()
+                .any(|condition| condition.name == "Data collection"
+                    && condition.status == "3 unavailable"
+                    && condition.message.contains("secrets"))
+        );
     }
 
     #[test]
