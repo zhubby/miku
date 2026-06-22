@@ -248,11 +248,13 @@ impl PodResourcePanel {
                     Ok(_) => {
                         dialog.status = PodTerminalStatus::Attached;
                         dialog.error = None;
+                        dialog.focus_input_on_connect = true;
                         dialog.output.push_str(terminal_connected_message(dialog));
                     }
                     Err(error) => {
                         dialog.status = PodTerminalStatus::Error(error.clone());
                         dialog.error = Some(error);
+                        dialog.focus_input_on_connect = false;
                         dialog.request_id = None;
                     }
                 }
@@ -277,11 +279,13 @@ impl PodResourcePanel {
                     Ok(_) => {
                         dialog.status = PodTerminalStatus::Attached;
                         dialog.error = None;
+                        dialog.focus_input_on_connect = true;
                         dialog.output.push_str(terminal_connected_message(dialog));
                     }
                     Err(error) => {
                         dialog.status = PodTerminalStatus::Error(error.clone());
                         dialog.error = Some(error);
+                        dialog.focus_input_on_connect = false;
                         dialog.request_id = None;
                     }
                 }
@@ -534,6 +538,7 @@ impl PodResourcePanel {
                     request_id: None,
                     status: PodTerminalStatus::Disconnected,
                     error: None,
+                    focus_input_on_connect: false,
                 });
             }
             Some(PodTableAction::Exec { key }) => {
@@ -563,6 +568,7 @@ impl PodResourcePanel {
                     request_id: None,
                     status: PodTerminalStatus::Connecting,
                     error: None,
+                    focus_input_on_connect: false,
                 });
             }
             Some(PodTableAction::Evict { key }) => {
@@ -1128,6 +1134,7 @@ impl PodResourcePanel {
         let mut send_clicked = false;
         let connected = matches!(dialog.status, PodTerminalStatus::Attached);
         let connecting = matches!(dialog.status, PodTerminalStatus::Connecting);
+        let input_id = egui::Id::new(("pod-terminal-input", dialog.mode.id_salt(), &dialog.key));
 
         egui::Window::new(terminal_title(dialog.mode, &dialog.pod))
             .id(egui::Id::new((
@@ -1138,102 +1145,32 @@ impl PodResourcePanel {
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .open(&mut open)
             .collapsible(false)
-            .resizable(false)
-            .fixed_size([POD_ATTACH_DIALOG_WIDTH, POD_ATTACH_DIALOG_HEIGHT])
+            .resizable(true)
+            .default_size([
+                POD_TERMINAL_DIALOG_DEFAULT_WIDTH,
+                POD_TERMINAL_DIALOG_DEFAULT_HEIGHT,
+            ])
+            .min_size([
+                POD_TERMINAL_DIALOG_MIN_WIDTH,
+                POD_TERMINAL_DIALOG_MIN_HEIGHT,
+            ])
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Container");
-                    let selected_label = dialog
-                        .selected_container
-                        .as_deref()
-                        .unwrap_or("default")
-                        .to_owned();
-                    ui.add_enabled_ui(!connected && !connecting, |ui| {
-                        egui::ComboBox::from_id_salt((
-                            "pod-terminal-container",
-                            dialog.mode.id_salt(),
-                            &dialog.key,
-                        ))
-                        .selected_text(selected_label)
-                        .show_ui(ui, |ui| {
-                            for container in &dialog.containers {
-                                ui.selectable_value(
-                                    &mut dialog.selected_container,
-                                    Some(container.clone()),
-                                    container,
-                                );
-                            }
-                        });
-                    });
-                    ui.separator();
-                    ui.label(pod_terminal_status_label(&dialog.status));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        clear_clicked = ui
-                            .button(egui_phosphor::regular::BROOM)
-                            .on_hover_text("Clear")
-                            .clicked();
-                        disconnect_clicked = ui
-                            .add_enabled(
-                                connected || connecting,
-                                egui::Button::new(egui_phosphor::regular::PLUGS_CONNECTED),
-                            )
-                            .on_hover_text("Disconnect")
-                            .clicked();
-                        connect_clicked = ui
-                            .add_enabled(
-                                !connected && !connecting,
-                                egui::Button::new(terminal_connect_icon(dialog.mode)),
-                            )
-                            .on_hover_text(terminal_connect_label(dialog.mode))
-                            .clicked();
-                    });
-                });
+                let toolbar = show_terminal_toolbar(ui, dialog, connected, connecting);
+                connect_clicked = toolbar.connect_clicked;
+                disconnect_clicked = toolbar.disconnect_clicked;
+                clear_clicked = toolbar.clear_clicked;
+
                 if let Some(error) = dialog.error.as_deref() {
-                    ui.colored_label(ui.visuals().error_fg_color, error);
+                    ui.add_space(8.0);
+                    show_terminal_error_banner(ui, error);
                 }
-                ui.separator();
-                ui.allocate_ui(
-                    [POD_ATTACH_OUTPUT_WIDTH, POD_ATTACH_OUTPUT_HEIGHT].into(),
-                    |ui| {
-                        egui::ScrollArea::both()
-                            .id_salt(("pod-attach-output", &dialog.key))
-                            .auto_shrink([false, false])
-                            .stick_to_bottom(true)
-                            .show(ui, |ui| {
-                                ui.set_min_width(POD_ATTACH_OUTPUT_WIDTH - 16.0);
-                                let output = if dialog.output.is_empty() {
-                                    "No output."
-                                } else {
-                                    &dialog.output
-                                };
-                                if dialog.output_truncated {
-                                    ui.label("Earlier terminal output was truncated.");
-                                }
-                                ui.add(
-                                    egui::Label::new(egui::RichText::new(output).monospace())
-                                        .selectable(true),
-                                );
-                            });
-                    },
-                );
-                ui.separator();
-                ui.horizontal(|ui| {
-                    let response = ui.add_enabled(
-                        connected,
-                        egui::TextEdit::singleline(&mut dialog.input)
-                            .desired_width(POD_ATTACH_INPUT_WIDTH)
-                            .hint_text("stdin"),
-                    );
-                    send_clicked = ui
-                        .add_enabled(
-                            connected,
-                            egui::Button::new(egui_phosphor::regular::PAPER_PLANE_TILT),
-                        )
-                        .on_hover_text("Send")
-                        .clicked()
-                        || (response.lost_focus()
-                            && ui.input(|input| input.key_pressed(egui::Key::Enter)));
-                });
+
+                ui.add_space(8.0);
+                let output_height = (ui.available_height() - POD_TERMINAL_INPUT_BAR_HEIGHT)
+                    .max(POD_TERMINAL_OUTPUT_MIN_HEIGHT);
+                show_terminal_output(ui, dialog, output_height);
+                ui.add_space(8.0);
+                send_clicked = show_terminal_input_bar(ui, dialog, connected, input_id);
             });
 
         if !open {
@@ -1260,6 +1197,8 @@ impl PodResourcePanel {
                 });
             }
             dialog.status = PodTerminalStatus::Disconnected;
+            dialog.auto_connect = false;
+            dialog.focus_input_on_connect = false;
         }
 
         if send_clicked
@@ -1323,6 +1262,7 @@ impl PodResourcePanel {
         dialog.request_id = Some(request_id);
         dialog.status = PodTerminalStatus::Connecting;
         dialog.error = None;
+        dialog.focus_input_on_connect = false;
         dialog.auto_connect = false;
     }
 
@@ -1654,11 +1594,249 @@ const POD_COLUMN_WIDTHS: [f32; 12] = [
 ];
 
 const POD_LOG_CONTENT_HEIGHT: f32 = 360.0;
-const POD_ATTACH_DIALOG_WIDTH: f32 = 820.0;
-const POD_ATTACH_DIALOG_HEIGHT: f32 = 520.0;
-const POD_ATTACH_OUTPUT_WIDTH: f32 = 780.0;
-const POD_ATTACH_OUTPUT_HEIGHT: f32 = 360.0;
-const POD_ATTACH_INPUT_WIDTH: f32 = 720.0;
+const POD_TERMINAL_DIALOG_DEFAULT_WIDTH: f32 = 900.0;
+const POD_TERMINAL_DIALOG_DEFAULT_HEIGHT: f32 = 600.0;
+const POD_TERMINAL_DIALOG_MIN_WIDTH: f32 = 680.0;
+const POD_TERMINAL_DIALOG_MIN_HEIGHT: f32 = 420.0;
+const POD_TERMINAL_INPUT_BAR_HEIGHT: f32 = 46.0;
+const POD_TERMINAL_OUTPUT_MIN_HEIGHT: f32 = 220.0;
+
+#[derive(Default)]
+struct TerminalToolbarResponse {
+    connect_clicked: bool,
+    disconnect_clicked: bool,
+    clear_clicked: bool,
+}
+
+fn show_terminal_toolbar(
+    ui: &mut egui::Ui,
+    dialog: &mut PodTerminalDialog,
+    connected: bool,
+    connecting: bool,
+) -> TerminalToolbarResponse {
+    let mut response = TerminalToolbarResponse::default();
+
+    egui::Frame::new()
+        .fill(ui.visuals().extreme_bg_color)
+        .stroke(egui::Stroke::new(
+            1.0,
+            ui.visuals().widgets.noninteractive.bg_stroke.color,
+        ))
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(10, 7))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(terminal_connect_icon(dialog.mode))
+                        .color(ui.visuals().hyperlink_color),
+                );
+                ui.label(egui::RichText::new(terminal_title(dialog.mode, &dialog.pod)).strong());
+                ui.separator();
+                ui.label(egui::RichText::new("Container").weak());
+
+                let selected_label = dialog
+                    .selected_container
+                    .as_deref()
+                    .unwrap_or("default")
+                    .to_owned();
+                ui.add_enabled_ui(!connected && !connecting, |ui| {
+                    egui::ComboBox::from_id_salt((
+                        "pod-terminal-container",
+                        dialog.mode.id_salt(),
+                        &dialog.key,
+                    ))
+                    .selected_text(selected_label)
+                    .show_ui(ui, |ui| {
+                        for container in &dialog.containers {
+                            ui.selectable_value(
+                                &mut dialog.selected_container,
+                                Some(container.clone()),
+                                container,
+                            );
+                        }
+                    });
+                });
+
+                show_terminal_status_chip(ui, &dialog.status);
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let can_clear = !dialog.output.is_empty() || dialog.output_truncated;
+                    response.clear_clicked = ui
+                        .add_enabled(can_clear, egui::Button::new(egui_phosphor::regular::BROOM))
+                        .on_hover_text("Clear")
+                        .clicked();
+                    response.disconnect_clicked = ui
+                        .add_enabled(
+                            connected || connecting,
+                            egui::Button::new(egui_phosphor::regular::PLUGS_CONNECTED),
+                        )
+                        .on_hover_text("Disconnect")
+                        .clicked();
+                    response.connect_clicked = ui
+                        .add_enabled(
+                            !connected && !connecting,
+                            egui::Button::new(terminal_connect_icon(dialog.mode)),
+                        )
+                        .on_hover_text(terminal_connect_action_label(dialog))
+                        .clicked();
+                });
+            });
+        });
+
+    response
+}
+
+fn show_terminal_status_chip(ui: &mut egui::Ui, status: &PodTerminalStatus) {
+    let (icon, label, color) = terminal_status_chip_content(ui, status);
+    let response = egui::Frame::new()
+        .fill(translucent(color, 28))
+        .stroke(egui::Stroke::new(1.0, translucent(color, 120)))
+        .corner_radius(egui::CornerRadius::same(10))
+        .inner_margin(egui::Margin::symmetric(8, 3))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 5.0;
+                ui.label(egui::RichText::new(icon).small().color(color));
+                ui.label(egui::RichText::new(label).small().color(color));
+            });
+        })
+        .response;
+    if matches!(status, PodTerminalStatus::Error(_)) {
+        response.on_hover_text(pod_terminal_status_label(status));
+    }
+}
+
+fn show_terminal_error_banner(ui: &mut egui::Ui, error: &str) {
+    let error_color = ui.visuals().error_fg_color;
+    egui::Frame::new()
+        .fill(translucent(error_color, 24))
+        .stroke(egui::Stroke::new(1.0, translucent(error_color, 110)))
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(10, 7))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(egui_phosphor::regular::WARNING_CIRCLE).color(error_color),
+                );
+                ui.add(egui::Label::new(egui::RichText::new(error).color(error_color)).wrap());
+            });
+        });
+}
+
+fn show_terminal_output(ui: &mut egui::Ui, dialog: &PodTerminalDialog, height: f32) {
+    let height = height.max(POD_TERMINAL_OUTPUT_MIN_HEIGHT);
+    ui.allocate_ui([ui.available_width(), height].into(), |ui| {
+        egui::Frame::new()
+            .fill(terminal_surface_fill())
+            .stroke(egui::Stroke::new(1.0, terminal_surface_stroke()))
+            .corner_radius(egui::CornerRadius::same(6))
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                let scroll_height = (height - 18.0).max(120.0);
+                egui::ScrollArea::both()
+                    .id_salt(("pod-attach-output", dialog.mode.id_salt(), &dialog.key))
+                    .auto_shrink([false, false])
+                    .stick_to_bottom(true)
+                    .max_height(scroll_height)
+                    .min_scrolled_height(scroll_height)
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        if dialog.output_truncated {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                ui.label(
+                                    egui::RichText::new(egui_phosphor::regular::WARNING)
+                                        .color(terminal_warning_color()),
+                                );
+                                ui.label(
+                                    egui::RichText::new("Earlier terminal output was truncated.")
+                                        .small()
+                                        .color(terminal_muted_text_color()),
+                                );
+                            });
+                            ui.add_space(4.0);
+                        }
+
+                        if dialog.output.is_empty() {
+                            ui.label(
+                                egui::RichText::new("No terminal output yet.")
+                                    .monospace()
+                                    .color(terminal_muted_text_color()),
+                            );
+                        } else {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&dialog.output)
+                                        .monospace()
+                                        .color(terminal_text_color()),
+                                )
+                                .selectable(true),
+                            );
+                        }
+                    });
+            });
+    });
+}
+
+fn show_terminal_input_bar(
+    ui: &mut egui::Ui,
+    dialog: &mut PodTerminalDialog,
+    connected: bool,
+    input_id: egui::Id,
+) -> bool {
+    let mut send_clicked = false;
+
+    egui::Frame::new()
+        .fill(ui.visuals().extreme_bg_color)
+        .stroke(egui::Stroke::new(
+            1.0,
+            ui.visuals().widgets.noninteractive.bg_stroke.color,
+        ))
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("$")
+                        .monospace()
+                        .color(ui.visuals().weak_text_color()),
+                );
+                let input_width = (ui.available_width()
+                    - ui.spacing().interact_size.x
+                    - ui.spacing().item_spacing.x)
+                    .max(120.0);
+                let response = ui.add_enabled(
+                    connected,
+                    egui::TextEdit::singleline(&mut dialog.input)
+                        .id(input_id)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(input_width)
+                        .hint_text("stdin"),
+                );
+                if connected && dialog.focus_input_on_connect {
+                    response.request_focus();
+                    dialog.focus_input_on_connect = false;
+                }
+
+                let can_send = connected && !dialog.input.is_empty();
+                let send_text = egui::RichText::new(egui_phosphor::regular::PAPER_PLANE_TILT)
+                    .color(if can_send {
+                        ui.visuals().hyperlink_color
+                    } else {
+                        ui.visuals().weak_text_color()
+                    });
+                let button_clicked = ui
+                    .add_enabled(can_send, egui::Button::new(send_text))
+                    .on_hover_text("Send")
+                    .clicked();
+                let enter_pressed =
+                    response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                send_clicked = can_send && (button_clicked || enter_pressed);
+            });
+        });
+
+    send_clicked
+}
 
 fn status_color(ui: &egui::Ui, status: &str) -> egui::Color32 {
     match status {
@@ -1694,11 +1872,71 @@ fn terminal_connect_label(mode: PodTerminalMode) -> &'static str {
     }
 }
 
+fn terminal_connect_action_label(dialog: &PodTerminalDialog) -> &'static str {
+    if matches!(dialog.status, PodTerminalStatus::Error(_)) {
+        "Reconnect"
+    } else {
+        terminal_connect_label(dialog.mode)
+    }
+}
+
 fn terminal_connect_icon(mode: PodTerminalMode) -> &'static str {
     match mode {
         PodTerminalMode::Attach => egui_phosphor::regular::PLUG,
         PodTerminalMode::Exec => egui_phosphor::regular::TERMINAL,
     }
+}
+
+fn terminal_status_chip_content(
+    ui: &egui::Ui,
+    status: &PodTerminalStatus,
+) -> (&'static str, &'static str, egui::Color32) {
+    match status {
+        PodTerminalStatus::Disconnected => (
+            egui_phosphor::regular::CIRCLE,
+            "Disconnected",
+            ui.visuals().weak_text_color(),
+        ),
+        PodTerminalStatus::Connecting => (
+            egui_phosphor::regular::CIRCLE_NOTCH,
+            "Connecting",
+            egui::Color32::from_rgb(191, 135, 0),
+        ),
+        PodTerminalStatus::Attached => (
+            egui_phosphor::regular::CHECK_CIRCLE,
+            "Attached",
+            egui::Color32::from_rgb(46, 160, 67),
+        ),
+        PodTerminalStatus::Error(_) => (
+            egui_phosphor::regular::WARNING_CIRCLE,
+            "Error",
+            ui.visuals().error_fg_color,
+        ),
+    }
+}
+
+fn terminal_surface_fill() -> egui::Color32 {
+    egui::Color32::from_rgb(13, 18, 23)
+}
+
+fn terminal_surface_stroke() -> egui::Color32 {
+    egui::Color32::from_rgb(42, 52, 65)
+}
+
+fn terminal_text_color() -> egui::Color32 {
+    egui::Color32::from_rgb(220, 232, 241)
+}
+
+fn terminal_muted_text_color() -> egui::Color32 {
+    egui::Color32::from_rgb(148, 163, 184)
+}
+
+fn terminal_warning_color() -> egui::Color32 {
+    egui::Color32::from_rgb(245, 158, 11)
+}
+
+fn translucent(color: egui::Color32, alpha: u8) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
 }
 
 fn terminal_connected_message(dialog: &PodTerminalDialog) -> &'static str {
@@ -1719,11 +1957,13 @@ fn apply_terminal_output(dialog: &mut PodTerminalDialog, result: Result<PodAttac
                 append_limited_output(&mut dialog.output, "\ndisconnected\n");
             dialog.status = PodTerminalStatus::Disconnected;
             dialog.request_id = None;
+            dialog.focus_input_on_connect = false;
         }
         Err(error) => {
             dialog.status = PodTerminalStatus::Error(error.clone());
             dialog.error = Some(error);
             dialog.request_id = None;
+            dialog.focus_input_on_connect = false;
         }
     }
 }
@@ -2018,6 +2258,7 @@ struct PodTerminalDialog {
     request_id: Option<u64>,
     status: PodTerminalStatus,
     error: Option<String>,
+    focus_input_on_connect: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -2916,6 +3157,7 @@ spec:
                 request_id: None,
                 status: PodTerminalStatus::Connecting,
                 error: None,
+                focus_input_on_connect: false,
             }),
             ..PodResourcePanel::default()
         };
