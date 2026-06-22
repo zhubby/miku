@@ -3203,6 +3203,7 @@ dependencies = [
  "egui_dock",
  "egui_extras",
  "futures",
+ "image",
  "js-sys",
  "miku-api",
  "miku-core",

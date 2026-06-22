@@ -157,12 +157,8 @@ impl MikuApp {
 
     fn about_icon_texture(&mut self, ctx: &egui::Context) -> Option<&egui::TextureHandle> {
         if self.about_icon.is_none() && !self.about_icon_load_failed {
-            match eframe::icon_data::from_png_bytes(ABOUT_APP_ICON_PNG) {
-                Ok(icon) => {
-                    let image = egui::ColorImage::from_rgba_unmultiplied(
-                        [icon.width as usize, icon.height as usize],
-                        &icon.rgba,
-                    );
+            match load_about_icon_image() {
+                Ok(image) => {
                     self.about_icon =
                         Some(ctx.load_texture("about-dialog-app-icon", image, Default::default()));
                 }
@@ -185,5 +181,26 @@ impl MikuApp {
     fn pick_config_file(&mut self) {
         self.new_cluster_form
             .save_failed("file selection is only available in native mode");
+    }
+}
+
+fn load_about_icon_image() -> Result<egui::ColorImage, image::ImageError> {
+    let image = image::load_from_memory(ABOUT_APP_ICON_PNG)?.into_rgba8();
+    let size = [image.width() as usize, image.height() as usize];
+    let rgba = image.into_raw();
+
+    Ok(egui::ColorImage::from_rgba_unmultiplied(size, &rgba))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn about_icon_decodes_embedded_png() {
+        let image = load_about_icon_image().unwrap();
+
+        assert_eq!(image.size, [1024, 1024]);
+        assert!(!image.pixels.is_empty());
     }
 }
