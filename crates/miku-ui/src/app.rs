@@ -632,12 +632,7 @@ impl eframe::App for MikuApp {
                     drop(tab_viewer);
 
                     if add_requested {
-                        self.right_dock_state
-                            .push_to_focused_leaf(AppTab::Agent(self.next_agent_id));
-                        self.agent_panels
-                            .insert(self.next_agent_id, AgentPanel::default());
-                        self.request_initial_agent_conversation_load(self.next_agent_id);
-                        self.next_agent_id += 1;
+                        self.open_new_agent_conversation_tab(None);
                     }
                     for request in agent_conversation_requests {
                         self.request_agent_conversation_action(request);
@@ -850,6 +845,61 @@ impl MikuApp {
         workspace.dock_state.push_to_first_leaf(tab);
     }
 
+    fn open_new_agent_conversation_tab(&mut self, source_panel_id: Option<usize>) -> usize {
+        let panel = self
+            .source_agent_panel(source_panel_id)
+            .map(AgentPanel::new_conversation_from)
+            .unwrap_or_default();
+        self.open_agent_tab(panel)
+    }
+
+    fn source_agent_panel(&self, source_panel_id: Option<usize>) -> Option<&AgentPanel> {
+        if let Some(panel_id) = source_panel_id
+            && let Some(panel) = self.agent_panels.get(&panel_id)
+        {
+            return Some(panel);
+        }
+        if let Some(panel) = self.active_agent_panel() {
+            return Some(panel);
+        }
+        self.agent_panels.values().next()
+    }
+
+    fn active_agent_panel(&self) -> Option<&AgentPanel> {
+        let node_path = self.right_dock_state.focused_leaf()?;
+        let leaf = self.right_dock_state.leaf(node_path).ok()?;
+        match &leaf[leaf.active] {
+            AppTab::Agent(panel_id) => self.agent_panels.get(panel_id),
+            AppTab::Clusters | AppTab::Resources | AppTab::Workspace(_) | AppTab::Resource(_) => {
+                None
+            }
+        }
+    }
+
+    fn open_agent_tab(&mut self, panel: AgentPanel) -> usize {
+        let panel_id = self.next_agent_id;
+        let tab = AppTab::Agent(panel_id);
+        self.right_dock_state.push_to_focused_leaf(tab.clone());
+        self.agent_panels.insert(panel_id, panel);
+        self.next_agent_id += 1;
+        self.focus_agent_tab(&tab);
+        panel_id
+    }
+
+    fn focus_agent_tab(&mut self, tab: &AppTab) {
+        if let Some((node, tab_index)) = self.right_dock_state.main_surface().find_tab(tab) {
+            let node_path = NodePath {
+                surface: SurfaceIndex::main(),
+                node,
+            };
+            let _ = self
+                .right_dock_state
+                .set_active_tab(TabPath::from((node_path, tab_index)));
+            self.right_dock_state
+                .set_focused_node_and_surface(node_path);
+        }
+    }
+
     fn selected_cluster_id(&self) -> Option<miku_core::ClusterId> {
         self.state.selected_cluster_id().cloned()
     }
@@ -1040,10 +1090,7 @@ impl MikuApp {
                 conversation_id,
             } => self.request_agent_conversation_load(panel_id, conversation_id),
             AgentConversationUiRequest::New { panel_id } => {
-                self.agent_panels
-                    .entry(panel_id)
-                    .or_default()
-                    .start_new_conversation();
+                self.open_new_agent_conversation_tab(Some(panel_id));
             }
             AgentConversationUiRequest::Delete {
                 panel_id,
@@ -2894,6 +2941,44 @@ mod tests {
         app.select_cluster(first);
 
         assert_eq!(app.selected_workspace_resource(), Some(pods_resource()));
+    }
+
+    #[test]
+    fn new_agent_conversation_request_opens_new_agent_tab() {
+        let mut app = MikuApp::new(RuntimeMode::Native);
+
+        app.request_agent_conversation_action(AgentConversationUiRequest::New { panel_id: 1 });
+
+        assert!(
+            app.right_dock_state
+                .main_surface()
+                .find_tab(&AppTab::Agent(2))
+                .is_some()
+        );
+        assert!(app.agent_panels.contains_key(&2));
+        assert!(app.agent_panels.get(&2).unwrap().test_is_new_conversation());
+        assert_eq!(app.next_agent_id, 3);
+    }
+
+    #[test]
+    fn adding_agent_tab_opens_blank_conversation() {
+        let mut app = MikuApp::new(RuntimeMode::Native);
+
+        let panel_id = app.open_new_agent_conversation_tab(None);
+
+        assert_eq!(panel_id, 2);
+        assert!(
+            app.right_dock_state
+                .main_surface()
+                .find_tab(&AppTab::Agent(panel_id))
+                .is_some()
+        );
+        assert!(
+            app.agent_panels
+                .get(&panel_id)
+                .unwrap()
+                .test_is_new_conversation()
+        );
     }
 
     #[test]

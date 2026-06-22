@@ -645,6 +645,8 @@ fn show_node_table(
                         });
 
                         table_row.response().context_menu(|ui| {
+                            crate::clipboard::copy_name_menu_item(ui, &row.name);
+                            ui.separator();
                             if ui
                                 .button(format!("{} Describe", egui_phosphor::regular::INFO))
                                 .clicked()

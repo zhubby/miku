@@ -1490,6 +1490,8 @@ fn show_pod_table(
                             selected_rows.insert(row.key.clone());
                         }
                         response.context_menu(|ui| {
+                            crate::clipboard::copy_name_menu_item(ui, &row.name);
+                            ui.separator();
                             if ui
                                 .button(format!("{} Logs", egui_phosphor::regular::TERMINAL_WINDOW))
                                 .clicked()
@@ -1949,8 +1951,10 @@ fn terminal_connected_message(dialog: &PodTerminalDialog) -> &'static str {
 fn apply_terminal_output(dialog: &mut PodTerminalDialog, result: Result<PodAttachOutput, String>) {
     match result {
         Ok(PodAttachOutput::Stdout(bytes)) | Ok(PodAttachOutput::Stderr(bytes)) => {
-            dialog.output_truncated |=
-                append_limited_output(&mut dialog.output, &String::from_utf8_lossy(&bytes));
+            dialog.output_truncated |= append_limited_terminal_output(
+                &mut dialog.output,
+                &String::from_utf8_lossy(&bytes),
+            );
         }
         Ok(PodAttachOutput::Closed) => {
             dialog.output_truncated |=
@@ -2022,6 +2026,66 @@ fn limited_log_lines(mut lines: Vec<LogLine>) -> LimitedLogLines {
 fn append_limited_output(output: &mut String, text: &str) -> bool {
     output.push_str(text);
     trim_string_to_recent_bytes(output, MAX_POD_ATTACH_OUTPUT_BYTES)
+}
+
+fn append_limited_terminal_output(output: &mut String, text: &str) -> bool {
+    append_limited_output(output, &sanitize_terminal_output(text))
+}
+
+fn sanitize_terminal_output(text: &str) -> String {
+    let mut sanitized = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\u{1b}' => skip_escape_sequence(&mut chars),
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                sanitized.push('\n');
+            }
+            '\n' | '\t' => sanitized.push(ch),
+            '\u{8}' => {
+                if !sanitized.ends_with('\n') {
+                    sanitized.pop();
+                }
+            }
+            _ if ch.is_control() => {}
+            _ => sanitized.push(ch),
+        }
+    }
+
+    sanitized
+}
+
+fn skip_escape_sequence(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    match chars.next() {
+        Some('[') => skip_csi_sequence(chars),
+        Some(']') => skip_string_escape_sequence(chars),
+        Some('P' | '^' | '_' | 'X') => skip_string_escape_sequence(chars),
+        Some(_) | None => {}
+    }
+}
+
+fn skip_csi_sequence(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    for ch in chars.by_ref() {
+        if matches!(ch, '\u{40}'..='\u{7e}') {
+            break;
+        }
+    }
+}
+
+fn skip_string_escape_sequence(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    while let Some(ch) = chars.next() {
+        if ch == '\u{7}' {
+            break;
+        }
+        if ch == '\u{1b}' && chars.peek() == Some(&'\\') {
+            chars.next();
+            break;
+        }
+    }
 }
 
 fn trim_string_to_recent_bytes(value: &mut String, max_bytes: usize) -> bool {
@@ -3435,6 +3499,22 @@ spec:
         assert!(output.len() <= MAX_POD_ATTACH_OUTPUT_BYTES);
         assert!(output.ends_with("tail"));
         assert!(output.is_char_boundary(0));
+    }
+
+    #[test]
+    fn terminal_output_strips_ansi_and_control_sequences() {
+        let raw = concat!(
+            "exec /bin/sh\n",
+            "/ # \u{1b}[6nls\r\n",
+            "\u{1b}[1;34mbin\u{1b}[m\t",
+            "\u{1b}[1;34metc\u{1b}[m\n",
+            "ab\u{8}c\u{1b}]0;title\u{7}\n",
+        );
+
+        assert_eq!(
+            sanitize_terminal_output(raw),
+            "exec /bin/sh\n/ # ls\nbin\tetc\nac\n"
+        );
     }
 
     fn pod_summary() -> ResourceSummary {

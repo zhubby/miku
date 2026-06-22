@@ -41,6 +41,20 @@ pub(crate) enum AppTab {
     Agent(usize),
 }
 
+impl AppTab {
+    fn name(&self) -> String {
+        match self {
+            Self::Clusters => "Clusters".to_owned(),
+            Self::Resources => "Resources".to_owned(),
+            Self::Workspace(1) => "Workspace".to_owned(),
+            Self::Workspace(id) => format!("Workspace {id}"),
+            Self::Resource(resource) => resource.name.to_owned(),
+            Self::Agent(1) => "Agent".to_owned(),
+            Self::Agent(id) => format!("Agent {id}"),
+        }
+    }
+}
+
 pub(crate) struct AppTabViewer<'a> {
     pub(crate) state: &'a AppState,
     pub(crate) clusters: &'a [ClusterSummary],
@@ -185,16 +199,7 @@ impl TabViewer for AppTabViewer<'_> {
     type Tab = AppTab;
 
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
-        match tab {
-            AppTab::Clusters => "Clusters",
-            AppTab::Resources => "Resources",
-            AppTab::Workspace(1) => "Workspace",
-            AppTab::Workspace(id) => return format!("Workspace {id}").into(),
-            AppTab::Resource(resource) => return resource.name.into(),
-            AppTab::Agent(1) => "Agent",
-            AppTab::Agent(id) => return format!("Agent {id}").into(),
-        }
-        .into()
+        tab.name().into()
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
@@ -610,6 +615,13 @@ impl TabViewer for AppTabViewer<'_> {
         self.closeable && !matches!(tab, AppTab::Clusters)
     }
 
+    fn context_menu(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab, _path: egui_dock::NodePath) {
+        crate::clipboard::copy_name_menu_item(ui, tab.name());
+        if self.is_closeable(tab) || self.allow_windows {
+            ui.separator();
+        }
+    }
+
     fn on_add(&mut self, _path: egui_dock::NodePath) {
         self.add_requested = self.add_tab.is_some();
     }
@@ -750,6 +762,22 @@ impl AgentPanel {
         self.error = None;
         self.input.clear();
         self.loading = false;
+    }
+
+    pub(crate) fn new_conversation_from(source: &Self) -> Self {
+        Self {
+            conversations: source.conversations.clone(),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_is_new_conversation(&self) -> bool {
+        self.conversation_id.is_none()
+            && self.messages.is_empty()
+            && self.events.is_empty()
+            && self.input.is_empty()
+            && !self.loading
     }
 
     fn take_conversation_requests(&mut self, panel_id: usize) -> Vec<AgentConversationUiRequest> {
@@ -1504,6 +1532,8 @@ impl AppTabViewer<'_> {
         }
 
         response.context_menu(|ui| {
+            crate::clipboard::copy_name_menu_item(ui, &cluster.name);
+            ui.separator();
             if ui.button("Select").clicked() {
                 self.selected_cluster = Some(cluster.clone());
                 ui.close();

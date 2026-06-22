@@ -1,4 +1,5 @@
 mod app;
+mod clipboard;
 mod cluster_events;
 mod dialogs;
 mod dock;

@@ -962,6 +962,8 @@ fn show_custom_resource_table(
                             selected_rows.insert(row.name.clone());
                         }
                         response.context_menu(|ui| {
+                            crate::clipboard::copy_name_menu_item(ui, &row.name);
+                            ui.separator();
                             if ui
                                 .button(format!("{} Expand", egui_phosphor::regular::ARROWS_OUT))
                                 .clicked()
@@ -1053,6 +1055,8 @@ fn show_custom_resource_instance_table(
                                 selected_rows.insert(row.key.clone());
                             }
                             response.context_menu(|ui| {
+                                crate::clipboard::copy_name_menu_item(ui, &row.name);
+                                ui.separator();
                                 if ui
                                     .button(format!("{} View", egui_phosphor::regular::EYE))
                                     .clicked()

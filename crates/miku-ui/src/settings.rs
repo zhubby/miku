@@ -63,7 +63,6 @@ impl SettingsPanel {
             .show_leaf_collapse_buttons(false)
             .show_leaf_close_all_buttons(false)
             .show_close_buttons(false)
-            .tab_context_menus(false)
             .style(Style::from_egui(ui.style().as_ref()))
             .show_inside(ui, &mut viewer);
         viewer.requests
@@ -144,6 +143,10 @@ impl TabViewer for SettingsTabViewer<'_> {
 
     fn is_closeable(&self, _tab: &Self::Tab) -> bool {
         false
+    }
+
+    fn context_menu(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab, _path: egui_dock::NodePath) {
+        crate::clipboard::copy_name_menu_item(ui, tab.title());
     }
 
     fn allowed_in_windows(&self, _tab: &mut Self::Tab) -> bool {

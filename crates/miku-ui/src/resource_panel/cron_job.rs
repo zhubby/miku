@@ -819,6 +819,8 @@ fn show_cron_job_table(
                             selected_rows.insert(row.key.clone());
                         }
                         response.context_menu(|ui| {
+                            crate::clipboard::copy_name_menu_item(ui, &row.name);
+                            ui.separator();
                             if ui
                                 .button(format!("{} Describe", egui_phosphor::regular::INFO))
                                 .clicked()
