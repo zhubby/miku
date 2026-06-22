@@ -61,6 +61,7 @@ pub fn router(services: SharedServices) -> Router {
         )
         .route("/api/pods/evict", post(pods::evict_pod))
         .route("/api/pods/attach", get(pods::attach_pod))
+        .route("/api/pods/exec", get(pods::exec_pod))
         .route("/api/pods/logs", post(pods::read_pod_logs))
         .route("/api/pods/logs/stream", post(pods::stream_pod_logs))
         .fallback(static_assets::serve)

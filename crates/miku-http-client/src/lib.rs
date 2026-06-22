@@ -14,8 +14,9 @@ use miku_api::{
     KubernetesResourceWriter, KubernetesWatchService, LlmProviderSettings, LlmSettingsStore,
     LocalPreferenceStore, LogLine, MikuServices, NodeCordonRequest, NodeDrainRequest,
     PodAttachInput, PodAttachOutput, PodAttachRequest, PodAttachService, PodAttachSession,
-    PodEvictRequest, PodLogQuery, PodLogService, ResourceApplyRequest, ResourceDeleteRequest,
-    ResourceEvent, ResourceList, ResourcePatchRequest, ResourceQuery, ResourceSummary,
+    PodEvictRequest, PodExecRequest, PodExecService, PodLogQuery, PodLogService,
+    ResourceApplyRequest, ResourceDeleteRequest, ResourceEvent, ResourceList, ResourcePatchRequest,
+    ResourceQuery, ResourceSummary, default_pod_exec_command,
 };
 #[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
@@ -93,6 +94,40 @@ impl HttpMikuClient {
             pairs.append_pair("pod", &request.pod);
             if let Some(container) = &request.container {
                 pairs.append_pair("container", container);
+            }
+            pairs.append_pair("tty", if request.tty { "true" } else { "false" });
+        }
+        Ok(endpoint)
+    }
+
+    pub fn pod_exec_endpoint(&self, request: &PodExecRequest) -> miku_core::Result<Url> {
+        let mut endpoint = self.endpoint("/api/pods/exec");
+        endpoint
+            .set_scheme(match self.base_url.scheme() {
+                "https" | "wss" => "wss",
+                _ => "ws",
+            })
+            .map_err(|_| {
+                miku_core::MikuError::Config(format!(
+                    "could not build websocket URL from {}",
+                    self.base_url
+                ))
+            })?;
+        {
+            let mut pairs = endpoint.query_pairs_mut();
+            pairs.append_pair("cluster_id", request.cluster_id.as_str());
+            pairs.append_pair("namespace", &request.namespace);
+            pairs.append_pair("pod", &request.pod);
+            if let Some(container) = &request.container {
+                pairs.append_pair("container", container);
+            }
+            let command = if request.command.is_empty() {
+                default_pod_exec_command()
+            } else {
+                request.command.clone()
+            };
+            for part in command {
+                pairs.append_pair("command", &part);
             }
             pairs.append_pair("tty", if request.tty { "true" } else { "false" });
         }
@@ -469,6 +504,14 @@ impl PodAttachService for HttpMikuClient {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl PodExecService for HttpMikuClient {
+    async fn exec_pod(&self, request: PodExecRequest) -> miku_core::Result<PodAttachSession> {
+        exec_pod(self, request).await
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl LocalPreferenceStore for HttpMikuClient {
     async fn get_preference(&self, _key: &str) -> miku_core::Result<Option<serde_json::Value>> {
         Err(miku_core::MikuError::UnsupportedRuntime(
@@ -525,6 +568,20 @@ async fn attach_pod(
     request: PodAttachRequest,
 ) -> miku_core::Result<PodAttachSession> {
     let endpoint = client.pod_attach_endpoint(&request)?;
+    connect_pod_terminal(endpoint).await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn exec_pod(
+    client: &HttpMikuClient,
+    request: PodExecRequest,
+) -> miku_core::Result<PodAttachSession> {
+    let endpoint = client.pod_exec_endpoint(&request)?;
+    connect_pod_terminal(endpoint).await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn connect_pod_terminal(endpoint: Url) -> miku_core::Result<PodAttachSession> {
     let (socket, _) = tokio_tungstenite::connect_async(endpoint.as_str())
         .await
         .map_err(|error| miku_core::MikuError::Transport(error.to_string()))?;
@@ -591,9 +648,23 @@ async fn attach_pod(
     request: PodAttachRequest,
 ) -> miku_core::Result<PodAttachSession> {
     let endpoint = client.pod_attach_endpoint(&request)?;
+    connect_pod_terminal(endpoint).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn exec_pod(
+    client: &HttpMikuClient,
+    request: PodExecRequest,
+) -> miku_core::Result<PodAttachSession> {
+    let endpoint = client.pod_exec_endpoint(&request)?;
+    connect_pod_terminal(endpoint).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn connect_pod_terminal(endpoint: Url) -> miku_core::Result<PodAttachSession> {
     let socket = web_sys::WebSocket::new(endpoint.as_str()).map_err(|error| {
         miku_core::MikuError::Transport(format!(
-            "failed to open pod attach websocket: {}",
+            "failed to open pod terminal websocket: {}",
             js_value_message(error)
         ))
     })?;
@@ -615,7 +686,7 @@ async fn attach_pod(
     let open_sender_for_error = Rc::clone(&open_sender);
     let output_sender_for_error = output_tx.clone();
     let onerror = Closure::<dyn FnMut(web_sys::Event)>::new(move |_event| {
-        let error = miku_core::MikuError::Transport("pod attach websocket failed".to_owned());
+        let error = miku_core::MikuError::Transport("pod terminal websocket failed".to_owned());
         if let Some(sender) = open_sender_for_error.borrow_mut().take() {
             let _ = sender.send(Err(error));
         } else {
@@ -629,7 +700,7 @@ async fn attach_pod(
     let onclose = Closure::<dyn FnMut(web_sys::Event)>::new(move |_event| {
         if let Some(sender) = open_sender_for_close.borrow_mut().take() {
             let _ = sender.send(Err(miku_core::MikuError::Transport(
-                "pod attach websocket closed before it opened".to_owned(),
+                "pod terminal websocket closed before it opened".to_owned(),
             )));
         } else {
             let _ = output_sender_for_close.unbounded_send(Ok(PodAttachOutput::Closed));
@@ -991,6 +1062,34 @@ mod tests {
                 .pod_attach_endpoint(&request)
                 .unwrap()
                 .scheme(),
+            "wss"
+        );
+    }
+
+    #[test]
+    fn pod_exec_endpoint_uses_websocket_scheme_and_repeated_command_query() {
+        let client = HttpMikuClient::new("http://127.0.0.1:5174").unwrap();
+        let request = PodExecRequest {
+            cluster_id: miku_core::ClusterId::new("local"),
+            namespace: "default".to_owned(),
+            pod: "api-7f9c".to_owned(),
+            container: Some("server".to_owned()),
+            command: vec![
+                "/bin/sh".to_owned(),
+                "-lc".to_owned(),
+                "echo ready".to_owned(),
+            ],
+            tty: true,
+        };
+
+        assert_eq!(
+            client.pod_exec_endpoint(&request).unwrap().as_str(),
+            "ws://127.0.0.1:5174/api/pods/exec?cluster_id=local&namespace=default&pod=api-7f9c&container=server&command=%2Fbin%2Fsh&command=-lc&command=echo+ready&tty=true"
+        );
+
+        let secure_client = HttpMikuClient::new("https://miku.example").unwrap();
+        assert_eq!(
+            secure_client.pod_exec_endpoint(&request).unwrap().scheme(),
             "wss"
         );
     }

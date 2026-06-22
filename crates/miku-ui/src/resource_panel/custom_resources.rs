@@ -166,7 +166,9 @@ impl CustomResourcesPanel {
             ResourceUiEvent::ResourceWatchUpdated { .. }
             | ResourceUiEvent::PodLogsLoaded { .. }
             | ResourceUiEvent::PodAttachConnected { .. }
-            | ResourceUiEvent::PodAttachOutput { .. } => {}
+            | ResourceUiEvent::PodAttachOutput { .. }
+            | ResourceUiEvent::PodExecConnected { .. }
+            | ResourceUiEvent::PodExecOutput { .. } => {}
         }
     }
 

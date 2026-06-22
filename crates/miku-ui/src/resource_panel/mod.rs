@@ -1,7 +1,8 @@
 use miku_api::{
     LogLine, NodeCordonRequest, NodeDrainRequest, PodAttachInput, PodAttachOutput,
-    PodAttachRequest as ApiPodAttachRequest, PodEvictRequest, PodLogQuery, ResourceApplyRequest,
-    ResourceDeleteRequest, ResourceEvent, ResourceList, ResourcePatchRequest, ResourceSummary,
+    PodAttachRequest as ApiPodAttachRequest, PodEvictRequest, PodExecRequest as ApiPodExecRequest,
+    PodLogQuery, ResourceApplyRequest, ResourceDeleteRequest, ResourceEvent, ResourceList,
+    ResourcePatchRequest, ResourceSummary,
 };
 use miku_core::{ClusterId, ResourceRef};
 
@@ -159,6 +160,7 @@ pub(crate) struct ResourcePanelRequests {
     pub(crate) actions: Vec<ResourceActionRequest>,
     pub(crate) logs: Vec<PodLogRequest>,
     pub(crate) attaches: Vec<PodAttachRequest>,
+    pub(crate) execs: Vec<PodExecRequest>,
     pub(crate) attach_inputs: Vec<PodAttachInputRequest>,
 }
 
@@ -242,6 +244,30 @@ impl PodAttachRequest {
             namespace: self.namespace.clone(),
             pod: self.pod.clone(),
             container: self.container.clone(),
+            tty: self.tty,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PodExecRequest {
+    pub(crate) request_id: u64,
+    pub(crate) cluster_id: ClusterId,
+    pub(crate) namespace: String,
+    pub(crate) pod: String,
+    pub(crate) container: Option<String>,
+    pub(crate) command: Vec<String>,
+    pub(crate) tty: bool,
+}
+
+impl PodExecRequest {
+    pub(crate) fn query(&self) -> ApiPodExecRequest {
+        ApiPodExecRequest {
+            cluster_id: self.cluster_id.clone(),
+            namespace: self.namespace.clone(),
+            pod: self.pod.clone(),
+            container: self.container.clone(),
+            command: self.command.clone(),
             tty: self.tty,
         }
     }
@@ -499,6 +525,15 @@ pub(crate) enum ResourceUiEvent {
         request: PodAttachRequest,
         result: Result<PodAttachOutput, String>,
     },
+    PodExecConnected {
+        request: PodExecRequest,
+        result: Result<futures::channel::mpsc::UnboundedSender<PodAttachInput>, String>,
+    },
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    PodExecOutput {
+        request: PodExecRequest,
+        result: Result<PodAttachOutput, String>,
+    },
     ResourceWatchUpdated {
         request: ResourceWatchRequest,
         result: Result<ResourceEvent, String>,
@@ -513,6 +548,8 @@ impl ResourceUiEvent {
             Self::PodLogsLoaded { request, .. } => &request.cluster_id,
             Self::PodAttachConnected { request, .. } => &request.cluster_id,
             Self::PodAttachOutput { request, .. } => &request.cluster_id,
+            Self::PodExecConnected { request, .. } => &request.cluster_id,
+            Self::PodExecOutput { request, .. } => &request.cluster_id,
             Self::ResourceWatchUpdated { request, .. } => &request.cluster_id,
         }
     }

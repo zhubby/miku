@@ -17,12 +17,13 @@ use crate::resource_panel::{
     JobResourcePanel, LeaseResourcePanel, LimitRangeResourcePanel,
     MutatingWebhookConfigurationResourcePanel, NamespaceResourcePanel, NetworkPolicyResourcePanel,
     NodeResourcePanel, PersistentVolumeClaimResourcePanel, PersistentVolumeResourcePanel,
-    PodAttachInputRequest, PodAttachRequest, PodDisruptionBudgetResourcePanel, PodLogRequest,
-    PodResourcePanel, PriorityClassResourcePanel, ReplicaSetResourcePanel, ResourceActionRequest,
-    ResourceLoadRequest, ResourcePanelRequests, ResourceQuotaResourcePanel, ResourceWatchRequest,
-    RoleBindingResourcePanel, RoleResourcePanel, RuntimeClassResourcePanel, SecretResourcePanel,
-    ServiceAccountResourcePanel, ServiceResourcePanel, StatefulSetResourcePanel,
-    StorageClassResourcePanel, ValidatingWebhookConfigurationResourcePanel,
+    PodAttachInputRequest, PodAttachRequest, PodDisruptionBudgetResourcePanel, PodExecRequest,
+    PodLogRequest, PodResourcePanel, PriorityClassResourcePanel, ReplicaSetResourcePanel,
+    ResourceActionRequest, ResourceLoadRequest, ResourcePanelRequests, ResourceQuotaResourcePanel,
+    ResourceWatchRequest, RoleBindingResourcePanel, RoleResourcePanel, RuntimeClassResourcePanel,
+    SecretResourcePanel, ServiceAccountResourcePanel, ServiceResourcePanel,
+    StatefulSetResourcePanel, StorageClassResourcePanel,
+    ValidatingWebhookConfigurationResourcePanel,
 };
 use crate::resources::{RESOURCE_CATEGORIES, ResourceNavItem};
 use crate::state::{AppState, ClusterConnectionState};
@@ -106,6 +107,7 @@ pub(crate) struct AppTabViewer<'a> {
     pub(crate) resource_action_requests: Vec<ResourceActionRequest>,
     pub(crate) pod_log_requests: Vec<PodLogRequest>,
     pub(crate) pod_attach_requests: Vec<PodAttachRequest>,
+    pub(crate) pod_exec_requests: Vec<PodExecRequest>,
     pub(crate) pod_attach_input_requests: Vec<PodAttachInputRequest>,
 }
 
@@ -1452,6 +1454,7 @@ impl AppTabViewer<'_> {
         self.resource_action_requests.extend(requests.actions);
         self.pod_log_requests.extend(requests.logs);
         self.pod_attach_requests.extend(requests.attaches);
+        self.pod_exec_requests.extend(requests.execs);
         self.pod_attach_input_requests
             .extend(requests.attach_inputs);
     }
@@ -1858,6 +1861,7 @@ mod tests {
             resource_action_requests: Vec::new(),
             pod_log_requests: Vec::new(),
             pod_attach_requests: Vec::new(),
+            pod_exec_requests: Vec::new(),
             pod_attach_input_requests: Vec::new(),
         }
     }

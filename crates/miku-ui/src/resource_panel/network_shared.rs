@@ -190,7 +190,9 @@ impl NetworkResourcePanel {
             }
             ResourceUiEvent::PodLogsLoaded { .. }
             | ResourceUiEvent::PodAttachConnected { .. }
-            | ResourceUiEvent::PodAttachOutput { .. } => {}
+            | ResourceUiEvent::PodAttachOutput { .. }
+            | ResourceUiEvent::PodExecConnected { .. }
+            | ResourceUiEvent::PodExecOutput { .. } => {}
         }
     }
 

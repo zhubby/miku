@@ -257,6 +257,21 @@ pub struct PodAttachRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PodExecRequest {
+    pub cluster_id: ClusterId,
+    pub namespace: String,
+    pub pod: String,
+    pub container: Option<String>,
+    #[serde(default = "default_pod_exec_command")]
+    pub command: Vec<String>,
+    pub tty: bool,
+}
+
+pub fn default_pod_exec_command() -> Vec<String> {
+    vec!["/bin/sh".to_owned()]
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PodAttachInput {
     Bytes(Vec<u8>),
     Resize { cols: u16, rows: u16 },
@@ -539,6 +554,17 @@ pub trait PodAttachService: ServiceBounds {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait PodExecService: ServiceBounds {
+    async fn exec_pod(&self, request: PodExecRequest) -> miku_core::Result<PodAttachSession> {
+        Err(miku_core::MikuError::UnsupportedRuntime(format!(
+            "pod exec is not implemented for {}",
+            request.pod
+        )))
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait LocalPreferenceStore: ServiceBounds {
     async fn get_preference(&self, key: &str) -> miku_core::Result<Option<serde_json::Value>>;
 
@@ -623,6 +649,7 @@ pub trait MikuServices:
     + KubernetesWatchService
     + PodLogService
     + PodAttachService
+    + PodExecService
     + LocalPreferenceStore
     + LlmSettingsStore
     + AgentService
@@ -748,6 +775,39 @@ mod tests {
     }
 
     #[test]
+    fn pod_exec_contract_round_trips_as_json() {
+        let request = PodExecRequest {
+            cluster_id: ClusterId::new("local"),
+            namespace: "default".to_owned(),
+            pod: "api".to_owned(),
+            container: Some("server".to_owned()),
+            command: default_pod_exec_command(),
+            tty: true,
+        };
+
+        let request_json = serde_json::to_string(&request).unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<PodExecRequest>(&request_json).unwrap(),
+            request
+        );
+    }
+
+    #[test]
+    fn pod_exec_contract_defaults_to_shell_command() {
+        let request = serde_json::from_value::<PodExecRequest>(serde_json::json!({
+            "cluster_id": "local",
+            "namespace": "default",
+            "pod": "api",
+            "container": "server",
+            "tty": true
+        }))
+        .unwrap();
+
+        assert_eq!(request.command, default_pod_exec_command());
+    }
+
+    #[test]
     fn resource_query_defaults_to_no_namespace_or_selector() {
         let query = ResourceQuery::new(ClusterId::new("local"), ResourceRef::core("v1", "pods"));
 
@@ -861,6 +921,9 @@ mod tests {
 
         #[async_trait::async_trait]
         impl PodAttachService for Dummy {}
+
+        #[async_trait::async_trait]
+        impl PodExecService for Dummy {}
 
         #[async_trait::async_trait]
         impl LocalPreferenceStore for Dummy {

@@ -1,12 +1,16 @@
 use axum::Json;
 use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{Query, State, WebSocketUpgrade};
+use axum::extract::{Query, RawQuery, State, WebSocketUpgrade};
 use axum::http::StatusCode;
-use axum::response::Response;
 use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
 use futures::{Stream, StreamExt};
-use miku_api::{PodAttachInput, PodAttachOutput, PodAttachRequest, PodEvictRequest, PodLogQuery};
+use miku_api::{
+    PodAttachInput, PodAttachOutput, PodAttachRequest, PodEvictRequest, PodExecRequest,
+    PodLogQuery, default_pod_exec_command,
+};
 use serde::Deserialize;
+use url::form_urlencoded;
 
 use crate::SharedServices;
 use crate::error::ServerResult;
@@ -42,16 +46,116 @@ pub(crate) async fn attach_pod(
             container: query.container,
             tty: query.tty.unwrap_or(true),
         };
-        handle_attach_socket(socket, services, request).await;
+        handle_terminal_socket(socket, services, PodTerminalRequest::Attach(request)).await;
     })
 }
 
-async fn handle_attach_socket(
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct PodExecQuery {
+    cluster_id: String,
+    namespace: String,
+    pod: String,
+    container: Option<String>,
+    command: Vec<String>,
+    tty: Option<bool>,
+}
+
+impl PodExecQuery {
+    fn from_raw_query(raw_query: Option<&str>) -> Result<Self, String> {
+        let mut cluster_id = None;
+        let mut namespace = None;
+        let mut pod = None;
+        let mut container = None;
+        let mut command = Vec::new();
+        let mut tty = None;
+
+        if let Some(raw_query) = raw_query {
+            for (key, value) in form_urlencoded::parse(raw_query.as_bytes()) {
+                match key.as_ref() {
+                    "cluster_id" => cluster_id = Some(value.into_owned()),
+                    "namespace" => namespace = Some(value.into_owned()),
+                    "pod" => pod = Some(value.into_owned()),
+                    "container" => container = Some(value.into_owned()),
+                    "command" => command.push(value.into_owned()),
+                    "tty" => tty = Some(parse_bool_query_param("tty", &value)?),
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(Self {
+            cluster_id: required_query_param(cluster_id, "cluster_id")?,
+            namespace: required_query_param(namespace, "namespace")?,
+            pod: required_query_param(pod, "pod")?,
+            container,
+            command,
+            tty,
+        })
+    }
+
+    fn into_request(self) -> PodExecRequest {
+        PodExecRequest {
+            cluster_id: miku_core::ClusterId::new(self.cluster_id),
+            namespace: self.namespace,
+            pod: self.pod,
+            container: self.container,
+            command: if self.command.is_empty() {
+                default_pod_exec_command()
+            } else {
+                self.command
+            },
+            tty: self.tty.unwrap_or(true),
+        }
+    }
+}
+
+pub(crate) async fn exec_pod(
+    State(services): State<SharedServices>,
+    RawQuery(raw_query): RawQuery,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    let query = match PodExecQuery::from_raw_query(raw_query.as_deref()) {
+        Ok(query) => query,
+        Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
+    };
+
+    upgrade.on_upgrade(move |socket| async move {
+        handle_terminal_socket(
+            socket,
+            services,
+            PodTerminalRequest::Exec(query.into_request()),
+        )
+        .await;
+    })
+}
+
+fn required_query_param(value: Option<String>, name: &str) -> Result<String, String> {
+    value.ok_or_else(|| format!("missing required query parameter `{name}`"))
+}
+
+fn parse_bool_query_param(name: &str, value: &str) -> Result<bool, String> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(format!("invalid boolean query parameter `{name}`")),
+    }
+}
+
+enum PodTerminalRequest {
+    Attach(PodAttachRequest),
+    Exec(PodExecRequest),
+}
+
+async fn handle_terminal_socket(
     mut socket: WebSocket,
     services: SharedServices,
-    request: PodAttachRequest,
+    request: PodTerminalRequest,
 ) {
-    let Ok(mut session) = services.attach_pod(request).await else {
+    let session = match request {
+        PodTerminalRequest::Attach(request) => services.attach_pod(request).await,
+        PodTerminalRequest::Exec(request) => services.exec_pod(request).await,
+    };
+    let Ok(mut session) = session else {
         let _ = socket
             .send(Message::Text(
                 serde_json::to_string(&PodAttachOutput::Closed)
@@ -160,7 +264,7 @@ pub(crate) async fn stream_pod_logs(
 mod tests {
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, StatusCode};
-    use miku_api::{PodEvictRequest, PodLogQuery};
+    use miku_api::{PodEvictRequest, PodLogQuery, default_pod_exec_command};
     use miku_core::ClusterId;
     use tower::ServiceExt;
 
@@ -219,5 +323,31 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let payload = serde_json::from_slice::<serde_json::Value>(&body).unwrap();
         assert_eq!(payload[0]["text"], "api started");
+    }
+
+    #[test]
+    fn pod_exec_query_parses_repeated_command_params() {
+        let query = super::PodExecQuery::from_raw_query(Some(
+            "cluster_id=local&namespace=default&pod=api&container=server&command=%2Fbin%2Fsh&command=-lc&command=echo+ready&tty=true",
+        ))
+        .unwrap();
+
+        assert_eq!(query.cluster_id, "local");
+        assert_eq!(query.namespace, "default");
+        assert_eq!(query.pod, "api");
+        assert_eq!(query.container.as_deref(), Some("server"));
+        assert_eq!(query.command, ["/bin/sh", "-lc", "echo ready"]);
+        assert_eq!(query.tty, Some(true));
+    }
+
+    #[test]
+    fn pod_exec_query_defaults_command_and_tty_later() {
+        let query =
+            super::PodExecQuery::from_raw_query(Some("cluster_id=local&namespace=default&pod=api"))
+                .unwrap();
+        let request = query.into_request();
+
+        assert_eq!(request.command, default_pod_exec_command());
+        assert!(request.tty);
     }
 }

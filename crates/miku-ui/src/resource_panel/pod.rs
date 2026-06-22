@@ -2,7 +2,9 @@ use std::collections::BTreeSet;
 
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
-use miku_api::{LogLine, PodAttachInput, PodAttachOutput, ResourceSummary};
+use miku_api::{
+    LogLine, PodAttachInput, PodAttachOutput, ResourceSummary, default_pod_exec_command,
+};
 use miku_core::{ClusterId, ResourceRef};
 
 #[cfg(test)]
@@ -14,9 +16,10 @@ use super::components::{
     describe_subsection, non_wrapping_value, resource_map_entries, show_resource_describe_window,
 };
 use super::{
-    LoadStatus, PodAttachInputRequest, PodAttachRequest, PodLogRequest, ResourceActionKind,
-    ResourceActionOutcome, ResourceActionRequest, ResourceDeleteTarget, ResourceLoadKind,
-    ResourcePanelRequests, ResourceUiEvent, ResourceWatchRequest, namespaces_from_list,
+    LoadStatus, PodAttachInputRequest, PodAttachRequest, PodExecRequest, PodLogRequest,
+    ResourceActionKind, ResourceActionOutcome, ResourceActionRequest, ResourceDeleteTarget,
+    ResourceLoadKind, ResourcePanelRequests, ResourceUiEvent, ResourceWatchRequest,
+    namespaces_from_list,
 };
 use crate::time::human_age_from_rfc3339;
 
@@ -51,7 +54,7 @@ pub(crate) struct PodResourcePanel {
     batch_delete_dialog: Option<PodBatchDeleteDialog>,
     evict_dialog: Option<PodEvictDialog>,
     log_dialog: Option<PodLogDialog>,
-    attach_dialog: Option<PodAttachDialog>,
+    terminal_dialog: Option<PodTerminalDialog>,
     action_error: Option<String>,
 }
 
@@ -91,10 +94,11 @@ impl PodResourcePanel {
         self.show_batch_delete_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_evict_dialog(ui.ctx(), cluster_id, &mut requests.actions);
         self.show_log_dialog(ui.ctx(), cluster_id, &mut requests.logs);
-        self.show_attach_dialog(
+        self.show_terminal_dialog(
             ui.ctx(),
             cluster_id,
             &mut requests.attaches,
+            &mut requests.execs,
             &mut requests.attach_inputs,
         );
 
@@ -234,7 +238,7 @@ impl PodResourcePanel {
                 }
             }
             ResourceUiEvent::PodAttachConnected { request, result } => {
-                let Some(dialog) = self.attach_dialog.as_mut() else {
+                let Some(dialog) = self.terminal_dialog.as_mut() else {
                     return;
                 };
                 if dialog.request_id != Some(request.request_id) {
@@ -242,43 +246,54 @@ impl PodResourcePanel {
                 }
                 match result {
                     Ok(_) => {
-                        dialog.status = PodAttachStatus::Attached;
+                        dialog.status = PodTerminalStatus::Attached;
                         dialog.error = None;
-                        dialog.output.push_str("attached\n");
+                        dialog.output.push_str(terminal_connected_message(dialog));
                     }
                     Err(error) => {
-                        dialog.status = PodAttachStatus::Error(error.clone());
+                        dialog.status = PodTerminalStatus::Error(error.clone());
                         dialog.error = Some(error);
                         dialog.request_id = None;
                     }
                 }
             }
             ResourceUiEvent::PodAttachOutput { request, result } => {
-                let Some(dialog) = self.attach_dialog.as_mut() else {
+                let Some(dialog) = self.terminal_dialog.as_mut() else {
+                    return;
+                };
+                if dialog.request_id != Some(request.request_id) {
+                    return;
+                }
+                apply_terminal_output(dialog, result);
+            }
+            ResourceUiEvent::PodExecConnected { request, result } => {
+                let Some(dialog) = self.terminal_dialog.as_mut() else {
                     return;
                 };
                 if dialog.request_id != Some(request.request_id) {
                     return;
                 }
                 match result {
-                    Ok(PodAttachOutput::Stdout(bytes)) | Ok(PodAttachOutput::Stderr(bytes)) => {
-                        dialog.output_truncated |= append_limited_output(
-                            &mut dialog.output,
-                            &String::from_utf8_lossy(&bytes),
-                        );
-                    }
-                    Ok(PodAttachOutput::Closed) => {
-                        dialog.output_truncated |=
-                            append_limited_output(&mut dialog.output, "\ndisconnected\n");
-                        dialog.status = PodAttachStatus::Disconnected;
-                        dialog.request_id = None;
+                    Ok(_) => {
+                        dialog.status = PodTerminalStatus::Attached;
+                        dialog.error = None;
+                        dialog.output.push_str(terminal_connected_message(dialog));
                     }
                     Err(error) => {
-                        dialog.status = PodAttachStatus::Error(error.clone());
+                        dialog.status = PodTerminalStatus::Error(error.clone());
                         dialog.error = Some(error);
                         dialog.request_id = None;
                     }
                 }
+            }
+            ResourceUiEvent::PodExecOutput { request, result } => {
+                let Some(dialog) = self.terminal_dialog.as_mut() else {
+                    return;
+                };
+                if dialog.request_id != Some(request.request_id) {
+                    return;
+                }
+                apply_terminal_output(dialog, result);
             }
             ResourceUiEvent::ResourceWatchUpdated { request, result } => match request.kind {
                 ResourceLoadKind::Namespaces => {
@@ -374,7 +389,7 @@ impl PodResourcePanel {
         self.batch_delete_dialog = None;
         self.evict_dialog = None;
         self.log_dialog = None;
-        self.attach_dialog = None;
+        self.terminal_dialog = None;
         self.action_error = None;
     }
 
@@ -504,17 +519,49 @@ impl PodResourcePanel {
                     return;
                 };
                 let selected_container = containers.first().cloned();
-                self.attach_dialog = Some(PodAttachDialog {
+                self.terminal_dialog = Some(PodTerminalDialog {
+                    mode: PodTerminalMode::Attach,
                     key,
                     namespace,
                     pod: name,
                     containers,
                     selected_container,
+                    command: Vec::new(),
+                    auto_connect: false,
                     input: String::new(),
                     output: String::new(),
                     output_truncated: false,
                     request_id: None,
-                    status: PodAttachStatus::Disconnected,
+                    status: PodTerminalStatus::Disconnected,
+                    error: None,
+                });
+            }
+            Some(PodTableAction::Exec { key }) => {
+                let Some((namespace, name, containers)) = self.row_by_key(&key).map(|row| {
+                    (
+                        empty_to_none(row.namespace.clone())
+                            .unwrap_or_else(|| "default".to_owned()),
+                        row.name.clone(),
+                        row.container_names.clone(),
+                    )
+                }) else {
+                    return;
+                };
+                let selected_container = containers.first().cloned();
+                self.terminal_dialog = Some(PodTerminalDialog {
+                    mode: PodTerminalMode::Exec,
+                    key,
+                    namespace,
+                    pod: name,
+                    containers,
+                    selected_container,
+                    command: default_pod_exec_command(),
+                    auto_connect: true,
+                    input: String::new(),
+                    output: String::new(),
+                    output_truncated: false,
+                    request_id: None,
+                    status: PodTerminalStatus::Connecting,
                     error: None,
                 });
             }
@@ -1062,27 +1109,32 @@ impl PodResourcePanel {
         }
     }
 
-    fn show_attach_dialog(
+    fn show_terminal_dialog(
         &mut self,
         ctx: &egui::Context,
         cluster_id: &ClusterId,
-        requests: &mut Vec<PodAttachRequest>,
+        attach_requests: &mut Vec<PodAttachRequest>,
+        exec_requests: &mut Vec<PodExecRequest>,
         input_requests: &mut Vec<PodAttachInputRequest>,
     ) {
-        let Some(dialog) = self.attach_dialog.as_mut() else {
+        let Some(dialog) = self.terminal_dialog.as_mut() else {
             return;
         };
 
         let mut open = true;
-        let mut attach_clicked = false;
+        let mut connect_clicked = false;
         let mut disconnect_clicked = false;
         let mut clear_clicked = false;
         let mut send_clicked = false;
-        let connected = matches!(dialog.status, PodAttachStatus::Attached);
-        let connecting = matches!(dialog.status, PodAttachStatus::Connecting);
+        let connected = matches!(dialog.status, PodTerminalStatus::Attached);
+        let connecting = matches!(dialog.status, PodTerminalStatus::Connecting);
 
-        egui::Window::new(format!("Attach {}", dialog.pod))
-            .id(egui::Id::new(("pod-attach-dialog", &dialog.key)))
+        egui::Window::new(terminal_title(dialog.mode, &dialog.pod))
+            .id(egui::Id::new((
+                "pod-terminal-dialog",
+                dialog.mode.id_salt(),
+                &dialog.key,
+            )))
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .open(&mut open)
             .collapsible(false)
@@ -1097,20 +1149,24 @@ impl PodResourcePanel {
                         .unwrap_or("default")
                         .to_owned();
                     ui.add_enabled_ui(!connected && !connecting, |ui| {
-                        egui::ComboBox::from_id_salt(("pod-attach-container", &dialog.key))
-                            .selected_text(selected_label)
-                            .show_ui(ui, |ui| {
-                                for container in &dialog.containers {
-                                    ui.selectable_value(
-                                        &mut dialog.selected_container,
-                                        Some(container.clone()),
-                                        container,
-                                    );
-                                }
-                            });
+                        egui::ComboBox::from_id_salt((
+                            "pod-terminal-container",
+                            dialog.mode.id_salt(),
+                            &dialog.key,
+                        ))
+                        .selected_text(selected_label)
+                        .show_ui(ui, |ui| {
+                            for container in &dialog.containers {
+                                ui.selectable_value(
+                                    &mut dialog.selected_container,
+                                    Some(container.clone()),
+                                    container,
+                                );
+                            }
+                        });
                     });
                     ui.separator();
-                    ui.label(pod_attach_status_label(&dialog.status));
+                    ui.label(pod_terminal_status_label(&dialog.status));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         clear_clicked = ui
                             .button(egui_phosphor::regular::BROOM)
@@ -1123,12 +1179,12 @@ impl PodResourcePanel {
                             )
                             .on_hover_text("Disconnect")
                             .clicked();
-                        attach_clicked = ui
+                        connect_clicked = ui
                             .add_enabled(
                                 !connected && !connecting,
-                                egui::Button::new(egui_phosphor::regular::PLUG),
+                                egui::Button::new(terminal_connect_icon(dialog.mode)),
                             )
-                            .on_hover_text("Attach")
+                            .on_hover_text(terminal_connect_label(dialog.mode))
                             .clicked();
                     });
                 });
@@ -1151,7 +1207,7 @@ impl PodResourcePanel {
                                     &dialog.output
                                 };
                                 if dialog.output_truncated {
-                                    ui.label("Earlier attach output was truncated.");
+                                    ui.label("Earlier terminal output was truncated.");
                                 }
                                 ui.add(
                                     egui::Label::new(egui::RichText::new(output).monospace())
@@ -1187,7 +1243,7 @@ impl PodResourcePanel {
                     input: PodAttachInput::Close,
                 });
             }
-            self.attach_dialog = None;
+            self.terminal_dialog = None;
             return;
         }
 
@@ -1203,24 +1259,7 @@ impl PodResourcePanel {
                     input: PodAttachInput::Close,
                 });
             }
-            dialog.status = PodAttachStatus::Disconnected;
-        }
-
-        if attach_clicked {
-            self.next_request_id += 1;
-            let request_id = self.next_request_id;
-            let request = PodAttachRequest {
-                request_id,
-                cluster_id: cluster_id.clone(),
-                namespace: dialog.namespace.clone(),
-                pod: dialog.pod.clone(),
-                container: dialog.selected_container.clone(),
-                tty: true,
-            };
-            dialog.request_id = Some(request.request_id);
-            dialog.status = PodAttachStatus::Connecting;
-            dialog.error = None;
-            requests.push(request);
+            dialog.status = PodTerminalStatus::Disconnected;
         }
 
         if send_clicked
@@ -1234,6 +1273,57 @@ impl PodResourcePanel {
                 input: PodAttachInput::Bytes(bytes),
             });
         }
+
+        let connect_requested = dialog.auto_connect || connect_clicked;
+        if connect_requested && dialog.request_id.is_none() {
+            self.request_terminal_connect(cluster_id, attach_requests, exec_requests);
+        }
+    }
+
+    fn request_terminal_connect(
+        &mut self,
+        cluster_id: &ClusterId,
+        attach_requests: &mut Vec<PodAttachRequest>,
+        exec_requests: &mut Vec<PodExecRequest>,
+    ) {
+        let Some(dialog) = self.terminal_dialog.as_mut() else {
+            return;
+        };
+
+        self.next_request_id += 1;
+        let request_id = self.next_request_id;
+        match dialog.mode {
+            PodTerminalMode::Attach => {
+                attach_requests.push(PodAttachRequest {
+                    request_id,
+                    cluster_id: cluster_id.clone(),
+                    namespace: dialog.namespace.clone(),
+                    pod: dialog.pod.clone(),
+                    container: dialog.selected_container.clone(),
+                    tty: true,
+                });
+            }
+            PodTerminalMode::Exec => {
+                let command = if dialog.command.is_empty() {
+                    default_pod_exec_command()
+                } else {
+                    dialog.command.clone()
+                };
+                exec_requests.push(PodExecRequest {
+                    request_id,
+                    cluster_id: cluster_id.clone(),
+                    namespace: dialog.namespace.clone(),
+                    pod: dialog.pod.clone(),
+                    container: dialog.selected_container.clone(),
+                    command,
+                    tty: true,
+                });
+            }
+        }
+        dialog.request_id = Some(request_id);
+        dialog.status = PodTerminalStatus::Connecting;
+        dialog.error = None;
+        dialog.auto_connect = false;
     }
 
     #[cfg(test)]
@@ -1470,6 +1560,15 @@ fn show_pod_table(
                                 ui.close();
                             }
                             if ui
+                                .button(format!("{} Exec", egui_phosphor::regular::TERMINAL))
+                                .clicked()
+                            {
+                                action = Some(PodTableAction::Exec {
+                                    key: row.key.clone(),
+                                });
+                                ui.close();
+                            }
+                            if ui
                                 .button(format!("{} Attach", egui_phosphor::regular::TERMINAL))
                                 .clicked()
                             {
@@ -1575,12 +1674,57 @@ fn evict_color() -> egui::Color32 {
     egui::Color32::from_rgb(217, 119, 6)
 }
 
-fn pod_attach_status_label(status: &PodAttachStatus) -> String {
+fn pod_terminal_status_label(status: &PodTerminalStatus) -> String {
     match status {
-        PodAttachStatus::Disconnected => "Disconnected".to_owned(),
-        PodAttachStatus::Connecting => "Connecting".to_owned(),
-        PodAttachStatus::Attached => "Attached".to_owned(),
-        PodAttachStatus::Error(error) => format!("Error: {error}"),
+        PodTerminalStatus::Disconnected => "Disconnected".to_owned(),
+        PodTerminalStatus::Connecting => "Connecting".to_owned(),
+        PodTerminalStatus::Attached => "Attached".to_owned(),
+        PodTerminalStatus::Error(error) => format!("Error: {error}"),
+    }
+}
+
+fn terminal_title(mode: PodTerminalMode, pod: &str) -> String {
+    format!("{} {pod}", terminal_connect_label(mode))
+}
+
+fn terminal_connect_label(mode: PodTerminalMode) -> &'static str {
+    match mode {
+        PodTerminalMode::Attach => "Attach",
+        PodTerminalMode::Exec => "Exec",
+    }
+}
+
+fn terminal_connect_icon(mode: PodTerminalMode) -> &'static str {
+    match mode {
+        PodTerminalMode::Attach => egui_phosphor::regular::PLUG,
+        PodTerminalMode::Exec => egui_phosphor::regular::TERMINAL,
+    }
+}
+
+fn terminal_connected_message(dialog: &PodTerminalDialog) -> &'static str {
+    match dialog.mode {
+        PodTerminalMode::Attach => "attached\n",
+        PodTerminalMode::Exec => "exec /bin/sh\n",
+    }
+}
+
+fn apply_terminal_output(dialog: &mut PodTerminalDialog, result: Result<PodAttachOutput, String>) {
+    match result {
+        Ok(PodAttachOutput::Stdout(bytes)) | Ok(PodAttachOutput::Stderr(bytes)) => {
+            dialog.output_truncated |=
+                append_limited_output(&mut dialog.output, &String::from_utf8_lossy(&bytes));
+        }
+        Ok(PodAttachOutput::Closed) => {
+            dialog.output_truncated |=
+                append_limited_output(&mut dialog.output, "\ndisconnected\n");
+            dialog.status = PodTerminalStatus::Disconnected;
+            dialog.request_id = None;
+        }
+        Err(error) => {
+            dialog.status = PodTerminalStatus::Error(error.clone());
+            dialog.error = Some(error);
+            dialog.request_id = None;
+        }
     }
 }
 
@@ -1741,6 +1885,7 @@ impl PodRow {
 #[derive(Clone, Debug, PartialEq)]
 enum PodTableAction {
     Logs { key: String },
+    Exec { key: String },
     Attach { key: String },
     Evict { key: String },
     Describe { key: String },
@@ -1858,22 +2003,40 @@ impl Default for PodFilterCache {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct PodAttachDialog {
+struct PodTerminalDialog {
+    mode: PodTerminalMode,
     key: String,
     namespace: String,
     pod: String,
     containers: Vec<String>,
     selected_container: Option<String>,
+    command: Vec<String>,
+    auto_connect: bool,
     input: String,
     output: String,
     output_truncated: bool,
     request_id: Option<u64>,
-    status: PodAttachStatus,
+    status: PodTerminalStatus,
     error: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum PodTerminalMode {
+    Attach,
+    Exec,
+}
+
+impl PodTerminalMode {
+    fn id_salt(self) -> &'static str {
+        match self {
+            Self::Attach => "attach",
+            Self::Exec => "exec",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum PodAttachStatus {
+enum PodTerminalStatus {
     Disconnected,
     Connecting,
     Attached,
@@ -2703,21 +2866,96 @@ spec:
     }
 
     #[test]
-    fn pod_attach_status_labels_are_stable() {
+    fn pod_table_action_can_exec_row() {
         assert_eq!(
-            pod_attach_status_label(&PodAttachStatus::Disconnected),
+            PodTableAction::Exec {
+                key: "default/api-75f".to_owned()
+            },
+            PodTableAction::Exec {
+                key: "default/api-75f".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn pod_exec_action_opens_auto_connect_shell_dialog() {
+        let mut panel = PodResourcePanel {
+            rows: vec![PodRow::from_summary(&pod_summary())],
+            ..PodResourcePanel::default()
+        };
+
+        panel.apply_table_action(Some(PodTableAction::Exec {
+            key: "default/api-75f".to_owned(),
+        }));
+
+        let dialog = panel.terminal_dialog.as_ref().unwrap();
+        assert_eq!(dialog.mode, PodTerminalMode::Exec);
+        assert_eq!(dialog.namespace, "default");
+        assert_eq!(dialog.pod, "api-75f");
+        assert_eq!(dialog.selected_container.as_deref(), Some("api"));
+        assert_eq!(dialog.command, default_pod_exec_command());
+        assert!(dialog.auto_connect);
+        assert!(matches!(dialog.status, PodTerminalStatus::Connecting));
+    }
+
+    #[test]
+    fn pod_exec_connect_request_uses_default_shell_command() {
+        let mut panel = PodResourcePanel {
+            terminal_dialog: Some(PodTerminalDialog {
+                mode: PodTerminalMode::Exec,
+                key: "default/api-75f".to_owned(),
+                namespace: "default".to_owned(),
+                pod: "api-75f".to_owned(),
+                containers: vec!["api".to_owned()],
+                selected_container: Some("api".to_owned()),
+                command: default_pod_exec_command(),
+                auto_connect: true,
+                input: String::new(),
+                output: String::new(),
+                output_truncated: false,
+                request_id: None,
+                status: PodTerminalStatus::Connecting,
+                error: None,
+            }),
+            ..PodResourcePanel::default()
+        };
+        let mut attach_requests = Vec::new();
+        let mut exec_requests = Vec::new();
+
+        panel.request_terminal_connect(
+            &ClusterId::new("local"),
+            &mut attach_requests,
+            &mut exec_requests,
+        );
+
+        assert!(attach_requests.is_empty());
+        assert_eq!(exec_requests.len(), 1);
+        assert_eq!(exec_requests[0].namespace, "default");
+        assert_eq!(exec_requests[0].pod, "api-75f");
+        assert_eq!(exec_requests[0].container.as_deref(), Some("api"));
+        assert_eq!(exec_requests[0].command, default_pod_exec_command());
+        assert!(exec_requests[0].tty);
+        let dialog = panel.terminal_dialog.as_ref().unwrap();
+        assert_eq!(dialog.request_id, Some(exec_requests[0].request_id));
+        assert!(!dialog.auto_connect);
+    }
+
+    #[test]
+    fn pod_terminal_status_labels_are_stable() {
+        assert_eq!(
+            pod_terminal_status_label(&PodTerminalStatus::Disconnected),
             "Disconnected"
         );
         assert_eq!(
-            pod_attach_status_label(&PodAttachStatus::Connecting),
+            pod_terminal_status_label(&PodTerminalStatus::Connecting),
             "Connecting"
         );
         assert_eq!(
-            pod_attach_status_label(&PodAttachStatus::Attached),
+            pod_terminal_status_label(&PodTerminalStatus::Attached),
             "Attached"
         );
         assert_eq!(
-            pod_attach_status_label(&PodAttachStatus::Error("denied".to_owned())),
+            pod_terminal_status_label(&PodTerminalStatus::Error("denied".to_owned())),
             "Error: denied"
         );
     }

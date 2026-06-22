@@ -1,11 +1,10 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, mpsc as resource_mpsc};
 use std::time::Duration;
 
 use eframe::egui;
 use egui_dock::{DockArea, DockState, NodePath, Style, SurfaceIndex, TabPath};
 use egui_notify::{Anchor, Toasts};
-#[cfg(not(target_arch = "wasm32"))]
 use futures::StreamExt;
 use miku_api::{ClusterSummary, MikuServices, PodAttachInput};
 
@@ -21,13 +20,13 @@ use crate::resource_panel::{
     JobResourcePanel, LeaseResourcePanel, LimitRangeResourcePanel,
     MutatingWebhookConfigurationResourcePanel, NamespaceResourcePanel, NetworkPolicyResourcePanel,
     NodeResourcePanel, PersistentVolumeClaimResourcePanel, PersistentVolumeResourcePanel,
-    PodAttachInputRequest, PodAttachRequest, PodDisruptionBudgetResourcePanel, PodLogRequest,
-    PodResourcePanel, PriorityClassResourcePanel, ReplicaSetResourcePanel, ResourceActionKind,
-    ResourceActionOutcome, ResourceActionRequest, ResourceLoadKind, ResourceLoadRequest,
-    ResourceQuotaResourcePanel, ResourceUiEvent, ResourceWatchRequest, RoleBindingResourcePanel,
-    RoleResourcePanel, RuntimeClassResourcePanel, SecretResourcePanel, ServiceAccountResourcePanel,
-    ServiceResourcePanel, StatefulSetResourcePanel, StorageClassResourcePanel,
-    ValidatingWebhookConfigurationResourcePanel,
+    PodAttachInputRequest, PodAttachRequest, PodDisruptionBudgetResourcePanel, PodExecRequest,
+    PodLogRequest, PodResourcePanel, PriorityClassResourcePanel, ReplicaSetResourcePanel,
+    ResourceActionKind, ResourceActionOutcome, ResourceActionRequest, ResourceLoadKind,
+    ResourceLoadRequest, ResourceQuotaResourcePanel, ResourceUiEvent, ResourceWatchRequest,
+    RoleBindingResourcePanel, RoleResourcePanel, RuntimeClassResourcePanel, SecretResourcePanel,
+    ServiceAccountResourcePanel, ServiceResourcePanel, StatefulSetResourcePanel,
+    StorageClassResourcePanel, ValidatingWebhookConfigurationResourcePanel,
 };
 use crate::resources::ResourceNavItem;
 use crate::settings::SettingsPanel;
@@ -64,6 +63,7 @@ pub struct MikuApp {
     pub(crate) pending_resource_events: PendingResourceEvents,
     pub(crate) pod_attach_inputs:
         HashMap<u64, futures::channel::mpsc::UnboundedSender<PodAttachInput>>,
+    pub(crate) pending_pod_attach_closes: HashSet<u64>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) resource_watch_tasks: HashMap<ResourceWatchKey, tokio::task::JoinHandle<()>>,
     pub(crate) status_event_sender: resource_mpsc::Sender<ClusterStatusUiEvent>,
@@ -104,7 +104,9 @@ impl PendingResourceEvents {
             | ResourceUiEvent::ResourceActionCompleted { .. }
             | ResourceUiEvent::PodLogsLoaded { .. }
             | ResourceUiEvent::PodAttachConnected { .. }
-            | ResourceUiEvent::PodAttachOutput { .. } => {
+            | ResourceUiEvent::PodAttachOutput { .. }
+            | ResourceUiEvent::PodExecConnected { .. }
+            | ResourceUiEvent::PodExecOutput { .. } => {
                 self.ordered.push_back(event);
             }
         }
@@ -336,6 +338,7 @@ impl MikuApp {
             resource_event_receiver,
             pending_resource_events: PendingResourceEvents::default(),
             pod_attach_inputs: HashMap::new(),
+            pending_pod_attach_closes: HashSet::new(),
             #[cfg(not(target_arch = "wasm32"))]
             resource_watch_tasks: HashMap::new(),
             status_event_sender,
@@ -506,6 +509,7 @@ impl eframe::App for MikuApp {
                         resource_action_requests: Vec::new(),
                         pod_log_requests: Vec::new(),
                         pod_attach_requests: Vec::new(),
+                        pod_exec_requests: Vec::new(),
                         pod_attach_input_requests: Vec::new(),
                     };
 
@@ -605,6 +609,7 @@ impl eframe::App for MikuApp {
                         resource_action_requests: Vec::new(),
                         pod_log_requests: Vec::new(),
                         pod_attach_requests: Vec::new(),
+                        pod_exec_requests: Vec::new(),
                         pod_attach_input_requests: Vec::new(),
                     };
 
@@ -738,6 +743,7 @@ impl eframe::App for MikuApp {
                 resource_action_requests: Vec::new(),
                 pod_log_requests: Vec::new(),
                 pod_attach_requests: Vec::new(),
+                pod_exec_requests: Vec::new(),
                 pod_attach_input_requests: Vec::new(),
             };
 
@@ -757,6 +763,7 @@ impl eframe::App for MikuApp {
             let resource_action_requests = tab_viewer.resource_action_requests;
             let pod_log_requests = tab_viewer.pod_log_requests;
             let pod_attach_requests = tab_viewer.pod_attach_requests;
+            let pod_exec_requests = tab_viewer.pod_exec_requests;
             let pod_attach_input_requests = tab_viewer.pod_attach_input_requests;
             let status_load_requests = tab_viewer.status_load_requests;
             if let Some(resource) = tab_viewer.selected_resource {
@@ -779,6 +786,9 @@ impl eframe::App for MikuApp {
             }
             for request in pod_attach_requests {
                 self.request_pod_attach(request);
+            }
+            for request in pod_exec_requests {
+                self.request_pod_exec(request);
             }
             for request in pod_attach_input_requests {
                 self.send_pod_attach_input(request);
@@ -1308,14 +1318,39 @@ impl MikuApp {
                 request,
                 result: Ok(input),
             } => {
-                self.pod_attach_inputs
-                    .insert(request.request_id, input.clone());
+                self.store_pod_terminal_input(request.request_id, input.clone());
+            }
+            ResourceUiEvent::PodExecConnected {
+                request,
+                result: Ok(input),
+            } => {
+                self.store_pod_terminal_input(request.request_id, input.clone());
+            }
+            ResourceUiEvent::PodAttachConnected {
+                request,
+                result: Err(_),
+            } => {
+                self.pending_pod_attach_closes.remove(&request.request_id);
+            }
+            ResourceUiEvent::PodExecConnected {
+                request,
+                result: Err(_),
+            } => {
+                self.pending_pod_attach_closes.remove(&request.request_id);
             }
             ResourceUiEvent::PodAttachOutput {
                 request,
                 result: Ok(miku_api::PodAttachOutput::Closed),
             } => {
                 self.pod_attach_inputs.remove(&request.request_id);
+                self.pending_pod_attach_closes.remove(&request.request_id);
+            }
+            ResourceUiEvent::PodExecOutput {
+                request,
+                result: Ok(miku_api::PodAttachOutput::Closed),
+            } => {
+                self.pod_attach_inputs.remove(&request.request_id);
+                self.pending_pod_attach_closes.remove(&request.request_id);
             }
             _ => {}
         }
@@ -1689,7 +1724,9 @@ impl MikuApp {
             }
             ResourceUiEvent::PodLogsLoaded { .. }
             | ResourceUiEvent::PodAttachConnected { .. }
-            | ResourceUiEvent::PodAttachOutput { .. } => {
+            | ResourceUiEvent::PodAttachOutput { .. }
+            | ResourceUiEvent::PodExecConnected { .. }
+            | ResourceUiEvent::PodExecOutput { .. } => {
                 workspace.pod_resource_panel.apply_event(event);
             }
         }
@@ -1984,25 +2021,145 @@ impl MikuApp {
         #[cfg(target_arch = "wasm32")]
         {
             wasm_bindgen_futures::spawn_local(async move {
-                let result = services
-                    .attach_pod(query)
-                    .await
-                    .map(|session| session.input)
-                    .map_err(|error| error.to_string());
-                let _ = sender.send(ResourceUiEvent::PodAttachConnected { request, result });
+                match services.attach_pod(query).await {
+                    Ok(mut session) => {
+                        let input = session.input.clone();
+                        let _ = sender.send(ResourceUiEvent::PodAttachConnected {
+                            request: request.clone(),
+                            result: Ok(input),
+                        });
+                        while let Some(output) = session.output.next().await {
+                            let result = output.map_err(|error| error.to_string());
+                            let close = matches!(result, Ok(miku_api::PodAttachOutput::Closed));
+                            let _ = sender.send(ResourceUiEvent::PodAttachOutput {
+                                request: request.clone(),
+                                result,
+                            });
+                            if close {
+                                break;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let _ = sender.send(ResourceUiEvent::PodAttachConnected {
+                            request,
+                            result: Err(error.to_string()),
+                        });
+                    }
+                }
             });
         }
     }
 
+    fn request_pod_exec(&mut self, request: PodExecRequest) {
+        let Some(services) = self.services.clone() else {
+            self.apply_resource_event(ResourceUiEvent::PodExecConnected {
+                request,
+                result: Err("resource services are not available".to_owned()),
+            });
+            return;
+        };
+        let sender = self.resource_event_sender.clone();
+        let query = request.query();
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(runtime) = self.runtime.as_ref() else {
+                self.apply_resource_event(ResourceUiEvent::PodExecConnected {
+                    request,
+                    result: Err("resource runtime is not available".to_owned()),
+                });
+                return;
+            };
+            runtime.spawn(async move {
+                match services.exec_pod(query).await {
+                    Ok(mut session) => {
+                        let input = session.input.clone();
+                        let _ = sender.send(ResourceUiEvent::PodExecConnected {
+                            request: request.clone(),
+                            result: Ok(input),
+                        });
+                        while let Some(output) = session.output.next().await {
+                            let result = output.map_err(|error| error.to_string());
+                            let close = matches!(result, Ok(miku_api::PodAttachOutput::Closed));
+                            let _ = sender.send(ResourceUiEvent::PodExecOutput {
+                                request: request.clone(),
+                                result,
+                            });
+                            if close {
+                                break;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let _ = sender.send(ResourceUiEvent::PodExecConnected {
+                            request,
+                            result: Err(error.to_string()),
+                        });
+                    }
+                }
+            });
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            wasm_bindgen_futures::spawn_local(async move {
+                match services.exec_pod(query).await {
+                    Ok(mut session) => {
+                        let input = session.input.clone();
+                        let _ = sender.send(ResourceUiEvent::PodExecConnected {
+                            request: request.clone(),
+                            result: Ok(input),
+                        });
+                        while let Some(output) = session.output.next().await {
+                            let result = output.map_err(|error| error.to_string());
+                            let close = matches!(result, Ok(miku_api::PodAttachOutput::Closed));
+                            let _ = sender.send(ResourceUiEvent::PodExecOutput {
+                                request: request.clone(),
+                                result,
+                            });
+                            if close {
+                                break;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let _ = sender.send(ResourceUiEvent::PodExecConnected {
+                            request,
+                            result: Err(error.to_string()),
+                        });
+                    }
+                }
+            });
+        }
+    }
+
+    fn store_pod_terminal_input(
+        &mut self,
+        request_id: u64,
+        input: futures::channel::mpsc::UnboundedSender<PodAttachInput>,
+    ) {
+        if self.pending_pod_attach_closes.remove(&request_id) {
+            let _ = input.unbounded_send(PodAttachInput::Close);
+            return;
+        }
+        self.pod_attach_inputs.insert(request_id, input);
+    }
+
     fn send_pod_attach_input(&mut self, request: PodAttachInputRequest) {
-        if matches!(request.input, PodAttachInput::Close) {
-            self.pod_attach_inputs.remove(&request.request_id);
+        let close = matches!(request.input, PodAttachInput::Close);
+        if close {
+            self.pending_pod_attach_closes.insert(request.request_id);
         }
 
         let Some(sender) = self.pod_attach_inputs.get(&request.request_id) else {
             return;
         };
         let _ = sender.unbounded_send(request.input);
+        if close {
+            self.pod_attach_inputs.remove(&request.request_id);
+            self.pending_pod_attach_closes.remove(&request.request_id);
+        }
     }
 }
 
@@ -2527,6 +2684,42 @@ mod tests {
             Some(ResourceUiEvent::PodLogsLoaded { .. })
         ));
         assert!(!pending.has_pending());
+    }
+
+    #[test]
+    fn pod_terminal_close_before_connect_is_sent_when_input_arrives() {
+        let mut app = MikuApp::new(RuntimeMode::Native);
+        let request_id = 42;
+
+        app.send_pod_attach_input(PodAttachInputRequest {
+            request_id,
+            input: PodAttachInput::Close,
+        });
+        assert!(app.pending_pod_attach_closes.contains(&request_id));
+
+        let (input, mut receiver) = futures::channel::mpsc::unbounded();
+        app.store_pod_terminal_input(request_id, input);
+
+        assert!(!app.pending_pod_attach_closes.contains(&request_id));
+        assert!(!app.pod_attach_inputs.contains_key(&request_id));
+        assert_eq!(receiver.try_recv().unwrap(), PodAttachInput::Close);
+    }
+
+    #[test]
+    fn pod_terminal_close_with_live_input_removes_sender() {
+        let mut app = MikuApp::new(RuntimeMode::Native);
+        let request_id = 43;
+        let (input, mut receiver) = futures::channel::mpsc::unbounded();
+        app.store_pod_terminal_input(request_id, input);
+
+        app.send_pod_attach_input(PodAttachInputRequest {
+            request_id,
+            input: PodAttachInput::Close,
+        });
+
+        assert!(!app.pending_pod_attach_closes.contains(&request_id));
+        assert!(!app.pod_attach_inputs.contains_key(&request_id));
+        assert_eq!(receiver.try_recv().unwrap(), PodAttachInput::Close);
     }
 
     #[test]
