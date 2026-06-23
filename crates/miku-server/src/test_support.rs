@@ -11,12 +11,20 @@ static LLM_SETTINGS: LazyLock<Mutex<LlmProviderSettings>> =
 #[async_trait::async_trait]
 impl ClusterRegistry for DummyServices {
     async fn list_clusters(&self) -> miku_core::Result<Vec<ClusterSummary>> {
-        Ok(vec![ClusterSummary {
-            id: ClusterId::new("local"),
-            name: "local".to_owned(),
-            context: "kind-miku".to_owned(),
-            current: true,
-        }])
+        Ok(vec![
+            ClusterSummary {
+                id: ClusterId::new("local"),
+                name: "local".to_owned(),
+                context: "kind-miku".to_owned(),
+                current: true,
+            },
+            ClusterSummary {
+                id: ClusterId::new("miku-in-cluster"),
+                name: "In-cluster".to_owned(),
+                context: "in-cluster".to_owned(),
+                current: true,
+            },
+        ])
     }
 
     async fn create_cluster(
