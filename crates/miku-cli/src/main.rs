@@ -40,14 +40,7 @@ async fn main() -> miku_core::Result<()> {
                 .unwrap_or_else(miku_store::StorePaths::default_for_user)?;
             tracing::debug!(store_root = %paths.root().display(), "resolved store paths");
             let store = miku_store::SqliteStore::initialize(paths).await?;
-            let services =
-                match miku_kube::KubeServices::try_with_default_client(store.clone()).await {
-                    Ok(services) => services,
-                    Err(error) => {
-                        tracing::warn!(%error, "starting server without a live Kubernetes client");
-                        miku_kube::KubeServices::new_offline(store)
-                    }
-                };
+            let (services, _source) = miku_cli::server_services(store).await;
             miku_server::serve(server.bind, services).await
         }
     }

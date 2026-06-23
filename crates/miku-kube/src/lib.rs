@@ -5,7 +5,7 @@ mod resource_cache;
 mod resources;
 mod status;
 
-pub use client::KubeServices;
+pub use client::{IN_CLUSTER_CLUSTER_ID, KubeServices};
 pub use resources::{api_resource, resource_query_path};
 
 use async_trait::async_trait;

@@ -69,6 +69,10 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let payload = serde_json::from_slice::<serde_json::Value>(&body).unwrap();
         assert_eq!(payload[0]["name"], "local");
+        assert_eq!(payload[1]["id"], "miku-in-cluster");
+        assert_eq!(payload[1]["name"], "In-cluster");
+        assert_eq!(payload[1]["context"], "in-cluster");
+        assert_eq!(payload[1]["current"], true);
     }
 
     #[tokio::test]

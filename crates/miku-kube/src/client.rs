@@ -1,19 +1,35 @@
 use kube::Config;
 use kube::config::{KubeConfigOptions, Kubeconfig};
 use kube::core::DynamicObject;
-use miku_api::{ClusterConfigStore, ClusterRegistry, ResourceQuery};
+use miku_api::{ClusterConfigStore, ClusterRegistry, ClusterSummary, ResourceQuery};
 use miku_core::ClusterId;
 use std::collections::HashMap;
 use tokio::sync::Mutex;
 
 use crate::resource_cache::ResourceCacheRegistry;
 
+pub const IN_CLUSTER_CLUSTER_ID: &str = "miku-in-cluster";
+const IN_CLUSTER_CLUSTER_NAME: &str = "In-cluster";
+const IN_CLUSTER_CLUSTER_CONTEXT: &str = "in-cluster";
+
 #[derive(Clone)]
 pub struct KubeServices<S> {
     pub(crate) store: S,
     pub(crate) default_client: Option<kube::Client>,
+    pub(crate) in_cluster_service_account: Option<InClusterServiceAccount>,
     pub(crate) clients: std::sync::Arc<Mutex<HashMap<ClusterId, kube::Client>>>,
     pub(crate) resource_cache: ResourceCacheRegistry,
+}
+
+#[derive(Clone)]
+pub(crate) struct InClusterServiceAccount {
+    client: kube::Client,
+}
+
+impl InClusterServiceAccount {
+    fn new(client: kube::Client) -> Self {
+        Self { client }
+    }
 }
 
 impl<S> KubeServices<S> {
@@ -22,9 +38,30 @@ impl<S> KubeServices<S> {
         Self {
             store,
             default_client: None,
+            in_cluster_service_account: None,
             clients: std::sync::Arc::new(Mutex::new(HashMap::new())),
             resource_cache: ResourceCacheRegistry::new(),
         }
+    }
+
+    #[tracing::instrument(name = "kube.try_incluster_service_account", skip(store))]
+    pub async fn try_with_incluster_service_account(store: S) -> miku_core::Result<Self> {
+        let config = Config::incluster()
+            .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?;
+        let client = kube::Client::try_from(config)
+            .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))?;
+        tracing::info!(
+            cluster_id = IN_CLUSTER_CLUSTER_ID,
+            default_namespace = client.default_namespace(),
+            "configured in-cluster Kubernetes service account client"
+        );
+        Ok(Self {
+            store,
+            default_client: Some(client.clone()),
+            in_cluster_service_account: Some(InClusterServiceAccount::new(client)),
+            clients: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            resource_cache: ResourceCacheRegistry::new(),
+        })
     }
 
     #[tracing::instrument(name = "kube.try_default_client", skip(store))]
@@ -36,13 +73,14 @@ impl<S> KubeServices<S> {
         Ok(Self {
             store,
             default_client: Some(client),
+            in_cluster_service_account: None,
             clients: std::sync::Arc::new(Mutex::new(HashMap::new())),
             resource_cache: ResourceCacheRegistry::new(),
         })
     }
 
     pub fn has_live_client(&self) -> bool {
-        self.default_client.is_some()
+        self.default_client.is_some() || self.in_cluster_service_account.is_some()
     }
 
     pub(crate) async fn invalidate_cluster_cache(&self, cluster_id: &ClusterId) {
@@ -57,6 +95,10 @@ impl<S> KubeServices<S> {
         S: ClusterConfigStore + ClusterRegistry + Send + Sync,
     {
         if let Some(client) = self.clients.lock().await.get(cluster_id).cloned() {
+            return Ok(client);
+        }
+
+        if let Some(client) = self.in_cluster_client_if_unshadowed(cluster_id).await? {
             return Ok(client);
         }
 
@@ -88,6 +130,61 @@ impl<S> KubeServices<S> {
         cache.wait_until_ready().await?;
         Ok(cache.snapshot(None))
     }
+
+    async fn in_cluster_client_if_unshadowed(
+        &self,
+        cluster_id: &ClusterId,
+    ) -> miku_core::Result<Option<kube::Client>>
+    where
+        S: ClusterRegistry + Send + Sync,
+    {
+        let Some(in_cluster) = &self.in_cluster_service_account else {
+            return Ok(None);
+        };
+        if !is_in_cluster_cluster_id(cluster_id.as_str()) {
+            return Ok(None);
+        }
+
+        if self
+            .store
+            .list_clusters()
+            .await?
+            .into_iter()
+            .any(|cluster| cluster.id == *cluster_id)
+        {
+            tracing::warn!(
+                cluster_id = %cluster_id,
+                "stored cluster shadows built-in in-cluster service account"
+            );
+            return Ok(None);
+        }
+
+        Ok(Some(in_cluster.client.clone()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_incluster_client(store: S, client: kube::Client) -> Self {
+        Self {
+            store,
+            default_client: Some(client.clone()),
+            in_cluster_service_account: Some(InClusterServiceAccount::new(client)),
+            clients: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            resource_cache: ResourceCacheRegistry::new(),
+        }
+    }
+}
+
+pub(crate) fn in_cluster_cluster_summary() -> ClusterSummary {
+    ClusterSummary {
+        id: ClusterId::new(IN_CLUSTER_CLUSTER_ID),
+        name: IN_CLUSTER_CLUSTER_NAME.to_owned(),
+        context: IN_CLUSTER_CLUSTER_CONTEXT.to_owned(),
+        current: true,
+    }
+}
+
+pub(crate) fn is_in_cluster_cluster_id(value: &str) -> bool {
+    value.trim() == IN_CLUSTER_CLUSTER_ID
 }
 
 async fn client_for_cluster_config(
@@ -115,6 +212,34 @@ async fn client_for_cluster_config(
     };
     kube::Client::try_from(config)
         .map_err(|error| miku_core::MikuError::Kubernetes(error.to_string()))
+}
+
+#[cfg(test)]
+pub(crate) async fn test_kube_client() -> kube::Client {
+    client_for_cluster_config(
+        "local",
+        Some(
+            r#"
+apiVersion: v1
+kind: Config
+current-context: local
+contexts:
+  - name: local
+    context:
+      cluster: local
+      user: local
+clusters:
+  - name: local
+    cluster:
+      server: https://127.0.0.1:6443
+users:
+  - name: local
+    user: {}
+"#,
+        ),
+    )
+    .await
+    .unwrap()
 }
 
 pub(crate) fn kubeconfig_options_for_context(
