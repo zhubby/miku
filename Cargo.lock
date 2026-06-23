@@ -3066,7 +3066,7 @@ dependencies = [
 
 [[package]]
 name = "miku-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -3082,7 +3082,7 @@ dependencies = [
 
 [[package]]
 name = "miku-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -3093,7 +3093,7 @@ dependencies = [
 
 [[package]]
 name = "miku-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "miku-core",
@@ -3108,7 +3108,7 @@ dependencies = [
 
 [[package]]
 name = "miku-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3117,7 +3117,7 @@ dependencies = [
 
 [[package]]
 name = "miku-http-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -3138,7 +3138,7 @@ dependencies = [
 
 [[package]]
 name = "miku-kube"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -3156,7 +3156,7 @@ dependencies = [
 
 [[package]]
 name = "miku-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -3176,7 +3176,7 @@ dependencies = [
 
 [[package]]
 name = "miku-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "directories",
@@ -3195,7 +3195,7 @@ dependencies = [
 
 [[package]]
 name = "miku-ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "egui-file-dialog",
@@ -3221,7 +3221,7 @@ dependencies = [
 
 [[package]]
 name = "miku-web"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "miku-http-client",
