@@ -24,7 +24,8 @@ impl WebHandle {
     #[wasm_bindgen]
     pub async fn start(&self, canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
         tracing::info!("starting web app");
-        self.runner
+        let result = self
+            .runner
             .start(
                 canvas,
                 eframe::WebOptions::default(),
@@ -37,7 +38,14 @@ impl WebHandle {
                     Ok(Box::new(app))
                 }),
             )
-            .await
+            .await;
+
+        match &result {
+            Ok(()) => mark_loading_ready(),
+            Err(error) => mark_loading_failed(error),
+        }
+
+        result
     }
 
     #[wasm_bindgen]
@@ -86,4 +94,63 @@ fn web_app() -> Result<miku_ui::MikuApp, String> {
     Ok(miku_ui::MikuApp::web_with_services(std::sync::Arc::new(
         client,
     )))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn mark_loading_ready() {
+    let Some(document) = browser_document() else {
+        return;
+    };
+
+    if let Some(root) = document.document_element() {
+        add_class(&root, "miku-ready");
+        let _ = root.set_attribute("data-miku-boot", "ready");
+    }
+
+    if let Some(loading) = document.get_element_by_id("miku-loading") {
+        let _ = loading.set_attribute("aria-busy", "false");
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn mark_loading_failed(error: &JsValue) {
+    let Some(document) = browser_document() else {
+        return;
+    };
+
+    if let Some(root) = document.document_element() {
+        add_class(&root, "miku-boot-error");
+        let _ = root.set_attribute("data-miku-boot", "failed");
+    }
+
+    if let Some(message) = document.get_element_by_id("miku-loading-message") {
+        message.set_text_content(Some("Miku could not start"));
+    }
+
+    if let Some(detail) = document.get_element_by_id("miku-loading-detail") {
+        detail.set_text_content(Some(&format!("{error:?}")));
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_document() -> Option<web_sys::Document> {
+    web_sys::window()?.document()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn add_class(element: &web_sys::Element, class_name: &str) {
+    let classes = element.class_name();
+    if classes
+        .split_ascii_whitespace()
+        .any(|current| current == class_name)
+    {
+        return;
+    }
+
+    let next_classes = if classes.is_empty() {
+        class_name.to_owned()
+    } else {
+        format!("{classes} {class_name}")
+    };
+    element.set_class_name(&next_classes);
 }
