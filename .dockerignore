@@ -1,0 +1,11 @@
+.git/
+.antigravitycli/
+.trunk/
+target/
+dist/
+**/*.db
+**/*.db-shm
+**/*.db-wal
+.DS_Store
+crates/miku-server/web-dist/*
+!crates/miku-server/web-dist/.gitkeep
