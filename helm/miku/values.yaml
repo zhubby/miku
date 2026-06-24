@@ -1,0 +1,105 @@
+# Default values for Miku.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/zhubby/miku
+  pullPolicy: IfNotPresent
+  # Defaults to v<chart appVersion> when empty.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+rbac:
+  create: true
+  # Miku is a Kubernetes management UI. The default role is intentionally
+  # cluster-wide so logs, exec, apply, patch, delete, drain, and discovery work.
+  clusterWide: true
+  rules:
+    - apiGroups:
+        - "*"
+      resources:
+        - "*"
+      verbs:
+        - "*"
+    - nonResourceURLs:
+        - "*"
+      verbs:
+        - get
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  fsGroup: 10001
+  fsGroupChangePolicy: OnRootMismatch
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false
+  runAsGroup: 10001
+  runAsNonRoot: true
+  runAsUser: 10001
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 5174
+
+container:
+  port: 5174
+  args:
+    - server
+    - --bind
+    - 0.0.0.0:5174
+
+env:
+  MIKU_CONFIG_DIR: /data
+  MIKU_LOG_LEVEL: info
+
+extraEnv: []
+
+persistence:
+  enabled: false
+  existingClaim: ""
+  storageClassName: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: miku.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources: {}
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: ""
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: miku
+description: A Helm chart for deploying the Miku Kubernetes management server and web UI
+type: application
+version: 0.2.0
+appVersion: "0.2.0"
